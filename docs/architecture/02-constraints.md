@@ -9,7 +9,8 @@
 - **Application must work on Mac/Linux:** We must ensure we cover enough 
   operating systems to reach the target audience for the application. However,
   due to limitations in the libraries we can use, we cannot cover Windows.
-  However, we can use WSL2 for Windows support.
+  However, we can use WSL2 for Windows support. As soon as nerdbox supports 
+  Windows, we'll add Windows support in this tool as well.
 
 - **Application runs without root permissions:** We must ensure that the 
   application doesn't need any root permissions on the host to limit the impact

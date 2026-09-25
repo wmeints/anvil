@@ -6,8 +6,12 @@ This project provides an easy-to-use agent sandbox that doesn't require a
 license from some cloud provider or other commercial organization. This project
 supports two major scenarios:
 
-1. Terminal-based agents like Claude Code, Oh-my-pi, and OpenCode via a CLI interface
-2. IDE-integrated agents like GitHub Copilot provided that the IDE is connected to the sandbox via SSH
+1. Terminal-based agents like [Claude Code](https://claude.ai/code), 
+   [Oh-my-pi](https://omp.sh), and [OpenCode](https://opencode.ai) via 
+   a CLI interface
+   
+2. IDE-integrated agents like GitHub Copilot provided that the IDE is connected 
+   to the sandbox via SSH
 
 ## High level requirements
 
