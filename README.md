@@ -3,6 +3,18 @@
 This project helps you run your coding agent inside a sandboxed microVM so you 
 can keep the agent under control and your secrets safe. 
 
+--------------------------------------------------------------------------------
+
+:construction: **Current state of the project**
+
+You can run the project on your machine, and it will run Ubuntu 26.04 in a VM.
+Beyond that, there's not much you can do yet!
+
+For the next few weeks, I expect this tool will only work on Linux. Mac will
+follow after, once I've worked out the key interactions on Linux.
+
+--------------------------------------------------------------------------------
+
 ## Why does this project exist?
 
 This project exists, because while Docker Sandboxes are awesome, they're also 
