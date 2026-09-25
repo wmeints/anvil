@@ -46,6 +46,13 @@ echo erofs | sudo tee /etc/modules-load.d/erofs.conf  # load it on every boot
 
 ## Getting started
 
+Before you run anything, make sure you have all dependencies available on your
+machine with [Mise](https://mise.jdx.dev).
+
+```bash
+mise install
+```
+
 [Nerdbox](https://github.com/containerd/nerdbox) is included as a git
 submodule in `third_party/nerdbox`. `task build` compiles anvil and builds the
 nerdbox shim, libkrun, guest kernel and guest rootfs with Docker. The first
