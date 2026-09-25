@@ -67,3 +67,9 @@ Anvil keeps its data in `~/.local/share/anvil`. If something goes wrong, check
 ## Documentation
 
 TODO: Document how this product came to be.
+
+## License
+
+Anvil is licensed under the [MIT License](LICENSE). The bundled
+[Nerdbox](https://github.com/containerd/nerdbox) submodule in `third_party/`
+keeps its own license.
