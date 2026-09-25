@@ -9,6 +9,7 @@ import (
 
 	"github.com/containerd/console"
 	"github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/oci"
@@ -24,8 +25,9 @@ const namespace = "anvil"
 // Run boots the sandbox called name from the image ref and attaches the
 // terminal to /bin/bash inside it. When the shell exits the VM is stopped,
 // while the sandbox and its disk are kept so the next Run resumes it.
-func Run(ctx context.Context, c *client.Client, name, ref string) error {
+func Run(ctx context.Context, d *daemon.Daemon, name, ref string) error {
 	ctx = namespaces.WithNamespace(ctx, namespace)
+	c := d.Client()
 
 	container, err := loadOrCreate(ctx, c, name, ref)
 	if err != nil {
@@ -45,7 +47,7 @@ func Run(ctx context.Context, c *client.Client, name, ref string) error {
 	}
 	defer func() { _ = con.Reset() }()
 
-	task, err := container.NewTask(ctx, cio.NewCreator(cio.WithStreams(con, con, nil), cio.WithTerminal))
+	task, err := container.NewTask(ctx, cio.NewCreator(cio.WithStreams(con, con, nil), cio.WithTerminal, cio.WithFIFODir(d.FIFODir())))
 	if err != nil {
 		return fmt.Errorf("boot sandbox: %w", err)
 	}
@@ -107,7 +109,7 @@ func loadOrCreate(ctx context.Context, c *client.Client, name, ref string) (clie
 		client.WithNewSnapshot(name+"-snapshot", image),
 		client.WithRuntime(nerdbox.RuntimeName, nil),
 		client.WithNewSpec(
-			oci.WithImageConfig(image),
+			withImageEnv(image),
 			oci.WithTTY,
 			oci.WithProcessArgs("/bin/bash"),
 			oci.WithHostname("anvil"),
@@ -117,4 +119,25 @@ func loadOrCreate(ctx context.Context, c *client.Client, name, ref string) (clie
 		return nil, fmt.Errorf("create sandbox: %w", err)
 	}
 	return container, nil
+}
+
+// withImageEnv applies the image's environment and working directory and runs
+// the shell as root. oci.WithImageConfig would also look up the user's groups
+// in the image, which mounts the rootfs on the host and needs root.
+func withImageEnv(image client.Image) oci.SpecOpts {
+	return func(ctx context.Context, cl oci.Client, c *containers.Container, s *oci.Spec) error {
+		spec, err := image.Spec(ctx)
+		if err != nil {
+			return err
+		}
+		cwd := spec.Config.WorkingDir
+		if cwd == "" {
+			cwd = "/"
+		}
+		return oci.Compose(
+			oci.WithEnv(spec.Config.Env),
+			oci.WithProcessCwd(cwd),
+			oci.WithUIDGID(0, 0),
+		)(ctx, cl, c, s)
+	}
 }

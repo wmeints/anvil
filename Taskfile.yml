@@ -3,13 +3,49 @@
 version: '3'
 
 vars:
-  GREETING: Hello, world!
+  DIST_DIR: '{{.ROOT_DIR}}/dist'
+  # Anvil looks for the nerdbox components in ../lib/anvil relative to its executable.
+  LIB_DIR: '{{.DIST_DIR}}/lib/anvil'
+  NERDBOX_SRC: '{{.ROOT_DIR}}/third_party/nerdbox'
+  # Map Go's GOARCH to the kernel arch naming used by nerdbox (amd64 → x86_64).
+  KERNEL_ARCH:
+    sh: 'a=$(go env GOARCH); case "$a" in amd64) echo x86_64;; *) echo "$a";; esac'
 
 tasks:
   build:
+    desc: Compile anvil and the nerdbox components into dist/
+    deps: [build:anvil, build:nerdbox]
+  build:anvil:
     desc: Compile the application
     cmds:
-      - go build -o bin/anvil ./cmd/anvil/
+      - go build -o {{.DIST_DIR}}/bin/anvil ./cmd/anvil/
+  build:nerdbox:
+    desc: Build the nerdbox shim, libkrun, guest kernel and rootfs (requires Docker buildx)
+    dir: '{{.NERDBOX_SRC}}'
+    preconditions:
+      - sh: test -f docker-bake.hcl
+        msg: 'The nerdbox submodule is missing, run: git submodule update --init'
+    sources:
+      - '**/*'
+      - exclude: '_output/**'
+    generates:
+      - '{{.LIB_DIR}}/containerd-shim-nerdbox-v1'
+      - '{{.LIB_DIR}}/libkrun.so'
+      - '{{.LIB_DIR}}/nerdbox-kernel-{{.KERNEL_ARCH}}'
+      - '{{.LIB_DIR}}/nerdbox-rootfs.erofs'
+    cmds:
+      - mkdir -p {{.LIB_DIR}}
+      - HOST_OS=linux KERNEL_ARCH={{.KERNEL_ARCH}} DESTDIR={{.LIB_DIR}} docker buildx bake --allow=fs.write={{.LIB_DIR}}
+  install:
+    desc: Install anvil and the nerdbox components into PREFIX (default ~/.local)
+    deps: [build]
+    vars:
+      PREFIX:
+        sh: echo "${PREFIX:-$HOME/.local}"
+    cmds:
+      - mkdir -p {{.PREFIX}}/bin {{.PREFIX}}/lib/anvil
+      - cp {{.DIST_DIR}}/bin/anvil {{.PREFIX}}/bin/anvil
+      - cp {{.LIB_DIR}}/* {{.PREFIX}}/lib/anvil/
   lint:
     desc: Run golangci-lint against all source files
     cmds:

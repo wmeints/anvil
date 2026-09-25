@@ -58,7 +58,7 @@ const Snapshotter = "erofs"
 
 // paths holds the locations anvil's containerd uses, all owned by the user.
 type paths struct {
-	root, state, opt, socket, config, log string
+	root, state, opt, socket, config, log, fifo string
 }
 
 func newPaths() (paths, error) {
@@ -84,6 +84,7 @@ func newPaths() (paths, error) {
 		state:  filepath.Join(run, "containerd"),
 		socket: filepath.Join(run, "containerd.sock"),
 		config: filepath.Join(run, "containerd.toml"),
+		fifo:   filepath.Join(run, "fifo"),
 	}, nil
 }
 
@@ -95,9 +96,10 @@ type Options struct {
 
 // Daemon is a connection to anvil's containerd, which it may own.
 type Daemon struct {
-	client *client.Client
-	cmd    *exec.Cmd
-	exited chan struct{}
+	client  *client.Client
+	fifoDir string
+	cmd     *exec.Cmd
+	exited  chan struct{}
 }
 
 // Start connects to anvil's containerd, starting it when it isn't running yet.
@@ -108,7 +110,7 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 
 	if c, err := connect(ctx, p.socket); err == nil {
-		return &Daemon{client: c}, nil
+		return &Daemon{client: c, fifoDir: p.fifo}, nil
 	}
 
 	for _, dir := range []string{p.root, p.opt, p.state} {
@@ -139,7 +141,7 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 		return nil, fmt.Errorf("start containerd: %w", err)
 	}
 
-	d := &Daemon{cmd: cmd, exited: make(chan struct{})}
+	d := &Daemon{fifoDir: p.fifo, cmd: cmd, exited: make(chan struct{})}
 	go func() {
 		_ = cmd.Wait()
 		close(d.exited)
@@ -187,6 +189,12 @@ func connect(ctx context.Context, socket string) (*client.Client, error) {
 // Client returns the containerd client.
 func (d *Daemon) Client() *client.Client {
 	return d.client
+}
+
+// FIFODir returns the user-owned directory for the stdio FIFOs of tasks, as the
+// client's default under /run/containerd needs root.
+func (d *Daemon) FIFODir() string {
+	return d.fifoDir
 }
 
 // Stop closes the client and, when this Daemon started containerd, stops it.
