@@ -6,8 +6,23 @@ vars:
   GREETING: Hello, world!
 
 tasks:
-  default:
-    desc: Print a greeting message
+  build:
+    desc: Compile the application
     cmds:
-      - echo "{{.GREETING}}"
-    silent: true
+      - go build -o bin/anvil ./cmd/anvil/
+  lint:
+    desc: Run golangci-lint against all source files
+    cmds:
+      - golangci-lint run ./...
+  format:
+    desc: Run golangci-lint to format all source files
+    cmds:
+      - golangci-lint fmt ./...
+  test:
+    desc: Run the unit-tests for all packages
+    cmds:
+      - go test ./...
+  test:integration:
+    desc: Run the integration tests (requires containerd)
+    cmds:
+      - go test -tags integration ./...

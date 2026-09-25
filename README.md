@@ -16,11 +16,53 @@ having to spend a ton of money.
 ## System requirements
 
 - [Mise](https://mise.jdx.dev)
+- Linux with KVM (`/dev/kvm` must be readable and writable by your user)
+- [containerd](https://containerd.io) 2.3 or newer on the `PATH`. Anvil starts
+  its own private instance as your user, so the system containerd service
+  doesn't need to run.
+- `erofs-utils` (provides `mkfs.erofs`)
+- The `erofs` kernel module loaded
+- Docker with buildx, to build the nerdbox components
+
+Anvil runs without root. The only steps that need root are this one-time host
+setup:
+
+```bash
+sudo modprobe erofs
+echo erofs | sudo tee /etc/modules-load.d/erofs.conf  # load it on every boot
+```
 
 ## Getting started
 
-TODO: Describe how to install and run this project
+[Nerdbox](https://github.com/containerd/nerdbox) is included as a git
+submodule in `third_party/nerdbox`. `task build` compiles anvil and builds the
+nerdbox shim, libkrun, guest kernel and guest rootfs with Docker. The first
+build compiles a Linux kernel and takes a while; later builds only rebuild
+nerdbox when its sources change.
 
+```bash
+git submodule update --init
+task build
+./dist/bin/anvil run
+```
+
+The build output uses an install layout: `dist/bin/anvil` and the nerdbox
+components in `dist/lib/anvil`. Anvil looks for them in `../lib/anvil` next to
+its executable (override with `--nerdbox-dir` or `ANVIL_NERDBOX_DIR`). To
+install into `~/.local` (or another `PREFIX`):
+
+```bash
+task install               # ~/.local/bin/anvil + ~/.local/lib/anvil
+PREFIX=/opt/anvil task install
+```
+
+`anvil run` boots an `ubuntu:26.04` microVM and opens `/bin/bash` inside it.
+Type `exit` to hibernate the sandbox and return to the host. The VM stops, but
+the sandbox disk is kept, so the next `anvil run` resumes with your files
+intact.
+
+Anvil keeps its data in `~/.local/share/anvil`. If something goes wrong, check
+`~/.local/share/anvil/containerd.log`.
 
 ## Documentation
 
