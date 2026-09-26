@@ -73,10 +73,6 @@ We'll use a single repository to host both executables. The executables will
 have their own folder in `cmd/anvild` and `cmd/anvil` as the entrypoint. The 
 other logic is shared between the two in the `internal` directory.
 
-To maximize interoperability we'll expose the `grpc` API description through 
-the `api` directory so people can generate their own client to talk to the 
-daemon process.
-
 [NERDBOX]: https://github.com/containerd/nerdbox
 [GVISOR]: https://gvisor.dev/
 [VIRTIO]: https://docs.kernel.org/driver-api/virtio/virtio.html
