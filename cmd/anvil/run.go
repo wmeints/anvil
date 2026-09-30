@@ -37,7 +37,7 @@ func (cmd *RunCmd) Run(ctx *Context) error {
 		Sandbox: cmd.Sandbox,
 		Args:    cmd.Command,
 		Stdin:   os.Stdin,
-		Stdout:  os.Stdout,
+		Stdout:  ctx.stdout,
 	}
 
 	con, err := console.ConsoleFromFile(os.Stdin)
