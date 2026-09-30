@@ -12,14 +12,14 @@ import (
 	"time"
 
 	containerd "github.com/containerd/containerd/v2/client"
-	"github.com/wmeints/anvil/internal/utils"
+	"github.com/wmeints/anvil/internal/paths"
 )
 
 func newTestContainerClient(t *testing.T) *containerd.Client {
 	t.Helper()
 
 	cc, err := containerd.New(
-		utils.ContainerRuntimeSocketPath(),
+		paths.ContainerRuntimeSocket(),
 		containerd.WithDefaultNamespace("anvil-test"),
 	)
 	if err != nil {

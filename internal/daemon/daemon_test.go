@@ -7,29 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wmeints/anvil/internal/paths"
 )
-
-func TestSocketPath(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", dir)
-
-	sock, err := socketPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if want := filepath.Join(dir, "anvil", "anvil.sock"); sock != want {
-		t.Errorf("socketPath() = %q, want %q", sock, want)
-	}
-}
-
-func TestSocketPathWithoutRuntimeDir(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", "")
-
-	if _, err := socketPath(); !errors.Is(err, ErrRuntimeDirNotSet) {
-		t.Fatalf("socketPath() error = %v, want %v", err, ErrRuntimeDirNotSet)
-	}
-}
 
 func TestCreateListener(t *testing.T) {
 	dir := t.TempDir()
@@ -107,8 +87,8 @@ func TestCreateListenerWithoutRuntimeDir(t *testing.T) {
 		_ = lis.Close()
 	}
 
-	if !errors.Is(err, ErrRuntimeDirNotSet) {
-		t.Fatalf("createListener() error = %v, want %v", err, ErrRuntimeDirNotSet)
+	if !errors.Is(err, paths.ErrRuntimeDirNotSet) {
+		t.Fatalf("createListener() error = %v, want %v", err, paths.ErrRuntimeDirNotSet)
 	}
 }
 

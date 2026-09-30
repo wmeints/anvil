@@ -11,7 +11,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/errdefs"
 	"github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/wmeints/anvil/internal/utils"
+	"github.com/wmeints/anvil/internal/paths"
 )
 
 // sessionTerm is the terminal type of every session. The host TERM isn't used
@@ -52,7 +52,7 @@ func StartSession(
 	ioCreator := cio.NewCreator(
 		cio.WithStreams(opts.Stdin, opts.Stdout, nil),
 		cio.WithTerminal,
-		cio.WithFIFODir(utils.FIFODirPath()),
+		cio.WithFIFODir(paths.FIFODir()),
 	)
 
 	execID := "session-" + strings.ToLower(rand.Text()[:8])
