@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package api.anvil.v1alpha1;
+
+option go_package = "github.com/wmeints/anvil/api/v1alpha1;v1alpha1";
+
+service AnvilService {
+  rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+  rpc RemoveSandbox(RemoveSandboxRequest) returns (RemoveSandboxResponse);
+  rpc AttachSandbox(stream AttachSandboxRequest) returns (stream AttachSandboxResponse);
+}
+
+message CreateSandboxRequest {
+  string name = 1;
+  string image = 2;
+}
+
+message CreateSandboxResponse {}
+
+message ListSandboxesRequest {}
+
+message ListSandboxesResponse {
+  repeated SandboxSummary sandboxes = 1;
+}
+
+message SandboxSummary {
+  string name = 1;
+}
+
+message RemoveSandboxRequest {
+  string name = 1;
+}
+
+message RemoveSandboxResponse {}
+
+message AttachSandboxRequest {
+  oneof msg {
+    AttachStart start = 1;
+    SessionInput input = 2;
+    WindowSize resize = 3;
+  }
+}
+
+message SessionInput {
+  bytes stdin = 2;
+}
+
+message AttachStart {
+  string sandbox = 1;
+  repeated string args = 2;
+  reserved 3;
+  WindowSize size = 4;
+}
+
+message WindowSize {
+  uint32 width = 1;
+  uint32 height = 2;
+}
+
+message AttachSandboxResponse {
+  oneof msg {
+    bytes stdout = 1;
+    int32 exit_code = 2;
+  }
+}
