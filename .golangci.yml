@@ -1,0 +1,22 @@
+version: "2"
+
+linters:
+  enable:
+    - gocognit
+    - nestif
+    - revive
+    - lll
+  settings:
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+    gocognit:
+      min-complexity: 5
+    nestif:
+      min-complexity: 2
+    lll:
+      line-length: 88
+      tab-width: 4
+  exclusions:
+    presets: []

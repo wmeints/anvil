@@ -15,6 +15,7 @@ safe inside a microVM-based sandbox.
 
 - `task build` - compiles the sources into the final executable
 - `task test` - runs the unit-tests in the project
+- `task test:integration` - runs the integration tests (requires containerd)
 - `task lint` - verifies the code quality in the source files
 - `task format` - formats the source files so the linter passes
 
