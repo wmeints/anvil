@@ -19,6 +19,16 @@ gh auth status
 
 If it reports unauthenticated, stop and tell the user to run `gh auth login`.
 
+## Quality gate
+
+Before opening the PR, verify the change:
+
+1. Run `task format`, `task lint` and `task test`. Run `task test:integration`
+   too when the diff touches `internal/sandbox` or `internal/daemon`. If a
+   check fails, stop and report it; don't open a PR with failing checks.
+2. Ask the `reviewer` agent to review the branch. Fix confirmed findings with
+   the user's approval, or list the ones you leave open under **Review focus**.
+
 ## Steps
 
 ### 1. Identify the branch and base

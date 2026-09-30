@@ -22,3 +22,24 @@ commit-msg:
           echo "Example: feat(cli): add support for config files"
           exit 1
         fi
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: format
+      glob: "*.go"
+      run: golangci-lint fmt --diff ./...
+    - name: lint
+      glob: "*.{go,mod}"
+      run: task lint
+    - name: test
+      glob: "*.{go,mod}"
+      run: task test
+
+pre-push:
+  jobs:
+    - name: integration tests
+      tags: [integration]
+      glob: "*.{go,mod}"
+      # Needs a local containerd; skip with LEFTHOOK_EXCLUDE=integration.
+      run: task test:integration

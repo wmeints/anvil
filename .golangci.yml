@@ -6,6 +6,8 @@ linters:
     - nestif
     - revive
     - lll
+    - gosec
+    - errorlint
   settings:
     revive:
       rules:

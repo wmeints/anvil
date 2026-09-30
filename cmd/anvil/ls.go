@@ -15,7 +15,7 @@ func (cmd *LsCmd) Run(ctx *Context) error {
 	}
 
 	for _, sandbox := range sandboxes {
-		fmt.Println(sandbox.Name)
+		_, _ = fmt.Fprintln(ctx.stdout, sandbox.Name)
 	}
 
 	return nil

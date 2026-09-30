@@ -15,13 +15,9 @@ import (
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/wmeints/anvil/api/v1alpha1"
-	"github.com/wmeints/anvil/internal/utils"
+	"github.com/wmeints/anvil/internal/paths"
 	"google.golang.org/grpc"
 )
-
-// ErrRuntimeDirNotSet is returned when the XDG_RUNTIME_DIR environment variable
-// isn't set, so there's no location for the daemon socket.
-var ErrRuntimeDirNotSet = errors.New("XDG_RUNTIME_DIR is not set")
 
 // ErrStaleSocket is returned when a socket file left behind by a previous run
 // can't be removed.
@@ -41,16 +37,8 @@ var ErrContainerRuntime = errors.New("failed to connect to containerd")
 // of an error.
 var ErrServe = errors.New("failed to serve the control API")
 
-func socketPath() (string, error) {
-	dir := os.Getenv("XDG_RUNTIME_DIR")
-	if dir == "" {
-		return "", ErrRuntimeDirNotSet
-	}
-	return filepath.Join(dir, "anvil", "anvil.sock"), nil
-}
-
 func createListener() (net.Listener, error) {
-	sock, err := socketPath()
+	sock, err := paths.DaemonSocket()
 
 	if err != nil {
 		return nil, err
@@ -80,7 +68,7 @@ func createListener() (net.Listener, error) {
 func newContainerClient() (*containerd.Client, error) {
 	slog.Info("connecting to rootless containerd socket")
 
-	sock := utils.ContainerRuntimeSocketPath()
+	sock := paths.ContainerRuntimeSocket()
 
 	client, err := containerd.New(sock, containerd.WithDefaultNamespace("anvil"))
 	if err != nil {

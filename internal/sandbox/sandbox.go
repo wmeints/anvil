@@ -22,6 +22,13 @@ import (
 // ErrSandboxNotFound is returned when a sandbox doesn't exist.
 var ErrSandboxNotFound = errors.New("sandbox not found")
 
+// ErrInvalidName is returned when a sandbox name isn't lower case letters and
+// digits, starting with a letter, optionally separated by single dashes.
+var ErrInvalidName = errors.New("invalid sandbox name")
+
+// ErrInvalidImage is returned when a sandbox has no image.
+var ErrInvalidImage = errors.New("invalid sandbox image")
+
 // Sandbox defines the control structure for a single sandbox container
 type Sandbox struct {
 	Name   string `yaml:"name"`
@@ -44,10 +51,10 @@ type Status struct {
 }
 
 // isValidContainerName validates the name given for the container.
-// We expect a container name to be all lower case, optionally containing dashes.
-// You can number containers, but they can't start with a number.
+// We expect a container name to be lower case letters and digits, optionally
+// separated by single dashes. Names can't start with a digit.
 func isValidContainerName(name string) bool {
-	m, _ := regexp.Match("^[a-z]+(-[a-z0-9]+)*$", []byte(name))
+	m, _ := regexp.Match("^[a-z][a-z0-9]*(-[a-z0-9]+)*$", []byte(name))
 	return m
 }
 
@@ -167,12 +174,15 @@ func Remove(ctx context.Context, cc *containerd.Client, name string) error {
 // NewSandbox creates a new sandbox definition
 // Use the operations like Start/Stop/PullImage to manage the sandbox instance.
 func NewSandbox(name string, image string) (*Sandbox, error) {
-	if name == "" {
-		return nil, fmt.Errorf("invalid image name")
+	if !isValidContainerName(name) {
+		return nil, fmt.Errorf(
+			"%w: %q (use lower case letters, digits and dashes; start with a letter)",
+			ErrInvalidName, name)
 	}
 
-	if image == "" || !isValidContainerName(name) {
-		return nil, fmt.Errorf("invalid container name")
+	if image == "" {
+		return nil, fmt.Errorf("%w (pass an image such as ubuntu:26.04)",
+			ErrInvalidImage)
 	}
 
 	sandboxSpec := Spec{

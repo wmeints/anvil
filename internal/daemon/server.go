@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/wmeints/anvil/api/v1alpha1"
@@ -120,8 +121,19 @@ func (srv *anvilService) AttachSandbox(
 	}
 
 	return output.send(&v1alpha1.AttachSandboxResponse{
-		Msg: &v1alpha1.AttachSandboxResponse_ExitCode{ExitCode: int32(exitCode)},
+		Msg: &v1alpha1.AttachSandboxResponse_ExitCode{ExitCode: toExitCode(exitCode)},
 	})
+}
+
+// toExitCode converts a process exit status to the exit code in the control
+// API. Statuses beyond the int32 range can't come from a real process, so they
+// saturate instead of wrapping around to a misleading value.
+func toExitCode(status uint32) int32 {
+	if status > math.MaxInt32 {
+		return math.MaxInt32
+	}
+
+	return int32(status)
 }
 
 // receiveSessionInput forwards the input and resize messages from the client

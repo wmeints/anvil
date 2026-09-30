@@ -48,6 +48,14 @@ machine with [Mise](https://mise.jdx.dev).
 mise install
 ```
 
+If you want to contribute, install the git hooks as well. They check the
+formatting, lint and tests before each commit and run the integration tests
+before each push.
+
+```bash
+lefthook install
+```
+
 The build output uses an install layout: `dist/bin/anvil` and the nerdbox
 components in `dist/lib/anvil`. Anvil looks for them in `../lib/anvil` next to
 its executable (override with `--nerdbox-dir` or `ANVIL_NERDBOX_DIR`). To
