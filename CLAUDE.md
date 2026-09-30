@@ -48,7 +48,9 @@ The linter is strict, so write code that fits from the start:
 - Every exported identifier and every package needs a doc comment (`revive`).
 - `gosec` and `errorlint` are enabled: bound integer conversions, compare
   errors with `errors.Is`/`errors.As`, and wrap them with `%w`.
-- Don't suppress findings with `nolint` directives; fix the code or ask first.
+- Don't suppress findings with `nolint` directives; fix the code. A hook
+  blocks new directives, so if a finding is a false positive, ask the user to
+  add the directive.
 
 ## Testing
 
@@ -85,7 +87,9 @@ These checks enforce the rules above, so don't try to bypass them:
 - Claude Code hooks in `.claude/settings.json` format Go files after each
   edit, block edits to `third_party/`, `dist/` and `go.sum`, block skipping git
   hooks and force-pushing, and run `task lint` and `task test` before a turn
-  that changed Go code ends.
+  ends while Go files have uncommitted changes. The hooks need `jq`, which
+  `mise install` provides. The guard is a speed bump against mistakes, not a
+  security boundary.
 - Lefthook runs the format check, lint and unit tests before each commit and
   the integration tests before each push.
 - GitHub Actions runs the format check, lint, unit tests and build on every
