@@ -6,12 +6,22 @@ import (
 )
 
 func TestNewSandbox(t *testing.T) {
-	sb, err := NewSandbox("agent-1", "ubuntu:26.04")
+	for _, name := range []string{"agent", "agent1", "agent-1", "my-agent-2b"} {
+		t.Run(name, func(t *testing.T) {
+			assertValidSandbox(t, name)
+		})
+	}
+}
+
+func assertValidSandbox(t *testing.T, name string) {
+	t.Helper()
+
+	sb, err := NewSandbox(name, "ubuntu:26.04")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("NewSandbox(%q): %v", name, err)
 	}
 
-	if sb.Name != "agent-1" || sb.Spec.Image != "ubuntu:26.04" {
+	if sb.Name != name || sb.Spec.Image != "ubuntu:26.04" {
 		t.Errorf("unexpected sandbox: %+v", sb)
 	}
 }
@@ -25,6 +35,7 @@ func TestNewSandboxRejectsInvalidInput(t *testing.T) {
 		{"upper case", "Agent", "ubuntu:26.04", ErrInvalidName},
 		{"leading digit", "1agent", "ubuntu:26.04", ErrInvalidName},
 		{"trailing dash", "agent-", "ubuntu:26.04", ErrInvalidName},
+		{"double dash", "my--agent", "ubuntu:26.04", ErrInvalidName},
 		{"empty image", "agent", "", ErrInvalidImage},
 	}
 
