@@ -29,15 +29,10 @@ having to spend a ton of money.
 
 - [Mise](https://mise.jdx.dev)
 - Linux with KVM (`/dev/kvm` must be readable and writable by your user)
-- [containerd](https://containerd.io) 2.3 or newer on the `PATH`. Anvil starts
-  its own private instance as your user, so the system containerd service
-  doesn't need to run.
+- [containerd](https://containerd.io) 2.3 or newer. Make sure [to configure 
+  it to run rootless](https://containerd.io/docs/2.4/rootless/).
 - `erofs-utils` (provides `mkfs.erofs`)
 - The `erofs` kernel module loaded
-- Docker with buildx, to build the nerdbox components
-
-Anvil runs without root. The only steps that need root are this one-time host
-setup:
 
 ```bash
 sudo modprobe erofs
@@ -51,18 +46,6 @@ machine with [Mise](https://mise.jdx.dev).
 
 ```bash
 mise install
-```
-
-[Nerdbox](https://github.com/containerd/nerdbox) is included as a git
-submodule in `third_party/nerdbox`. `task build` compiles anvil and builds the
-nerdbox shim, libkrun, guest kernel and guest rootfs with Docker. The first
-build compiles a Linux kernel and takes a while; later builds only rebuild
-nerdbox when its sources change.
-
-```bash
-git submodule update --init
-task build
-./dist/bin/anvil run
 ```
 
 The build output uses an install layout: `dist/bin/anvil` and the nerdbox
@@ -85,7 +68,8 @@ Anvil keeps its data in `~/.local/share/anvil`. If something goes wrong, check
 
 ## Documentation
 
-TODO: Document how this product came to be.
+- [Architecture documentation](docs/architecture/README.md)
+- [Engineering documentation](docs/engineering/README.md)
 
 ## License
 
