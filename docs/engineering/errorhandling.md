@@ -23,8 +23,8 @@ var ErrMissingFile = errors.New("file is missing")
 
 func Load(path string) error {
 	if _, err := os.Stat(path); err != nil {
-        return fmt.Errorf("%w: %s (check the file path and permissions)", ErrMissingFile, path)
-    }
+		return fmt.Errorf("%w: %s (check the file path and permissions)", ErrMissingFile, path)
+	}
 
 	// ...
 	
@@ -50,8 +50,8 @@ var ErrMissingFile = errors.New("file is missing")
 
 func Load(path string) error {
 	if _, err := os.Stat(path); err != nil {
-        return fmt.Errorf("%w: %s (check the file path and permissions) %w", ErrMissingFile, path, err)
-    }
+		return fmt.Errorf("%w: %s (check the file path and permissions) %w", ErrMissingFile, path, err)
+	}
 
 	// ...
 	
@@ -65,7 +65,8 @@ in the package. The second placeholder can contain the original error produced b
 ## Custom errors
 
 Prefer to use the `fmt.Errorf` when generating errors. However, when you need additional information in the caller, you 
-can create a custom error with the following pattern:
+can create a custom error with the following pattern. Return the error as a pointer and implement `Error()` on the
+pointer receiver, so `errors.As` with a `*FileMissingError` target matches it:
 
 ```go
 package mypackage
@@ -80,16 +81,16 @@ type FileMissingError struct {
 	Path string
 }
 
-func (err FileMissingError) Error() string {
+func (err *FileMissingError) Error() string {
 	return fmt.Sprintf("file is missing: %s (check file path and permissions)", err.Path)
 }
 
 func Load(path string) error {
 	if _, err := os.Stat(path); err != nil {
-        return FileMissingError {
+		return &FileMissingError{
 			Path: path,
-        }
-    }
+		}
+	}
 
 	// ...
 	
@@ -103,6 +104,6 @@ func OtherFunction() {
 	var missingFileErr *FileMissingError
 	if errors.As(err, &missingFileErr) {
 		fmt.Println("missing:", missingFileErr.Path)
-    }
+	}
 }
 ```

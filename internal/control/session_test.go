@@ -3,7 +3,9 @@ package control
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,6 +20,9 @@ type echoService struct {
 	v1alpha1.UnimplementedAnvilServiceServer
 	start *v1alpha1.AttachStart
 }
+
+// echoExitCode is the exit code echoService reports when the session ends.
+const echoExitCode = 3
 
 func (srv *echoService) AttachSandbox(
 	stream v1alpha1.AnvilService_AttachSandboxServer,
@@ -43,7 +48,7 @@ func (srv *echoService) AttachSandbox(
 
 	return stream.Send(&v1alpha1.AttachSandboxResponse{
 		Msg: &v1alpha1.AttachSandboxResponse_ExitCode{
-			ExitCode: int32(len(srv.start.Args)),
+			ExitCode: echoExitCode,
 		},
 	})
 }
@@ -94,8 +99,12 @@ func TestRunSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code != 3 {
-		t.Errorf("expected exit code 3, got %d", code)
+	if code != echoExitCode {
+		t.Errorf("expected exit code %d, got %d", echoExitCode, code)
+	}
+
+	if want := []string{"sh", "-c", "exit"}; !slices.Equal(srv.start.Args, want) {
+		t.Errorf("expected args %v, got %v", want, srv.start.Args)
 	}
 
 	if stdout.String() != "hello" {
@@ -138,7 +147,7 @@ func TestRunSessionWithoutExitCode(t *testing.T) {
 		Stdin:   strings.NewReader(""),
 		Stdout:  &bytes.Buffer{},
 	})
-	if err != ErrSessionEnded {
+	if !errors.Is(err, ErrSessionEnded) {
 		t.Errorf("expected ErrSessionEnded, got %v", err)
 	}
 }
