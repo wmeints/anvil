@@ -1,0 +1,244 @@
+//go:build integration
+
+package daemon
+
+import (
+	"context"
+	"errors"
+	"io"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/wmeints/anvil/api/v1alpha1"
+	"github.com/wmeints/anvil/internal/sandbox"
+	"github.com/wmeints/anvil/internal/utils"
+)
+
+func newTestContainerClient(t *testing.T) *containerd.Client {
+	t.Helper()
+
+	cc, err := containerd.New(
+		utils.ContainerRuntimeSocketPath(),
+		containerd.WithDefaultNamespace("anvil-test"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = cc.Close() })
+
+	return cc
+}
+
+// createTestSandbox creates a sandbox through the service and removes it again
+// when the test finishes.
+func createTestSandbox(
+	ctx context.Context, t *testing.T, cc *containerd.Client,
+	client v1alpha1.AnvilServiceClient, name string,
+) {
+	t.Helper()
+
+	_ = sandbox.Remove(context.Background(), cc, name)
+	t.Cleanup(func() { _ = sandbox.Remove(context.Background(), cc, name) })
+
+	_, err := client.CreateSandbox(ctx, &v1alpha1.CreateSandboxRequest{
+		Name:  name,
+		Image: "ubuntu:26.04",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func listSandboxNames(
+	ctx context.Context, t *testing.T, client v1alpha1.AnvilServiceClient,
+) []string {
+	t.Helper()
+
+	resp, err := client.ListSandboxes(ctx, &v1alpha1.ListSandboxesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var names []string
+	for _, sb := range resp.GetSandboxes() {
+		names = append(names, sb.GetName())
+	}
+
+	return names
+}
+
+// attach starts a session in the sandbox and sends the given requests after
+// the start message.
+func attach(
+	ctx context.Context, t *testing.T, client v1alpha1.AnvilServiceClient,
+	start *v1alpha1.AttachStart, reqs ...*v1alpha1.AttachSandboxRequest,
+) v1alpha1.AnvilService_AttachSandboxClient {
+	t.Helper()
+
+	stream, err := client.AttachSandbox(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reqs = append([]*v1alpha1.AttachSandboxRequest{
+		{Msg: &v1alpha1.AttachSandboxRequest_Start{Start: start}},
+	}, reqs...)
+
+	for _, req := range reqs {
+		if err := stream.Send(req); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	return stream
+}
+
+// collectSession reads the output of a session until it reports its exit code.
+func collectSession(
+	t *testing.T, stream v1alpha1.AnvilService_AttachSandboxClient,
+) (string, int32) {
+	t.Helper()
+
+	var output strings.Builder
+
+	for {
+		resp, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("session ended without an exit code: %v", err)
+		}
+
+		switch msg := resp.Msg.(type) {
+		case *v1alpha1.AttachSandboxResponse_Stdout:
+			output.Write(msg.Stdout)
+		case *v1alpha1.AttachSandboxResponse_ExitCode:
+			return output.String(), msg.ExitCode
+		}
+	}
+}
+
+func TestSandboxLifecycle(t *testing.T) {
+	cc := newTestContainerClient(t)
+	client := newTestServiceClient(t, cc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "server-lifecycle-test"
+	createTestSandbox(ctx, t, cc, client, name)
+
+	if names := listSandboxNames(ctx, t, client); !slices.Contains(names, name) {
+		t.Fatalf("ListSandboxes() = %v, want it to contain %q", names, name)
+	}
+
+	_, err := client.RemoveSandbox(ctx, &v1alpha1.RemoveSandboxRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if names := listSandboxNames(ctx, t, client); slices.Contains(names, name) {
+		t.Fatalf("ListSandboxes() = %v, want it to not contain %q", names, name)
+	}
+}
+
+func TestRemoveSandboxMissing(t *testing.T) {
+	client := newTestServiceClient(t, newTestContainerClient(t))
+
+	_, err := client.RemoveSandbox(t.Context(),
+		&v1alpha1.RemoveSandboxRequest{Name: "does-not-exist"})
+	if err == nil {
+		t.Fatal("expected an error when removing a missing sandbox")
+	}
+}
+
+func TestAttachSandboxStreamsOutputAndExitCode(t *testing.T) {
+	cc := newTestContainerClient(t)
+	client := newTestServiceClient(t, cc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "server-attach-test"
+	createTestSandbox(ctx, t, cc, client, name)
+
+	stream := attach(ctx, t, client, &v1alpha1.AttachStart{
+		Sandbox: name,
+		Args:    []string{"sh", "-c", "echo hello; exit 3"},
+	})
+
+	output, code := collectSession(t, stream)
+
+	if code != 3 {
+		t.Errorf("exit code = %d, want 3", code)
+	}
+
+	if !strings.Contains(output, "hello") {
+		t.Errorf("output = %q, want it to contain %q", output, "hello")
+	}
+
+	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+		t.Errorf("expected the stream to end after the exit code, got %v", err)
+	}
+}
+
+func TestAttachSandboxForwardsInputAndResize(t *testing.T) {
+	cc := newTestContainerClient(t)
+	client := newTestServiceClient(t, cc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "server-input-test"
+	createTestSandbox(ctx, t, cc, client, name)
+
+	// The input is sent after the resize, so the size is changed by the time
+	// the process reads its input.
+	stream := attach(ctx, t, client,
+		&v1alpha1.AttachStart{
+			Sandbox: name,
+			Args:    []string{"sh", "-c", "read line; echo got-$line; stty size"},
+			Size:    &v1alpha1.WindowSize{Width: 80, Height: 24},
+		},
+		&v1alpha1.AttachSandboxRequest{
+			Msg: &v1alpha1.AttachSandboxRequest_Resize{
+				Resize: &v1alpha1.WindowSize{Width: 132, Height: 43},
+			},
+		},
+		&v1alpha1.AttachSandboxRequest{
+			Msg: &v1alpha1.AttachSandboxRequest_Input{
+				Input: &v1alpha1.SessionInput{Stdin: []byte("ping\n")},
+			},
+		},
+	)
+
+	output, code := collectSession(t, stream)
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+
+	for _, want := range []string{"got-ping", "43 132"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output = %q, want it to contain %q", output, want)
+		}
+	}
+}
+
+func TestAttachSandboxMissing(t *testing.T) {
+	client := newTestServiceClient(t, newTestContainerClient(t))
+
+	stream := attach(t.Context(), t, client, &v1alpha1.AttachStart{
+		Sandbox: "does-not-exist",
+		Args:    []string{"sh"},
+	})
+
+	_, err := stream.Recv()
+
+	want := sandbox.ErrSandboxNotFound.Error()
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Recv() error = %v, want %v", err, sandbox.ErrSandboxNotFound)
+	}
+}

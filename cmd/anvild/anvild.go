@@ -1,7 +1,17 @@
-package main 
+// Command anvild is the daemon that runs and manages anvil sandboxes.
+package main
 
-import "fmt"
+import (
+	"log/slog"
+
+	"github.com/wmeints/anvil/internal/daemon"
+)
 
 func main() {
-	fmt.Println("Hello world")
+	slog.Info("Starting daemon")
+
+	err := daemon.Run()
+	if err != nil {
+		panic(err)
+	}
 }
