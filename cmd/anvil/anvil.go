@@ -21,6 +21,7 @@ type CLI struct {
 // Context holds the dependencies of the commands.
 type Context struct {
 	client *control.Client
+	stdin  io.Reader
 	stdout io.Writer
 }
 
@@ -28,7 +29,7 @@ func main() {
 	var cli CLI
 	kctx := kong.Parse(&cli, kong.UsageOnError())
 
-	err := run(kctx, os.Stdout)
+	err := run(kctx, os.Stdin, os.Stdout)
 
 	// Pass the exit code of a session through without reporting an error.
 	var exitErr exitCodeError
@@ -41,7 +42,7 @@ func main() {
 
 // run connects to the daemon and runs the parsed command. It connects after
 // parsing, so --help works without a running daemon.
-func run(kctx *kong.Context, stdout io.Writer) error {
+func run(kctx *kong.Context, stdin io.Reader, stdout io.Writer) error {
 	socketAddress, err := control.DaemonSocketAddress()
 	if err != nil {
 		return err
@@ -56,5 +57,5 @@ func run(kctx *kong.Context, stdout io.Writer) error {
 		_ = client.Close()
 	}()
 
-	return kctx.Run(&Context{client: client, stdout: stdout})
+	return kctx.Run(&Context{client: client, stdin: stdin, stdout: stdout})
 }

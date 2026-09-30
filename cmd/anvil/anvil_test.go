@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/alecthomas/kong"
@@ -16,19 +18,36 @@ import (
 	"google.golang.org/grpc"
 )
 
-// fakeDaemon records the requests of the CLI and answers them.
-type fakeDaemon struct {
-	v1alpha1.UnimplementedAnvilServiceServer
-
+// received holds the requests fakeDaemon got from the CLI.
+type received struct {
 	created *v1alpha1.CreateSandboxRequest
 	removed string
 	started *v1alpha1.AttachStart
 }
 
+// fakeDaemon records the requests of the CLI and answers them.
+type fakeDaemon struct {
+	v1alpha1.UnimplementedAnvilServiceServer
+
+	mu  sync.Mutex
+	got received
+}
+
+// received returns the requests the daemon got so far.
+func (d *fakeDaemon) received() received {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.got
+}
+
 func (d *fakeDaemon) CreateSandbox(
 	_ context.Context, req *v1alpha1.CreateSandboxRequest,
 ) (*v1alpha1.CreateSandboxResponse, error) {
-	d.created = req
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.got.created = req
 	return &v1alpha1.CreateSandboxResponse{}, nil
 }
 
@@ -43,7 +62,10 @@ func (d *fakeDaemon) ListSandboxes(
 func (d *fakeDaemon) RemoveSandbox(
 	_ context.Context, req *v1alpha1.RemoveSandboxRequest,
 ) (*v1alpha1.RemoveSandboxResponse, error) {
-	d.removed = req.GetName()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.got.removed = req.GetName()
 	return &v1alpha1.RemoveSandboxResponse{}, nil
 }
 
@@ -58,7 +80,9 @@ func (d *fakeDaemon) AttachSandbox(
 		return err
 	}
 
-	d.started = req.GetStart()
+	d.mu.Lock()
+	d.got.started = req.GetStart()
+	d.mu.Unlock()
 
 	return stream.Send(&v1alpha1.AttachSandboxResponse{
 		Msg: &v1alpha1.AttachSandboxResponse_ExitCode{ExitCode: sessionExitCode},
@@ -111,7 +135,7 @@ func runCLI(t *testing.T, args ...string) (string, error) {
 	}
 
 	var stdout bytes.Buffer
-	err = run(kctx, &stdout)
+	err = run(kctx, strings.NewReader(""), &stdout)
 
 	return stdout.String(), err
 }
@@ -136,9 +160,9 @@ func TestCreateUsesDefaultImage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if daemon.created.GetName() != "demo" ||
-		daemon.created.GetImage() != "ubuntu:26.04" {
-		t.Errorf("unexpected create request: %v", daemon.created)
+	created := daemon.received().created
+	if created.GetName() != "demo" || created.GetImage() != "ubuntu:26.04" {
+		t.Errorf("unexpected create request: %v", created)
 	}
 }
 
@@ -149,8 +173,8 @@ func TestRm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if daemon.removed != "demo" {
-		t.Errorf("removed = %q, want %q", daemon.removed, "demo")
+	if removed := daemon.received().removed; removed != "demo" {
+		t.Errorf("removed = %q, want %q", removed, "demo")
 	}
 }
 
@@ -164,10 +188,10 @@ func TestRunPassesCommandAndExitCode(t *testing.T) {
 		t.Fatalf("error = %v, want exit code %d", err, sessionExitCode)
 	}
 
+	started := daemon.received().started
 	want := []string{"sh", "-c", "exit 3"}
-	if daemon.started.GetSandbox() != "demo" ||
-		!slices.Equal(daemon.started.GetArgs(), want) {
-		t.Errorf("unexpected start message: %v", daemon.started)
+	if started.GetSandbox() != "demo" || !slices.Equal(started.GetArgs(), want) {
+		t.Errorf("unexpected start message: %v", started)
 	}
 }
 

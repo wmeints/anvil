@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 
@@ -36,19 +37,16 @@ func (cmd *RunCmd) Run(ctx *Context) error {
 	opts := control.SessionOptions{
 		Sandbox: cmd.Sandbox,
 		Args:    cmd.Command,
-		Stdin:   os.Stdin,
+		Stdin:   ctx.stdin,
 		Stdout:  ctx.stdout,
 	}
 
-	con, err := console.ConsoleFromFile(os.Stdin)
-	if err == nil {
-		restore, err := attachConsole(con, &opts)
-		if err != nil {
-			return err
-		}
-
-		defer restore()
+	restore, err := attachTerminal(ctx.stdin, &opts)
+	if err != nil {
+		return err
 	}
+
+	defer restore()
 
 	code, err := ctx.client.RunSession(context.Background(), opts)
 	if err != nil {
@@ -60,6 +58,22 @@ func (cmd *RunCmd) Run(ctx *Context) error {
 	}
 
 	return nil
+}
+
+// attachTerminal attaches the session to the terminal when stdin is one. The
+// returned function restores the terminal.
+func attachTerminal(stdin io.Reader, opts *control.SessionOptions) (func(), error) {
+	file, ok := stdin.(*os.File)
+	if !ok {
+		return func() {}, nil
+	}
+
+	con, err := console.ConsoleFromFile(file)
+	if err != nil {
+		return func() {}, nil
+	}
+
+	return attachConsole(con, opts)
 }
 
 // attachConsole switches the terminal to raw mode and reports its size and
