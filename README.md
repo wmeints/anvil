@@ -57,7 +57,7 @@ looks for them:
 
 ```bash
 sudo install -m 755 _output/containerd-shim-nerdbox-v1 /usr/local/bin/
-sudo install -m 644 _output/nerdbox-kernel-$(uname -m) /usr/local/lib/
+sudo install -m 644 _output/nerdbox-kernel-* /usr/local/lib/
 sudo install -m 644 _output/nerdbox-rootfs.erofs /usr/local/lib/
 ```
 
@@ -114,6 +114,6 @@ journalctl --user -u containerd
 
 ## License
 
-Anvil is licensed under the [MIT License](LICENSE). The bundled
-[Nerdbox](https://github.com/containerd/nerdbox) submodule in `third_party/`
-keeps its own license.
+Anvil is licensed under the [MIT License](LICENSE).
+[Nerdbox](https://github.com/containerd/nerdbox) is an external dependency
+under its own license.
