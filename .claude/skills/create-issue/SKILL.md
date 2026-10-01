@@ -68,9 +68,9 @@ One issue is one pull request. Split the work when it:
 - needs a new dependency or architectural decision before the rest can start,
 - has acceptance criteria that don't depend on each other.
 
-Propose the split to the user. File the parts as separate issues and link
-them with `Depends on #<number>` in the **Context** section, in dependency
-order.
+Propose the split to the user. File the parts as separate issues in
+dependency order, and register each dependency as a GitHub relationship in
+step 7.
 
 ### 5. Resolve open questions
 
@@ -100,8 +100,8 @@ Fill in the template from `template.md` for the issue type. Rules:
 
 ### 7. Confirm and create
 
-Show the user the title, labels and body, and wait for approval: creating an
-issue is public. Then write the body to a temp file and create the issue:
+Show the user the title, labels, body and the issues it is blocked by, and
+wait for approval: creating an issue is public. Then write the body to a temp file and create the issue:
 
 ```bash
 BODY=$(mktemp)
@@ -120,9 +120,23 @@ rm -f "$BODY"
 Add `good first issue` when the change is small and isolated to one package.
 If a label doesn't exist, create the issue without it and tell the user.
 
+Register every issue on the **Depends on** line as a "blocked by"
+relationship, so GitHub tracks the order and not just the body text. The new
+issue's number is at the end of the URL that `gh issue create` prints:
+
+```bash
+BLOCKER_ID=$(gh api repos/{owner}/{repo}/issues/<blocker number> -q .id)
+gh api -X POST repos/{owner}/{repo}/issues/<new number>/dependencies/blocked_by \
+  -F issue_id="$BLOCKER_ID"
+```
+
+If registering a relationship fails, keep the issue, tell the user which
+relationship is missing, and continue.
+
 ### 8. Report
 
-Give the user the issue URL, and for a split, the URLs in dependency order.
+Give the user the issue URL and the issues it is blocked by, and for a split,
+the URLs in dependency order.
 
 ## Guardrails
 
