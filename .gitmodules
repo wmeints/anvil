@@ -1,3 +1,0 @@
-[submodule "third_party/nerdbox"]
-	path = third_party/nerdbox
-	url = https://github.com/containerd/nerdbox
