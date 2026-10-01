@@ -38,9 +38,10 @@
 - **Reliability:** Sandboxes can be easily restarted and recreated should they 
   fail.
 
-  We'll use a dedicated daemon for managing the sandboxes. The daemon uses 
+  We'll use a dedicated daemon for managing the sandboxes. The daemon will use
   desired state configuration with a reconsiliation loop to ensure sandboxes 
-  are usable for the user.
+  are usable for the user in the future. The first release will have a simple
+  set of checks to ensure the sandbox is in the correct state.
 
 ## Technology choices
 
