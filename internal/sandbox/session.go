@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -13,6 +14,10 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/wmeints/anvil/internal/paths"
 )
+
+// ErrSessionStartFailed is returned when the process of a session doesn't
+// start, for example because its command doesn't exist in the sandbox.
+var ErrSessionStartFailed = errors.New("could not start session")
 
 // sessionTerm is the terminal type of every session. The host TERM isn't used
 // because the sandbox image may not have a terminfo entry for it.
@@ -101,12 +106,24 @@ func (s *Session) Close(ctx context.Context) error {
 func ensureRunning(
 	ctx context.Context, cc *containerd.Client, name string,
 ) (containerd.Task, error) {
-	container, err := cc.LoadContainer(ctx, name)
+	container, err := loadContainer(ctx, cc, name)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s (check the name with anvil ls) %w",
-			ErrSandboxNotFound, name, err)
+		return nil, err
 	}
 
+	task, err := runningTask(ctx, container)
+	if err != nil {
+		return nil, fmt.Errorf("could not start sandbox %q: %w", name, err)
+	}
+
+	return task, nil
+}
+
+// runningTask returns the task of the container, and creates, starts, resumes
+// or replaces it as needed to get it running.
+func runningTask(
+	ctx context.Context, container containerd.Container,
+) (containerd.Task, error) {
 	task, err := container.Task(ctx, nil)
 	if errdefs.IsNotFound(err) {
 		return startTask(ctx, container)
@@ -140,7 +157,7 @@ func resumeTask(
 	// A stopped task can't be started again, so it's replaced by a new one.
 	_, err = task.Delete(ctx, containerd.WithProcessKill)
 	if err != nil && !errdefs.IsNotFound(err) {
-		return nil, fmt.Errorf("could not restart sandbox %q: %w", container.ID(), err)
+		return nil, fmt.Errorf("could not remove the stopped task: %w", err)
 	}
 
 	return startTask(ctx, container)
@@ -176,7 +193,7 @@ func startProcess(ctx context.Context, process containerd.Process) (*Session, er
 	}
 
 	if err := process.Start(ctx); err != nil {
-		return nil, fmt.Errorf("could not start session: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrSessionStartFailed, err)
 	}
 
 	return &Session{process: process, exitC: exitC}, nil

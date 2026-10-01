@@ -11,6 +11,7 @@ service AnvilService {
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
   rpc RemoveSandbox(RemoveSandboxRequest) returns (RemoveSandboxResponse);
   rpc StopSandbox(StopSandboxRequest) returns (StopSandboxResponse);
+  rpc StartSandbox(StartSandboxRequest) returns (StartSandboxResponse);
   rpc AttachSandbox(stream AttachSandboxRequest) returns (stream AttachSandboxResponse);
 }
 
@@ -45,6 +46,12 @@ message StopSandboxRequest {
 }
 
 message StopSandboxResponse {}
+
+message StartSandboxRequest {
+  string name = 1;
+}
+
+message StartSandboxResponse {}
 
 message AttachSandboxRequest {
   oneof msg {

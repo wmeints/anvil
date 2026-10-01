@@ -71,7 +71,8 @@ C4Component
 - `internal/daemon` - Listens on the socket, connects to containerd and maps
   the control API onto sandbox operations.
 - `internal/sandbox` - Creates, starts, stops and removes sandbox VMs and runs
-  terminal sessions in them.
+  terminal sessions in them. Starting boots the VM of a stopped sandbox again
+  on its kept disk.
 - `api/v1alpha1` - Protobuf definition and generated code of the control API.
 - `internal/paths` - Well-known paths, such as the daemon socket, the
   containerd socket and the FIFO directory.

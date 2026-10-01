@@ -121,10 +121,19 @@ Hibernate the sandbox with `anvil stop` to free its CPU and memory:
 dist/bin/anvil stop <name>
 ```
 
-The VM stops, but the sandbox disk is kept, so the next `anvil run` boots the
-sandbox again with your files intact. Running processes don't survive a stop.
-Processes get 10 seconds to exit before they're killed; change that with
-`--timeout`.
+The VM stops, but the sandbox disk is kept, so your files survive. Running
+processes don't survive a stop. Processes get 10 seconds to exit before they're
+killed; change that with `--timeout`.
+
+Boot a stopped sandbox again with `anvil start`, for example to warm it up
+before you open a session:
+
+```bash
+dist/bin/anvil start <name>
+```
+
+The VM cold-boots with your files intact. `anvil run` boots a stopped sandbox
+too, so you only need `anvil start` when you don't want to open a session yet.
 
 `anvil` talks to the `anvild` daemon, so start `dist/bin/anvild` first. The
 daemon connects to the rootless containerd socket in

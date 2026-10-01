@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"syscall"
 	"testing"
@@ -80,6 +81,24 @@ func TestStartSessionMissingSandbox(t *testing.T) {
 		SessionOptions{Args: []string{"sh"}})
 	if !errors.Is(err, ErrSandboxNotFound) {
 		t.Errorf("expected ErrSandboxNotFound, got %v", err)
+	}
+}
+
+func TestStartSessionUnknownCommand(t *testing.T) {
+	cc := newTestContainerClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "session-unknown-command-test"
+	startTestSandbox(ctx, t, cc, name)
+
+	_, err := StartSession(ctx, cc, name, SessionOptions{
+		Args:   []string{"/does-not-exist"},
+		Stdin:  strings.NewReader(""),
+		Stdout: io.Discard,
+	})
+	if !errors.Is(err, ErrSessionStartFailed) {
+		t.Errorf("expected ErrSessionStartFailed, got %v", err)
 	}
 }
 

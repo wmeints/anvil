@@ -164,9 +164,9 @@ func startTask(
 
 // Stop hibernates the sandbox: it asks the processes in the sandbox to
 // terminate, kills them when the init process hasn't exited within the timeout,
-// and stops the VM. The container and its disk are kept, so the next session
-// boots the sandbox again with its files intact. A timeout of zero or less
-// kills the processes right away.
+// and stops the VM. The container and its disk are kept, so Start or the next
+// session boots the sandbox again with its files intact. A timeout of zero or
+// less kills the processes right away.
 func Stop(
 	ctx context.Context, cc *containerd.Client, name string, timeout time.Duration,
 ) error {
@@ -180,6 +180,14 @@ func Stop(
 	}
 
 	return nil
+}
+
+// Start boots the VM of a sandbox that isn't running, for example after a stop
+// or a host reboot. The VM cold-boots on the kept disk, so files survive but
+// processes don't. Starting a running sandbox leaves it as it is.
+func Start(ctx context.Context, cc *containerd.Client, name string) error {
+	_, err := ensureRunning(ctx, cc, name)
+	return err
 }
 
 // Remove stops the VM of the sandbox and deletes the container together with

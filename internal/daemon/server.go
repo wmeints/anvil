@@ -85,6 +85,17 @@ func (srv *anvilService) StopSandbox(
 	return &v1alpha1.StopSandboxResponse{}, nil
 }
 
+// StartSandbox boots the VM of an existing sandbox that isn't running.
+func (srv *anvilService) StartSandbox(
+	ctx context.Context, req *v1alpha1.StartSandboxRequest,
+) (*v1alpha1.StartSandboxResponse, error) {
+	if err := sandbox.Start(ctx, srv.containerClient, req.Name); err != nil {
+		return nil, err
+	}
+
+	return &v1alpha1.StartSandboxResponse{}, nil
+}
+
 // AttachSandbox starts a session in a sandbox and streams its terminal I/O
 // between the client and the session process until the process exits.
 func (srv *anvilService) AttachSandbox(

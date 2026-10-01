@@ -24,6 +24,7 @@ type received struct {
 	created *v1alpha1.CreateSandboxRequest
 	removed string
 	stopped *v1alpha1.StopSandboxRequest
+	booted  string
 	started *v1alpha1.AttachStart
 }
 
@@ -79,6 +80,16 @@ func (d *fakeDaemon) StopSandbox(
 
 	d.got.stopped = req
 	return &v1alpha1.StopSandboxResponse{}, nil
+}
+
+func (d *fakeDaemon) StartSandbox(
+	_ context.Context, req *v1alpha1.StartSandboxRequest,
+) (*v1alpha1.StartSandboxResponse, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.got.booted = req.GetName()
+	return &v1alpha1.StartSandboxResponse{}, nil
 }
 
 // sessionExitCode is the exit code fakeDaemon reports for every session.
@@ -187,6 +198,23 @@ func TestRm(t *testing.T) {
 
 	if removed := daemon.received().removed; removed != "demo" {
 		t.Errorf("removed = %q, want %q", removed, "demo")
+	}
+}
+
+func TestStart(t *testing.T) {
+	daemon := startFakeDaemon(t)
+
+	out, err := runCLI(t, "start", "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if out != "" {
+		t.Errorf("output = %q, want no output", out)
+	}
+
+	if booted := daemon.received().booted; booted != "demo" {
+		t.Errorf("started = %q, want %q", booted, "demo")
 	}
 }
 

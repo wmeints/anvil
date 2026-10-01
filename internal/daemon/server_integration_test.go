@@ -216,6 +216,67 @@ func TestStopSandboxMissing(t *testing.T) {
 	}
 }
 
+func TestStartSandboxBootsStoppedSandbox(t *testing.T) {
+	cc := newTestContainerClient(t)
+	client := newTestServiceClient(t, cc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "server-start-test"
+	createTestSandbox(ctx, t, cc, client, name)
+
+	_, err := client.StopSandbox(ctx, &v1alpha1.StopSandboxRequest{
+		Name:    name,
+		Timeout: durationpb.New(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.StartSandbox(ctx, &v1alpha1.StartSandboxRequest{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertRunning(ctx, t, cc, name)
+}
+
+// assertRunning verifies that the sandbox has a running task.
+func assertRunning(
+	ctx context.Context, t *testing.T, cc *containerd.Client, name string,
+) {
+	t.Helper()
+
+	container, err := cc.LoadContainer(ctx, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	task, err := container.Task(ctx, nil)
+	if err != nil {
+		t.Fatalf("expected the sandbox to have a task, got %v", err)
+	}
+
+	status, err := task.Status(ctx)
+	if err != nil || status.Status != containerd.Running {
+		t.Errorf("task status = %v (%v), want %s", status.Status, err,
+			containerd.Running)
+	}
+}
+
+func TestStartSandboxMissing(t *testing.T) {
+	client := newTestServiceClient(t, newTestContainerClient(t))
+
+	_, err := client.StartSandbox(t.Context(),
+		&v1alpha1.StartSandboxRequest{Name: "does-not-exist"})
+
+	want := sandbox.ErrSandboxNotFound.Error()
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("StartSandbox() error = %v, want %v", err, sandbox.ErrSandboxNotFound)
+	}
+}
+
 func TestRemoveSandboxMissing(t *testing.T) {
 	client := newTestServiceClient(t, newTestContainerClient(t))
 

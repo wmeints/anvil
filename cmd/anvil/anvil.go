@@ -16,6 +16,7 @@ type CLI struct {
 	Create CreateCmd `cmd:"" help:"Create a sandbox"`
 	Rm     RmCmd     `cmd:"" help:"Remove a sandbox"`
 	Run    RunCmd    `cmd:"" help:"Run a command in a sandbox"`
+	Start  StartCmd  `cmd:"" help:"Start the VM of a stopped sandbox"`
 	Stop   StopCmd   `cmd:"" help:"Stop the VM of a sandbox and keep its files"`
 }
 
