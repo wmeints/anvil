@@ -366,7 +366,10 @@ func TestSandboxSurvivesKillingInitChild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runSession(ctx, t, cc, name, "pkill -x sleep")
+	out := runSession(ctx, t, cc, name, "pkill -x sleep && echo killed")
+	if !strings.Contains(out, "killed") {
+		t.Fatalf("expected pkill to kill the sleep of init, got %q", out)
+	}
 
 	select {
 	case <-exitC:

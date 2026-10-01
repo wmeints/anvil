@@ -261,32 +261,33 @@ func terminate(ctx context.Context, task containerd.Task, timeout time.Duration)
 		return err
 	}
 
-	return awaitExit(ctx, task, exitC, waitCtx.Done())
+	awaitExit(ctx, task, exitC, waitCtx.Done())
+
+	return nil
 }
 
 // awaitExit waits for the init process of the task to exit until done closes.
 // A freshly booted init process ignores SIGTERM until it has set up its
-// handler, so the signal is repeated for the init process while it runs.
+// handler, so the signal is repeated for the init process while it runs. The
+// repeats are best effort: a failure, such as for an init process that just
+// exited or a cancelled caller, must not keep the task from being deleted.
 func awaitExit(
 	ctx context.Context, task containerd.Task,
 	exitC <-chan containerd.ExitStatus, done <-chan struct{},
-) error {
+) {
 	ticker := time.NewTicker(termInterval)
 	defer ticker.Stop()
 
-	var err error
-	for err == nil {
+	for {
 		select {
 		case <-exitC:
-			return nil
+			return
 		case <-done:
-			return nil
+			return
 		case <-ticker.C:
-			err = signalTerm(ctx, task)
+			_ = signalTerm(ctx, task)
 		}
 	}
-
-	return err
 }
 
 // signalTerm sends SIGTERM to the task. A task that exited in the meantime has
