@@ -466,15 +466,19 @@ func TestStartRunningSandbox(t *testing.T) {
 	name := "start-running-test"
 	startTestSandbox(ctx, t, cc, name)
 
-	before := assertRunning(ctx, t, cc, name)
+	// The boot ID changes on every boot of the guest kernel, so it only stays
+	// the same when the VM kept running.
+	bootID := "cat /proc/sys/kernel/random/boot_id"
+	before := runSession(ctx, t, cc, name, bootID)
 
 	if err := Start(ctx, cc, name); err != nil {
 		t.Fatal(err)
 	}
 
-	if after := assertRunning(ctx, t, cc, name); after.Pid() != before.Pid() {
-		t.Errorf("task pid = %d, want the task to keep running as %d",
-			after.Pid(), before.Pid())
+	assertRunning(ctx, t, cc, name)
+
+	if after := runSession(ctx, t, cc, name, bootID); after != before {
+		t.Errorf("boot id = %q, want the VM to keep running as %q", after, before)
 	}
 }
 
@@ -483,7 +487,7 @@ func TestStartUnknownSandbox(t *testing.T) {
 
 	err := Start(context.Background(), cc, "does-not-exist")
 	if !errors.Is(err, ErrSandboxNotFound) {
-		t.Errorf("expected ErrSandboxNotFound, got %v", err)
+		t.Fatalf("expected ErrSandboxNotFound, got %v", err)
 	}
 
 	if strings.Contains(err.Error(), "could not start sandbox") {
