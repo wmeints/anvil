@@ -182,6 +182,14 @@ func Stop(
 	return nil
 }
 
+// Start boots the VM of a sandbox that isn't running, for example after a stop
+// or a host reboot. The VM cold-boots on the kept disk, so files survive but
+// processes don't. Starting a running sandbox leaves it as it is.
+func Start(ctx context.Context, cc *containerd.Client, name string) error {
+	_, err := ensureRunning(ctx, cc, name)
+	return err
+}
+
 // Remove stops the VM of the sandbox and deletes the container together with
 // its snapshot.
 func Remove(ctx context.Context, cc *containerd.Client, name string) error {

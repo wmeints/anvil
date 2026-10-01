@@ -51,5 +51,28 @@ run `sleep infinity` as init and always stop after the timeout.
 Sessions attached to the sandbox end when it stops. Their CLI restores the
 terminal and exits with the non-zero exit code of the session process.
 Stopping a sandbox whose VM already stopped succeeds without output. The next
-`anvil run` boots the VM again, as described in
-[Running a session](#running-a-session).
+`anvil start` or `anvil run` boots the VM again, as described in
+[Starting a sandbox](#starting-a-sandbox).
+
+## Starting a sandbox
+
+`anvil start <sandbox>` boots the VM of a stopped sandbox without opening a
+session, for example to warm it up ahead of time. It's the counterpart of
+`anvil stop`. libkrun can't suspend a VM, so the VM cold-boots on the kept
+disk: files written before the stop are there, processes aren't.
+
+1. The CLI sends a `StartSandbox` request with the sandbox name to the daemon.
+2. The daemon loads the container of the sandbox and gets its task running:
+   - a sandbox without a task gets a new task,
+   - a stopped task is deleted and replaced by a new one,
+   - a created task is started and a paused task is resumed.
+3. The daemon answers once the task reports it started. The CLI exits with
+   code 0 and prints nothing.
+
+Starting a sandbox that's already running leaves its task as it is and
+succeeds without output. An unknown sandbox fails with `sandbox not found`.
+When containerd fails to boot the VM, the error starts with
+`could not start sandbox "<name>"` and includes the cause.
+
+`anvil run` takes the same steps before it opens a session, so a stopped
+sandbox also boots on the next `anvil run`.

@@ -23,6 +23,7 @@ const (
 	AnvilService_ListSandboxes_FullMethodName = "/api.anvil.v1alpha1.AnvilService/ListSandboxes"
 	AnvilService_RemoveSandbox_FullMethodName = "/api.anvil.v1alpha1.AnvilService/RemoveSandbox"
 	AnvilService_StopSandbox_FullMethodName   = "/api.anvil.v1alpha1.AnvilService/StopSandbox"
+	AnvilService_StartSandbox_FullMethodName  = "/api.anvil.v1alpha1.AnvilService/StartSandbox"
 	AnvilService_AttachSandbox_FullMethodName = "/api.anvil.v1alpha1.AnvilService/AttachSandbox"
 )
 
@@ -34,6 +35,7 @@ type AnvilServiceClient interface {
 	ListSandboxes(ctx context.Context, in *ListSandboxesRequest, opts ...grpc.CallOption) (*ListSandboxesResponse, error)
 	RemoveSandbox(ctx context.Context, in *RemoveSandboxRequest, opts ...grpc.CallOption) (*RemoveSandboxResponse, error)
 	StopSandbox(ctx context.Context, in *StopSandboxRequest, opts ...grpc.CallOption) (*StopSandboxResponse, error)
+	StartSandbox(ctx context.Context, in *StartSandboxRequest, opts ...grpc.CallOption) (*StartSandboxResponse, error)
 	AttachSandbox(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[AttachSandboxRequest, AttachSandboxResponse], error)
 }
 
@@ -85,6 +87,16 @@ func (c *anvilServiceClient) StopSandbox(ctx context.Context, in *StopSandboxReq
 	return out, nil
 }
 
+func (c *anvilServiceClient) StartSandbox(ctx context.Context, in *StartSandboxRequest, opts ...grpc.CallOption) (*StartSandboxResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StartSandboxResponse)
+	err := c.cc.Invoke(ctx, AnvilService_StartSandbox_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *anvilServiceClient) AttachSandbox(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[AttachSandboxRequest, AttachSandboxResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &AnvilService_ServiceDesc.Streams[0], AnvilService_AttachSandbox_FullMethodName, cOpts...)
@@ -106,6 +118,7 @@ type AnvilServiceServer interface {
 	ListSandboxes(context.Context, *ListSandboxesRequest) (*ListSandboxesResponse, error)
 	RemoveSandbox(context.Context, *RemoveSandboxRequest) (*RemoveSandboxResponse, error)
 	StopSandbox(context.Context, *StopSandboxRequest) (*StopSandboxResponse, error)
+	StartSandbox(context.Context, *StartSandboxRequest) (*StartSandboxResponse, error)
 	AttachSandbox(grpc.BidiStreamingServer[AttachSandboxRequest, AttachSandboxResponse]) error
 	mustEmbedUnimplementedAnvilServiceServer()
 }
@@ -128,6 +141,9 @@ func (UnimplementedAnvilServiceServer) RemoveSandbox(context.Context, *RemoveSan
 }
 func (UnimplementedAnvilServiceServer) StopSandbox(context.Context, *StopSandboxRequest) (*StopSandboxResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopSandbox not implemented")
+}
+func (UnimplementedAnvilServiceServer) StartSandbox(context.Context, *StartSandboxRequest) (*StartSandboxResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartSandbox not implemented")
 }
 func (UnimplementedAnvilServiceServer) AttachSandbox(grpc.BidiStreamingServer[AttachSandboxRequest, AttachSandboxResponse]) error {
 	return status.Error(codes.Unimplemented, "method AttachSandbox not implemented")
@@ -225,6 +241,24 @@ func _AnvilService_StopSandbox_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AnvilService_StartSandbox_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartSandboxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AnvilServiceServer).StartSandbox(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AnvilService_StartSandbox_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AnvilServiceServer).StartSandbox(ctx, req.(*StartSandboxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AnvilService_AttachSandbox_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(AnvilServiceServer).AttachSandbox(&grpc.GenericServerStream[AttachSandboxRequest, AttachSandboxResponse]{ServerStream: stream})
 }
@@ -254,6 +288,10 @@ var AnvilService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StopSandbox",
 			Handler:    _AnvilService_StopSandbox_Handler,
+		},
+		{
+			MethodName: "StartSandbox",
+			Handler:    _AnvilService_StartSandbox_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

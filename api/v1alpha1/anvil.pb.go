@@ -404,6 +404,86 @@ func (*StopSandboxResponse) Descriptor() ([]byte, []int) {
 	return file_anvil_proto_rawDescGZIP(), []int{8}
 }
 
+type StartSandboxRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartSandboxRequest) Reset() {
+	*x = StartSandboxRequest{}
+	mi := &file_anvil_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartSandboxRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartSandboxRequest) ProtoMessage() {}
+
+func (x *StartSandboxRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_anvil_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartSandboxRequest.ProtoReflect.Descriptor instead.
+func (*StartSandboxRequest) Descriptor() ([]byte, []int) {
+	return file_anvil_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *StartSandboxRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type StartSandboxResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartSandboxResponse) Reset() {
+	*x = StartSandboxResponse{}
+	mi := &file_anvil_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartSandboxResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartSandboxResponse) ProtoMessage() {}
+
+func (x *StartSandboxResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_anvil_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartSandboxResponse.ProtoReflect.Descriptor instead.
+func (*StartSandboxResponse) Descriptor() ([]byte, []int) {
+	return file_anvil_proto_rawDescGZIP(), []int{10}
+}
+
 type AttachSandboxRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Msg:
@@ -418,7 +498,7 @@ type AttachSandboxRequest struct {
 
 func (x *AttachSandboxRequest) Reset() {
 	*x = AttachSandboxRequest{}
-	mi := &file_anvil_proto_msgTypes[9]
+	mi := &file_anvil_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -430,7 +510,7 @@ func (x *AttachSandboxRequest) String() string {
 func (*AttachSandboxRequest) ProtoMessage() {}
 
 func (x *AttachSandboxRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_anvil_proto_msgTypes[9]
+	mi := &file_anvil_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -443,7 +523,7 @@ func (x *AttachSandboxRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachSandboxRequest.ProtoReflect.Descriptor instead.
 func (*AttachSandboxRequest) Descriptor() ([]byte, []int) {
-	return file_anvil_proto_rawDescGZIP(), []int{9}
+	return file_anvil_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *AttachSandboxRequest) GetMsg() isAttachSandboxRequest_Msg {
@@ -511,7 +591,7 @@ type SessionInput struct {
 
 func (x *SessionInput) Reset() {
 	*x = SessionInput{}
-	mi := &file_anvil_proto_msgTypes[10]
+	mi := &file_anvil_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -523,7 +603,7 @@ func (x *SessionInput) String() string {
 func (*SessionInput) ProtoMessage() {}
 
 func (x *SessionInput) ProtoReflect() protoreflect.Message {
-	mi := &file_anvil_proto_msgTypes[10]
+	mi := &file_anvil_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -536,7 +616,7 @@ func (x *SessionInput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionInput.ProtoReflect.Descriptor instead.
 func (*SessionInput) Descriptor() ([]byte, []int) {
-	return file_anvil_proto_rawDescGZIP(), []int{10}
+	return file_anvil_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SessionInput) GetStdin() []byte {
@@ -557,7 +637,7 @@ type AttachStart struct {
 
 func (x *AttachStart) Reset() {
 	*x = AttachStart{}
-	mi := &file_anvil_proto_msgTypes[11]
+	mi := &file_anvil_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -569,7 +649,7 @@ func (x *AttachStart) String() string {
 func (*AttachStart) ProtoMessage() {}
 
 func (x *AttachStart) ProtoReflect() protoreflect.Message {
-	mi := &file_anvil_proto_msgTypes[11]
+	mi := &file_anvil_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -582,7 +662,7 @@ func (x *AttachStart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachStart.ProtoReflect.Descriptor instead.
 func (*AttachStart) Descriptor() ([]byte, []int) {
-	return file_anvil_proto_rawDescGZIP(), []int{11}
+	return file_anvil_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *AttachStart) GetSandbox() string {
@@ -616,7 +696,7 @@ type WindowSize struct {
 
 func (x *WindowSize) Reset() {
 	*x = WindowSize{}
-	mi := &file_anvil_proto_msgTypes[12]
+	mi := &file_anvil_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -628,7 +708,7 @@ func (x *WindowSize) String() string {
 func (*WindowSize) ProtoMessage() {}
 
 func (x *WindowSize) ProtoReflect() protoreflect.Message {
-	mi := &file_anvil_proto_msgTypes[12]
+	mi := &file_anvil_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -641,7 +721,7 @@ func (x *WindowSize) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WindowSize.ProtoReflect.Descriptor instead.
 func (*WindowSize) Descriptor() ([]byte, []int) {
-	return file_anvil_proto_rawDescGZIP(), []int{12}
+	return file_anvil_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *WindowSize) GetWidth() uint32 {
@@ -671,7 +751,7 @@ type AttachSandboxResponse struct {
 
 func (x *AttachSandboxResponse) Reset() {
 	*x = AttachSandboxResponse{}
-	mi := &file_anvil_proto_msgTypes[13]
+	mi := &file_anvil_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -683,7 +763,7 @@ func (x *AttachSandboxResponse) String() string {
 func (*AttachSandboxResponse) ProtoMessage() {}
 
 func (x *AttachSandboxResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_anvil_proto_msgTypes[13]
+	mi := &file_anvil_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -696,7 +776,7 @@ func (x *AttachSandboxResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachSandboxResponse.ProtoReflect.Descriptor instead.
 func (*AttachSandboxResponse) Descriptor() ([]byte, []int) {
-	return file_anvil_proto_rawDescGZIP(), []int{13}
+	return file_anvil_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AttachSandboxResponse) GetMsg() isAttachSandboxResponse_Msg {
@@ -760,7 +840,10 @@ const file_anvil_proto_rawDesc = "" +
 	"\x12StopSandboxRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
 	"\atimeout\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\atimeout\"\x15\n" +
-	"\x13StopSandboxResponse\"\xca\x01\n" +
+	"\x13StopSandboxResponse\")\n" +
+	"\x13StartSandboxRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"\x16\n" +
+	"\x14StartSandboxResponse\"\xca\x01\n" +
 	"\x14AttachSandboxRequest\x127\n" +
 	"\x05start\x18\x01 \x01(\v2\x1f.api.anvil.v1alpha1.AttachStartH\x00R\x05start\x128\n" +
 	"\x05input\x18\x02 \x01(\v2 .api.anvil.v1alpha1.SessionInputH\x00R\x05input\x128\n" +
@@ -779,12 +862,13 @@ const file_anvil_proto_rawDesc = "" +
 	"\x15AttachSandboxResponse\x12\x18\n" +
 	"\x06stdout\x18\x01 \x01(\fH\x00R\x06stdout\x12\x1d\n" +
 	"\texit_code\x18\x02 \x01(\x05H\x00R\bexitCodeB\x05\n" +
-	"\x03msg2\x8a\x04\n" +
+	"\x03msg2\xed\x04\n" +
 	"\fAnvilService\x12d\n" +
 	"\rCreateSandbox\x12(.api.anvil.v1alpha1.CreateSandboxRequest\x1a).api.anvil.v1alpha1.CreateSandboxResponse\x12d\n" +
 	"\rListSandboxes\x12(.api.anvil.v1alpha1.ListSandboxesRequest\x1a).api.anvil.v1alpha1.ListSandboxesResponse\x12d\n" +
 	"\rRemoveSandbox\x12(.api.anvil.v1alpha1.RemoveSandboxRequest\x1a).api.anvil.v1alpha1.RemoveSandboxResponse\x12^\n" +
-	"\vStopSandbox\x12&.api.anvil.v1alpha1.StopSandboxRequest\x1a'.api.anvil.v1alpha1.StopSandboxResponse\x12h\n" +
+	"\vStopSandbox\x12&.api.anvil.v1alpha1.StopSandboxRequest\x1a'.api.anvil.v1alpha1.StopSandboxResponse\x12a\n" +
+	"\fStartSandbox\x12'.api.anvil.v1alpha1.StartSandboxRequest\x1a(.api.anvil.v1alpha1.StartSandboxResponse\x12h\n" +
 	"\rAttachSandbox\x12(.api.anvil.v1alpha1.AttachSandboxRequest\x1a).api.anvil.v1alpha1.AttachSandboxResponse(\x010\x01B0Z.github.com/wmeints/anvil/api/v1alpha1;v1alpha1b\x06proto3"
 
 var (
@@ -799,7 +883,7 @@ func file_anvil_proto_rawDescGZIP() []byte {
 	return file_anvil_proto_rawDescData
 }
 
-var file_anvil_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_anvil_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_anvil_proto_goTypes = []any{
 	(*CreateSandboxRequest)(nil),  // 0: api.anvil.v1alpha1.CreateSandboxRequest
 	(*CreateSandboxResponse)(nil), // 1: api.anvil.v1alpha1.CreateSandboxResponse
@@ -810,32 +894,36 @@ var file_anvil_proto_goTypes = []any{
 	(*RemoveSandboxResponse)(nil), // 6: api.anvil.v1alpha1.RemoveSandboxResponse
 	(*StopSandboxRequest)(nil),    // 7: api.anvil.v1alpha1.StopSandboxRequest
 	(*StopSandboxResponse)(nil),   // 8: api.anvil.v1alpha1.StopSandboxResponse
-	(*AttachSandboxRequest)(nil),  // 9: api.anvil.v1alpha1.AttachSandboxRequest
-	(*SessionInput)(nil),          // 10: api.anvil.v1alpha1.SessionInput
-	(*AttachStart)(nil),           // 11: api.anvil.v1alpha1.AttachStart
-	(*WindowSize)(nil),            // 12: api.anvil.v1alpha1.WindowSize
-	(*AttachSandboxResponse)(nil), // 13: api.anvil.v1alpha1.AttachSandboxResponse
-	(*durationpb.Duration)(nil),   // 14: google.protobuf.Duration
+	(*StartSandboxRequest)(nil),   // 9: api.anvil.v1alpha1.StartSandboxRequest
+	(*StartSandboxResponse)(nil),  // 10: api.anvil.v1alpha1.StartSandboxResponse
+	(*AttachSandboxRequest)(nil),  // 11: api.anvil.v1alpha1.AttachSandboxRequest
+	(*SessionInput)(nil),          // 12: api.anvil.v1alpha1.SessionInput
+	(*AttachStart)(nil),           // 13: api.anvil.v1alpha1.AttachStart
+	(*WindowSize)(nil),            // 14: api.anvil.v1alpha1.WindowSize
+	(*AttachSandboxResponse)(nil), // 15: api.anvil.v1alpha1.AttachSandboxResponse
+	(*durationpb.Duration)(nil),   // 16: google.protobuf.Duration
 }
 var file_anvil_proto_depIdxs = []int32{
 	4,  // 0: api.anvil.v1alpha1.ListSandboxesResponse.sandboxes:type_name -> api.anvil.v1alpha1.SandboxSummary
-	14, // 1: api.anvil.v1alpha1.StopSandboxRequest.timeout:type_name -> google.protobuf.Duration
-	11, // 2: api.anvil.v1alpha1.AttachSandboxRequest.start:type_name -> api.anvil.v1alpha1.AttachStart
-	10, // 3: api.anvil.v1alpha1.AttachSandboxRequest.input:type_name -> api.anvil.v1alpha1.SessionInput
-	12, // 4: api.anvil.v1alpha1.AttachSandboxRequest.resize:type_name -> api.anvil.v1alpha1.WindowSize
-	12, // 5: api.anvil.v1alpha1.AttachStart.size:type_name -> api.anvil.v1alpha1.WindowSize
+	16, // 1: api.anvil.v1alpha1.StopSandboxRequest.timeout:type_name -> google.protobuf.Duration
+	13, // 2: api.anvil.v1alpha1.AttachSandboxRequest.start:type_name -> api.anvil.v1alpha1.AttachStart
+	12, // 3: api.anvil.v1alpha1.AttachSandboxRequest.input:type_name -> api.anvil.v1alpha1.SessionInput
+	14, // 4: api.anvil.v1alpha1.AttachSandboxRequest.resize:type_name -> api.anvil.v1alpha1.WindowSize
+	14, // 5: api.anvil.v1alpha1.AttachStart.size:type_name -> api.anvil.v1alpha1.WindowSize
 	0,  // 6: api.anvil.v1alpha1.AnvilService.CreateSandbox:input_type -> api.anvil.v1alpha1.CreateSandboxRequest
 	2,  // 7: api.anvil.v1alpha1.AnvilService.ListSandboxes:input_type -> api.anvil.v1alpha1.ListSandboxesRequest
 	5,  // 8: api.anvil.v1alpha1.AnvilService.RemoveSandbox:input_type -> api.anvil.v1alpha1.RemoveSandboxRequest
 	7,  // 9: api.anvil.v1alpha1.AnvilService.StopSandbox:input_type -> api.anvil.v1alpha1.StopSandboxRequest
-	9,  // 10: api.anvil.v1alpha1.AnvilService.AttachSandbox:input_type -> api.anvil.v1alpha1.AttachSandboxRequest
-	1,  // 11: api.anvil.v1alpha1.AnvilService.CreateSandbox:output_type -> api.anvil.v1alpha1.CreateSandboxResponse
-	3,  // 12: api.anvil.v1alpha1.AnvilService.ListSandboxes:output_type -> api.anvil.v1alpha1.ListSandboxesResponse
-	6,  // 13: api.anvil.v1alpha1.AnvilService.RemoveSandbox:output_type -> api.anvil.v1alpha1.RemoveSandboxResponse
-	8,  // 14: api.anvil.v1alpha1.AnvilService.StopSandbox:output_type -> api.anvil.v1alpha1.StopSandboxResponse
-	13, // 15: api.anvil.v1alpha1.AnvilService.AttachSandbox:output_type -> api.anvil.v1alpha1.AttachSandboxResponse
-	11, // [11:16] is the sub-list for method output_type
-	6,  // [6:11] is the sub-list for method input_type
+	9,  // 10: api.anvil.v1alpha1.AnvilService.StartSandbox:input_type -> api.anvil.v1alpha1.StartSandboxRequest
+	11, // 11: api.anvil.v1alpha1.AnvilService.AttachSandbox:input_type -> api.anvil.v1alpha1.AttachSandboxRequest
+	1,  // 12: api.anvil.v1alpha1.AnvilService.CreateSandbox:output_type -> api.anvil.v1alpha1.CreateSandboxResponse
+	3,  // 13: api.anvil.v1alpha1.AnvilService.ListSandboxes:output_type -> api.anvil.v1alpha1.ListSandboxesResponse
+	6,  // 14: api.anvil.v1alpha1.AnvilService.RemoveSandbox:output_type -> api.anvil.v1alpha1.RemoveSandboxResponse
+	8,  // 15: api.anvil.v1alpha1.AnvilService.StopSandbox:output_type -> api.anvil.v1alpha1.StopSandboxResponse
+	10, // 16: api.anvil.v1alpha1.AnvilService.StartSandbox:output_type -> api.anvil.v1alpha1.StartSandboxResponse
+	15, // 17: api.anvil.v1alpha1.AnvilService.AttachSandbox:output_type -> api.anvil.v1alpha1.AttachSandboxResponse
+	12, // [12:18] is the sub-list for method output_type
+	6,  // [6:12] is the sub-list for method input_type
 	6,  // [6:6] is the sub-list for extension type_name
 	6,  // [6:6] is the sub-list for extension extendee
 	0,  // [0:6] is the sub-list for field type_name
@@ -846,12 +934,12 @@ func file_anvil_proto_init() {
 	if File_anvil_proto != nil {
 		return
 	}
-	file_anvil_proto_msgTypes[9].OneofWrappers = []any{
+	file_anvil_proto_msgTypes[11].OneofWrappers = []any{
 		(*AttachSandboxRequest_Start)(nil),
 		(*AttachSandboxRequest_Input)(nil),
 		(*AttachSandboxRequest_Resize)(nil),
 	}
-	file_anvil_proto_msgTypes[13].OneofWrappers = []any{
+	file_anvil_proto_msgTypes[15].OneofWrappers = []any{
 		(*AttachSandboxResponse_Stdout)(nil),
 		(*AttachSandboxResponse_ExitCode)(nil),
 	}
@@ -861,7 +949,7 @@ func file_anvil_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_anvil_proto_rawDesc), len(file_anvil_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   14,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

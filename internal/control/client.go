@@ -77,6 +77,15 @@ func (client *Client) StopSandbox(
 	return err
 }
 
+// StartSandbox boots the VM of an existing sandbox that isn't running.
+func (client *Client) StartSandbox(ctx context.Context, name string) error {
+	_, err := client.anvilClient.StartSandbox(ctx, &v1alpha1.StartSandboxRequest{
+		Name: name,
+	})
+
+	return err
+}
+
 // New creates a new control client.
 // The address must point to the file containing the daemon socket.
 func New(addr string) (*Client, error) {
