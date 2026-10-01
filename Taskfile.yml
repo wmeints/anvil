@@ -4,23 +4,17 @@ version: '3'
 
 vars:
   DIST_DIR: '{{.ROOT_DIR}}/dist'
-  # Anvil looks for the nerdbox components in ../lib/anvil relative to its executable.
-  LIB_DIR: '{{.DIST_DIR}}/lib/anvil'
-  NERDBOX_SRC: '{{.ROOT_DIR}}/third_party/nerdbox'
-  # Map Go's GOARCH to the kernel arch naming used by nerdbox (amd64 → x86_64).
-  KERNEL_ARCH:
-    sh: 'a=$(go env GOARCH); case "$a" in amd64) echo x86_64;; *) echo "$a";; esac'
 
 tasks:
   build:
-    desc: Compile anvil and the nerdbox components into dist/
+    desc: Compile the CLI and the daemon into dist/bin
     deps: [build:anvil, build:anvild]
   build:anvil:
-    desc: Compile the application
+    desc: Compile the CLI
     cmds:
       - go build -o {{.DIST_DIR}}/bin/anvil ./cmd/anvil/
   build:anvild:
-    desc: Compile the application
+    desc: Compile the daemon
     cmds:
       - go build -o {{.DIST_DIR}}/bin/anvild ./cmd/anvild/
   lint:
