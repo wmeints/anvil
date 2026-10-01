@@ -40,26 +40,47 @@ Anvil starts every sandbox with the `io.containerd.nerdbox.v1` runtime, so
 containerd must be able to find the [Nerdbox](https://github.com/containerd/nerdbox)
 shim. Without it, `anvil run` fails to start the sandbox.
 
-Building Nerdbox requires [Docker](https://docs.docker.com/engine/install/)
-with buildx, [Task](https://taskfile.dev), `erofs-utils`, `e2fsprogs` and
-[libkrun](https://github.com/containers/libkrun) 1.18 or newer. Clone and
-build it:
+Download the latest release from the
+[Nerdbox releases page](https://github.com/containerd/nerdbox/releases) and
+verify its checksum. Releases are published for x86_64 only:
 
 ```bash
-git clone https://github.com/containerd/nerdbox.git
-cd nerdbox
-make
+VERSION=0.2.5
+BASE=https://github.com/containerd/nerdbox/releases/download/v${VERSION}
+curl -LO ${BASE}/nerdbox-${VERSION}-linux-amd64.tar.gz
+curl -LO ${BASE}/nerdbox-${VERSION}-linux-amd64.tar.gz.sha256sum
+sha256sum -c nerdbox-${VERSION}-linux-amd64.tar.gz.sha256sum
+tar xzf nerdbox-${VERSION}-linux-amd64.tar.gz
+cd nerdbox-${VERSION}-linux-amd64
 ```
 
-The build places its artifacts in `_output/`. Install the shim on your `PATH`
-and the kernel and VM root filesystem in `/usr/local/lib`, where the shim
-looks for them:
+The archive contains the shim, the VM kernel and root filesystem, and a
+bundled copy of libkrun. Install the shim on your `PATH` and the other files
+in `/usr/local/lib`, where the shim looks for them. The shim only picks up
+the bundled libkrun under the name `libkrun-x86_64.so`:
 
 ```bash
-sudo install -m 755 _output/containerd-shim-nerdbox-v1 /usr/local/bin/
-sudo install -m 644 _output/nerdbox-kernel-* /usr/local/lib/
-sudo install -m 644 _output/nerdbox-rootfs.erofs /usr/local/lib/
+sudo install -m 755 containerd-shim-nerdbox-v1 /usr/local/bin/
+sudo install -m 644 nerdbox-kernel-x86_64 /usr/local/lib/
+sudo install -m 644 nerdbox-rootfs.erofs /usr/local/lib/
+sudo install -m 755 libkrun-nerdbox.so /usr/local/lib/libkrun-x86_64.so
 ```
+
+> [!NOTE]
+> On arm64 there is no release to download, so build Nerdbox from source.
+> The build requires [Docker](https://docs.docker.com/engine/install/) with
+> buildx, [Task](https://taskfile.dev), `erofs-utils`, `e2fsprogs` and
+> [libkrun](https://github.com/containers/libkrun) 1.18 or newer. The shim
+> uses the system libkrun, so install the artifacts without a libkrun copy:
+>
+> ```bash
+> git clone https://github.com/containerd/nerdbox.git
+> cd nerdbox
+> make
+> sudo install -m 755 _output/containerd-shim-nerdbox-v1 /usr/local/bin/
+> sudo install -m 644 _output/nerdbox-kernel-* /usr/local/lib/
+> sudo install -m 644 _output/nerdbox-rootfs.erofs /usr/local/lib/
+> ```
 
 Restart your rootless containerd so it picks up the shim, and verify that
 the shim is found:
