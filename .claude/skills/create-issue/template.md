@@ -78,7 +78,8 @@ of each.>
 - **Affected code:** <packages, files and symbols to change.>
 - **Reuse:** <existing code or dependencies to build on.>
 - **Constraints:** <architecture rules that apply, with a link to the doc.>
-- **Depends on:** <#issue, or remove this line.>
+- **Depends on:** <#issue and what this issue needs from it, or remove this
+  line. Also register it as a "blocked by" relationship.>
 
 ## Acceptance criteria
 

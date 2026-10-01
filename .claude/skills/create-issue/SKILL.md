@@ -68,9 +68,9 @@ One issue is one pull request. Split the work when it:
 - needs a new dependency or architectural decision before the rest can start,
 - has acceptance criteria that don't depend on each other.
 
-Propose the split to the user. File the parts as separate issues and link
-them with `Depends on #<number>` in the **Context** section, in dependency
-order.
+Propose the split to the user. File the parts as separate issues in
+dependency order, and register each dependency as a GitHub relationship in
+step 7.
 
 ### 5. Resolve open questions
 
@@ -119,6 +119,15 @@ rm -f "$BODY"
 
 Add `good first issue` when the change is small and isolated to one package.
 If a label doesn't exist, create the issue without it and tell the user.
+
+Register every issue this one depends on as a "blocked by" relationship, so
+GitHub tracks the order instead of the body text:
+
+```bash
+BLOCKER_ID=$(gh api repos/{owner}/{repo}/issues/<blocker number> -q .id)
+gh api -X POST repos/{owner}/{repo}/issues/<new number>/dependencies/blocked_by \
+  -F issue_id="$BLOCKER_ID"
+```
 
 ### 8. Report
 
