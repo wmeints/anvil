@@ -73,6 +73,8 @@ A change is done when:
 
 ## Workflows
 
+- Use the `create-issue` skill to file work on GitHub as an issue an agent
+  can implement without further questions.
 - Use the `fix-bug` skill for bugs: reproduce, find the root cause, write a
   failing test, then fix.
 - Use the `implement-feature` skill for new behavior: agree on a spec first,
