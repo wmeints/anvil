@@ -24,3 +24,32 @@ processes from before the VM stopped are gone.
 
 When the CLI disconnects early, the daemon kills the session process. The
 sandbox itself keeps running.
+
+## Stopping a sandbox
+
+`anvil stop <sandbox> [--timeout <duration>]` hibernates a sandbox to free the
+CPU and memory of its VM. libkrun can't suspend a VM, so only the disk of the
+sandbox is kept. Its processes and memory are gone.
+
+1. The CLI rejects a `--timeout` of zero or less. Otherwise it sends a
+   `StopSandbox` request with the sandbox name and the timeout (default `10s`)
+   to the daemon.
+2. The daemon sends `SIGTERM` to all processes in the sandbox task and waits up
+   to the timeout for the init process of the sandbox to exit. While it waits,
+   it repeats `SIGTERM` for the init process, because a VM that just booted
+   may not have set up its signal handler yet.
+3. The daemon deletes the task, which kills the processes that are left and
+   stops the VM. The container and its writable snapshot are kept.
+
+The init process of a sandbox exits on `SIGTERM`, so a sandbox stops right
+away unless the timeout runs out first. It runs `sleep infinity` in a loop, so
+a process in the sandbox that kills the `sleep` doesn't stop the sandbox, but
+root in the sandbox can stop it with `kill 1`. Init processes in a PID namespace only
+get the signals they handle, so sandboxes created before `anvil stop` existed
+run `sleep infinity` as init and always stop after the timeout.
+
+Sessions attached to the sandbox end when it stops. Their CLI restores the
+terminal and exits with the non-zero exit code of the session process.
+Stopping a sandbox whose VM already stopped succeeds without output. The next
+`anvil run` boots the VM again, as described in
+[Running a session](#running-a-session).

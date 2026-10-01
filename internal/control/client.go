@@ -4,10 +4,12 @@ package control
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/wmeints/anvil/api/v1alpha1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // Client provides an interface to communicate with the daemon process
@@ -60,6 +62,19 @@ func (client *Client) RemoveSandbox(ctx context.Context, name string) error {
 	}
 
 	return nil
+}
+
+// StopSandbox stops the VM of an existing sandbox and keeps its disk. The
+// processes in the sandbox get the timeout to terminate before they're killed.
+func (client *Client) StopSandbox(
+	ctx context.Context, name string, timeout time.Duration,
+) error {
+	_, err := client.anvilClient.StopSandbox(ctx, &v1alpha1.StopSandboxRequest{
+		Name:    name,
+		Timeout: durationpb.New(timeout),
+	})
+
+	return err
 }
 
 // New creates a new control client.

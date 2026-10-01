@@ -15,6 +15,7 @@ import (
 	"github.com/wmeints/anvil/api/v1alpha1"
 	"github.com/wmeints/anvil/internal/paths"
 	"github.com/wmeints/anvil/internal/sandbox"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func newTestContainerClient(t *testing.T) *containerd.Client {
@@ -141,6 +142,77 @@ func TestSandboxLifecycle(t *testing.T) {
 
 	if names := listSandboxNames(ctx, t, client); slices.Contains(names, name) {
 		t.Fatalf("ListSandboxes() = %v, want it to not contain %q", names, name)
+	}
+}
+
+func TestStopSandboxEndsSessionsAndKeepsFiles(t *testing.T) {
+	cc := newTestContainerClient(t)
+	client := newTestServiceClient(t, cc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "server-stop-test"
+	createTestSandbox(ctx, t, cc, client, name)
+
+	stream := attach(ctx, t, client, &v1alpha1.AttachStart{
+		Sandbox: name,
+		Args:    []string{"sh", "-c", "echo hi > /root/marker; echo ready; sleep 600"},
+	})
+
+	waitForOutput(t, stream, "ready")
+
+	_, err := client.StopSandbox(ctx, &v1alpha1.StopSandboxRequest{
+		Name:    name,
+		Timeout: durationpb.New(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, code := collectSession(t, stream); code == 0 {
+		t.Error("expected the attached session to end with a non-zero exit code")
+	}
+
+	output, _ := collectSession(t, attach(ctx, t, client, &v1alpha1.AttachStart{
+		Sandbox: name,
+		Args:    []string{"cat", "/root/marker"},
+	}))
+
+	if !strings.Contains(output, "hi") {
+		t.Errorf("output = %q, want the marker file to survive the stop", output)
+	}
+}
+
+// waitForOutput reads the output of a session until it contains want.
+func waitForOutput(
+	t *testing.T, stream v1alpha1.AnvilService_AttachSandboxClient, want string,
+) {
+	t.Helper()
+
+	var output strings.Builder
+
+	for !strings.Contains(output.String(), want) {
+		resp, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("session ended before printing %q: %v", want, err)
+		}
+
+		output.Write(resp.GetStdout())
+	}
+}
+
+func TestStopSandboxMissing(t *testing.T) {
+	client := newTestServiceClient(t, newTestContainerClient(t))
+
+	_, err := client.StopSandbox(t.Context(), &v1alpha1.StopSandboxRequest{
+		Name:    "does-not-exist",
+		Timeout: durationpb.New(time.Second),
+	})
+
+	want := sandbox.ErrSandboxNotFound.Error()
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("StopSandbox() error = %v, want %v", err, sandbox.ErrSandboxNotFound)
 	}
 }
 

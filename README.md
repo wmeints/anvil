@@ -114,9 +114,17 @@ task build
 ```
 
 `anvil run` boots an `ubuntu:26.04` microVM and opens `/bin/bash` inside it.
-Type `exit` to hibernate the sandbox and return to the host. The VM stops, but
-the sandbox disk is kept, so the next `anvil run` resumes with your files
-intact.
+Type `exit` to return to the host. The VM keeps running after the session ends.
+Hibernate the sandbox with `anvil stop` to free its CPU and memory:
+
+```bash
+dist/bin/anvil stop <name>
+```
+
+The VM stops, but the sandbox disk is kept, so the next `anvil run` boots the
+sandbox again with your files intact. Running processes don't survive a stop.
+Processes get 10 seconds to exit before they're killed; change that with
+`--timeout`.
 
 `anvil` talks to the `anvild` daemon, so start `dist/bin/anvild` first. The
 daemon connects to the rootless containerd socket in

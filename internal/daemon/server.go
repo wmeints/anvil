@@ -71,6 +71,20 @@ func (srv *anvilService) RemoveSandbox(
 	return &v1alpha1.RemoveSandboxResponse{}, nil
 }
 
+// StopSandbox hibernates an existing sandbox: it stops its VM and keeps its
+// disk.
+func (srv *anvilService) StopSandbox(
+	ctx context.Context, req *v1alpha1.StopSandboxRequest,
+) (*v1alpha1.StopSandboxResponse, error) {
+	timeout := req.GetTimeout().AsDuration()
+
+	if err := sandbox.Stop(ctx, srv.containerClient, req.Name, timeout); err != nil {
+		return nil, err
+	}
+
+	return &v1alpha1.StopSandboxResponse{}, nil
+}
+
 // AttachSandbox starts a session in a sandbox and streams its terminal I/O
 // between the client and the session process until the process exits.
 func (srv *anvilService) AttachSandbox(
