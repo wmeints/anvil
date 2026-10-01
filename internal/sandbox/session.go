@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -13,6 +14,10 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/wmeints/anvil/internal/paths"
 )
+
+// ErrSessionStartFailed is returned when the process of a session doesn't
+// start, for example because its command doesn't exist in the sandbox.
+var ErrSessionStartFailed = errors.New("could not start session")
 
 // sessionTerm is the terminal type of every session. The host TERM isn't used
 // because the sandbox image may not have a terminfo entry for it.
@@ -188,7 +193,7 @@ func startProcess(ctx context.Context, process containerd.Process) (*Session, er
 	}
 
 	if err := process.Start(ctx); err != nil {
-		return nil, fmt.Errorf("could not start session: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrSessionStartFailed, err)
 	}
 
 	return &Session{process: process, exitC: exitC}, nil
