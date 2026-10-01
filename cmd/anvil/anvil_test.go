@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/wmeints/anvil/api/v1alpha1"
@@ -22,6 +23,7 @@ import (
 type received struct {
 	created *v1alpha1.CreateSandboxRequest
 	removed string
+	stopped *v1alpha1.StopSandboxRequest
 	started *v1alpha1.AttachStart
 }
 
@@ -67,6 +69,16 @@ func (d *fakeDaemon) RemoveSandbox(
 
 	d.got.removed = req.GetName()
 	return &v1alpha1.RemoveSandboxResponse{}, nil
+}
+
+func (d *fakeDaemon) StopSandbox(
+	_ context.Context, req *v1alpha1.StopSandboxRequest,
+) (*v1alpha1.StopSandboxResponse, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.got.stopped = req
+	return &v1alpha1.StopSandboxResponse{}, nil
 }
 
 // sessionExitCode is the exit code fakeDaemon reports for every session.
@@ -131,7 +143,7 @@ func runCLI(t *testing.T, args ...string) (string, error) {
 
 	kctx, err := parser.Parse(args)
 	if err != nil {
-		t.Fatal(err)
+		return "", err
 	}
 
 	var stdout bytes.Buffer
@@ -175,6 +187,63 @@ func TestRm(t *testing.T) {
 
 	if removed := daemon.received().removed; removed != "demo" {
 		t.Errorf("removed = %q, want %q", removed, "demo")
+	}
+}
+
+func TestStopUsesDefaultTimeout(t *testing.T) {
+	daemon := startFakeDaemon(t)
+
+	out, err := runCLI(t, "stop", "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if out != "" {
+		t.Errorf("output = %q, want no output", out)
+	}
+
+	stopped := daemon.received().stopped
+	timeout := stopped.GetTimeout().AsDuration()
+	if stopped.GetName() != "demo" || timeout != 10*time.Second {
+		t.Errorf("unexpected stop request: %v", stopped)
+	}
+}
+
+func TestStopPassesTimeout(t *testing.T) {
+	daemon := startFakeDaemon(t)
+
+	if _, err := runCLI(t, "stop", "--timeout", "1m30s", "demo"); err != nil {
+		t.Fatal(err)
+	}
+
+	timeout := daemon.received().stopped.GetTimeout().AsDuration()
+	if timeout != 90*time.Second {
+		t.Errorf("timeout = %v, want %v", timeout, 90*time.Second)
+	}
+}
+
+func TestStopRejectsInvalidTimeout(t *testing.T) {
+	for _, timeout := range []string{"0s", "-1s"} {
+		t.Run(timeout, func(t *testing.T) {
+			assertStopRejected(t, timeout)
+		})
+	}
+}
+
+// assertStopRejected verifies that anvil stop rejects the timeout without
+// calling the daemon.
+func assertStopRejected(t *testing.T, timeout string) {
+	t.Helper()
+
+	daemon := startFakeDaemon(t)
+
+	_, err := runCLI(t, "stop", "--timeout", timeout, "demo")
+	if err == nil || !strings.Contains(err.Error(), "--timeout") {
+		t.Errorf("error = %v, want an error that names --timeout", err)
+	}
+
+	if stopped := daemon.received().stopped; stopped != nil {
+		t.Errorf("expected no stop request, got %v", stopped)
 	}
 }
 

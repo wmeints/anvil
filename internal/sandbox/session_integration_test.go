@@ -89,10 +89,22 @@ func assertSessionRuns(
 ) {
 	t.Helper()
 
+	out := runSession(ctx, t, cc, name, "echo started")
+	if !strings.Contains(out, "started") {
+		t.Errorf("expected output to contain %q, got %q", "started", out)
+	}
+}
+
+// runSession runs a shell script in the sandbox and returns its output.
+func runSession(
+	ctx context.Context, t *testing.T, cc *containerd.Client, name, script string,
+) string {
+	t.Helper()
+
 	var stdout bytes.Buffer
 
 	session, err := StartSession(ctx, cc, name, SessionOptions{
-		Args:   []string{"sh", "-c", "echo started"},
+		Args:   []string{"sh", "-c", script},
 		Stdin:  strings.NewReader(""),
 		Stdout: &stdout,
 	})
@@ -106,9 +118,7 @@ func assertSessionRuns(
 		t.Fatal(err)
 	}
 
-	if !strings.Contains(stdout.String(), "started") {
-		t.Errorf("expected output to contain %q, got %q", "started", stdout.String())
-	}
+	return stdout.String()
 }
 
 func TestStartSessionStartsStoppedSandbox(t *testing.T) {

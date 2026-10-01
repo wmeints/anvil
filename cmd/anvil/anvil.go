@@ -16,6 +16,7 @@ type CLI struct {
 	Create CreateCmd `cmd:"" help:"Create a sandbox"`
 	Rm     RmCmd     `cmd:"" help:"Remove a sandbox"`
 	Run    RunCmd    `cmd:"" help:"Run a command in a sandbox"`
+	Stop   StopCmd   `cmd:"" help:"Stop the VM of a sandbox and keep its files"`
 }
 
 // Context holds the dependencies of the commands.

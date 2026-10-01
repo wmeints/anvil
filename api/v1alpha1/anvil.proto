@@ -4,10 +4,13 @@ package api.anvil.v1alpha1;
 
 option go_package = "github.com/wmeints/anvil/api/v1alpha1;v1alpha1";
 
+import "google/protobuf/duration.proto";
+
 service AnvilService {
   rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
   rpc RemoveSandbox(RemoveSandboxRequest) returns (RemoveSandboxResponse);
+  rpc StopSandbox(StopSandboxRequest) returns (StopSandboxResponse);
   rpc AttachSandbox(stream AttachSandboxRequest) returns (stream AttachSandboxResponse);
 }
 
@@ -33,6 +36,15 @@ message RemoveSandboxRequest {
 }
 
 message RemoveSandboxResponse {}
+
+message StopSandboxRequest {
+  string name = 1;
+  // Time the processes get to exit after SIGTERM before they're killed. An
+  // unset or non-positive timeout kills them right away.
+  google.protobuf.Duration timeout = 2;
+}
+
+message StopSandboxResponse {}
 
 message AttachSandboxRequest {
   oneof msg {

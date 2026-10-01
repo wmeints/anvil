@@ -70,7 +70,7 @@ C4Component
 - `cmd/anvild` - Starts the daemon.
 - `internal/daemon` - Listens on the socket, connects to containerd and maps
   the control API onto sandbox operations.
-- `internal/sandbox` - Creates, starts and removes sandbox VMs and runs
+- `internal/sandbox` - Creates, starts, stops and removes sandbox VMs and runs
   terminal sessions in them.
 - `api/v1alpha1` - Protobuf definition and generated code of the control API.
 - `internal/paths` - Well-known paths, such as the daemon socket, the
