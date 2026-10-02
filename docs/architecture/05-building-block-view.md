@@ -96,6 +96,11 @@ The image builds on `ubuntu:26.04` and adds:
   entrypoint exits with status 1 and points to `/var/log/dockerd.log`. It
   clears Docker's runtime state in `/var/run/docker` first, because stale
   pidfiles from before a stop keep `dockerd` from starting again.
+- `tini` - Ubuntu's `tini` package runs as PID 1 and starts
+  `anvil-entrypoint`. It forwards `SIGTERM` to the container command, so the
+  container stops right away, and it reaps orphaned processes. `dockerd` gets
+  no `SIGTERM`: it's killed when tini exits. Derived images that set their own
+  `ENTRYPOINT` must keep `/usr/bin/tini --` in front of it.
 
 The image sets `USER 1000` without a GID, because Docker only adds the
 supplementary groups from `/etc/group`, such as `docker`, when the user has no
@@ -111,5 +116,5 @@ The `base-image` workflow builds the image for `linux/amd64` and
 locally.
 
 anvil doesn't use the image yet: `internal/sandbox` replaces the image command
-with `sleep infinity` and runs as root, so it skips both the entrypoint and
-the `agent` user.
+with its own init and runs as root, so it skips tini, the entrypoint and the
+`agent` user.
