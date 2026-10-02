@@ -8,7 +8,10 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +22,8 @@ import (
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
 	"github.com/distribution/reference"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
 // ErrSandboxNotFound is returned when a sandbox doesn't exist.
@@ -52,12 +57,16 @@ type Spec struct {
 type Status struct {
 }
 
+// maxNameLength is the longest sandbox name. The name is the hostname of the
+// sandbox, and the kernel rejects hostnames longer than 64 characters.
+const maxNameLength = 63
+
 // isValidContainerName validates the name given for the container.
 // We expect a container name to be lower case letters and digits, optionally
 // separated by single dashes. Names can't start with a digit.
 func isValidContainerName(name string) bool {
 	m, _ := regexp.Match("^[a-z][a-z0-9]*(-[a-z0-9]+)*$", []byte(name))
-	return m
+	return m && len(name) <= maxNameLength
 }
 
 // containerLabels specifies the labels that we need to put on the sandbox container
@@ -68,48 +77,141 @@ func containerLabels() map[string]string {
 	}
 }
 
-// withImageEnv applies the image's environment and working directory and runs
-// the process as root. oci.WithImageConfig would also look up the user's groups
-// in the image, which mounts the rootfs on the host and fails without root.
-func withImageEnv(image containerd.Image) oci.SpecOpts {
-	return func(
-		ctx context.Context, cl oci.Client, c *containers.Container, s *oci.Spec,
-	) error {
-		spec, err := image.Spec(ctx)
-		if err != nil {
-			return err
-		}
+// ErrInvalidImageUser is returned when the image of a sandbox doesn't declare a
+// numeric non-root user. Its message tells how to fix the image.
+var ErrInvalidImageUser = errors.New(
+	"declare a numeric non-root USER such as 1000:1000")
 
-		cwd := spec.Config.WorkingDir
-		if cwd == "" {
-			cwd = "/"
-		}
+// parseImageUser parses the USER of an image as UID[:GID]. Anvil can't resolve
+// user names, because that reads /etc/passwd from the rootfs and mounts it on
+// the host. Without a GID, the GID equals the UID.
+func parseImageUser(user string) (uint32, uint32, error) {
+	if user == "" {
+		return 0, 0, fmt.Errorf("has no user; %w", ErrInvalidImageUser)
+	}
 
-		return oci.Compose(
-			oci.WithEnv(spec.Config.Env),
-			oci.WithProcessCwd(cwd),
-			oci.WithUIDGID(0, 0),
-		)(ctx, cl, c, s)
+	uidText, gidText, found := strings.Cut(user, ":")
+	if !found {
+		gidText = uidText
+	}
+
+	uid, uidErr := strconv.ParseUint(uidText, 10, 32)
+	gid, gidErr := strconv.ParseUint(gidText, 10, 32)
+
+	if err := errors.Join(uidErr, gidErr); err != nil {
+		return 0, 0, invalidUserError(user, err)
+	}
+
+	if uid == 0 || gid == 0 {
+		return 0, 0, fmt.Errorf("user %q is root; %w", user, ErrInvalidImageUser)
+	}
+
+	return uint32(uid), uint32(gid), nil
+}
+
+// invalidUserError explains why a UID or GID didn't parse as a number.
+func invalidUserError(user string, err error) error {
+	if errors.Is(err, strconv.ErrSyntax) {
+		return fmt.Errorf("user %q is not numeric; %w", user, ErrInvalidImageUser)
+	}
+
+	return fmt.Errorf("user %q is out of range; %w", user, ErrInvalidImageUser)
+}
+
+// processArgs returns the init process of a sandbox: the image entrypoint
+// followed by `sleep infinity`, which keeps the sandbox running. The image Cmd
+// is ignored, so entrypoints must `exec "$@"`.
+func processArgs(config ocispec.ImageConfig) []string {
+	return append(slices.Clone(config.Entrypoint), "sleep", "infinity")
+}
+
+// cgroupMount mounts the cgroup filesystem of the container, which dockerd
+// needs. containerd's default spec has none. It returns a new mount on every
+// call, because spec options such as oci.WithWriteableCgroupfs change the
+// options in place.
+func cgroupMount() specs.Mount {
+	return specs.Mount{
+		Destination: "/sys/fs/cgroup",
+		Type:        "cgroup",
+		Source:      "cgroup",
+		Options:     []string{"nosuid", "noexec", "nodev", "relatime", "rw"},
 	}
 }
 
-// initArgs is the init process of a sandbox. It keeps the sandbox running
-// until it gets SIGTERM. Init ignores signals it doesn't handle, so a plain
-// `sleep infinity` would only stop when it's killed. The loop restarts the
-// sleep when a process in the sandbox kills it, so only SIGTERM ends init.
-var initArgs = []string{
-	"/bin/sh", "-c", "trap 'exit 0' TERM; while :; do sleep infinity & wait; done",
+// volumeMounts backs each VOLUME of the image with a tmpfs, sorted by path.
+// Without it, a volume sits on the virtiofs rootfs, which can't hold the upper
+// directory of an overlay, such as Docker's storage in /var/lib/docker. The
+// contents live in the memory of the VM and are lost when the sandbox stops.
+func volumeMounts(config ocispec.ImageConfig) []specs.Mount {
+	mounts := []specs.Mount{}
+
+	for _, dest := range slices.Sorted(maps.Keys(config.Volumes)) {
+		mounts = append(mounts, specs.Mount{
+			Destination: dest,
+			Type:        "tmpfs",
+			Source:      "tmpfs",
+			Options:     []string{"rw", "nosuid", "nodev"},
+		})
+	}
+
+	return mounts
+}
+
+// withVMPrivileges runs the sandbox container privileged. The microVM isolates
+// the sandbox from the host, so the container may use everything inside the
+// VM, such as dockerd and sudo. oci.WithPrivileged isn't used, because it
+// copies the capabilities of the rootless daemon instead of all known ones.
+func withVMPrivileges(
+	ctx context.Context, cl oci.Client, c *containers.Container, s *oci.Spec,
+) error {
+	return oci.Compose(
+		oci.WithMounts([]specs.Mount{cgroupMount()}),
+		oci.WithAllKnownCapabilities,
+		oci.WithNewPrivileges,
+		oci.WithMaskedPaths(nil),
+		oci.WithReadonlyPaths(nil),
+		oci.WithWriteableSysfs,
+		oci.WithWriteableCgroupfs,
+		oci.WithSeccompUnconfined,
+	)(ctx, cl, c, s)
+}
+
+// sandboxSpecOpts derives the sandbox process from the image config: its
+// environment, working directory, numeric user, entrypoint and volumes. The
+// hostname is the sandbox name, because the guest doesn't set one.
+// oci.WithImageConfig isn't used, because it looks up the user in the image,
+// which mounts the rootfs on the host and fails without root.
+func sandboxSpecOpts(name string, config ocispec.ImageConfig) (oci.SpecOpts, error) {
+	uid, gid, err := parseImageUser(config.User)
+	if err != nil {
+		return nil, err
+	}
+
+	cwd := config.WorkingDir
+	if cwd == "" {
+		cwd = "/"
+	}
+
+	return oci.Compose(
+		oci.WithHostname(name),
+		oci.WithEnv(config.Env),
+		oci.WithProcessCwd(cwd),
+		oci.WithUIDGID(uid, gid),
+		oci.WithProcessArgs(processArgs(config)...),
+		oci.WithMounts(volumeMounts(config)),
+		withVMPrivileges,
+	), nil
 }
 
 // Start boots the container for the sandbox and keeps it running.
 func (sb *Sandbox) Start(ctx context.Context, cc *containerd.Client) error {
-	return sb.start(ctx, cc, initArgs)
+	return sb.start(ctx, cc)
 }
 
-// start creates the container for the sandbox with the given init process and
-// boots it.
+// start creates the container for the sandbox and boots it. The options are
+// applied after the ones derived from the image, so tests can override them.
 func (sb *Sandbox) start(
-	ctx context.Context, cc *containerd.Client, args []string,
+	ctx context.Context, cc *containerd.Client, opts ...oci.SpecOpts,
 ) error {
 	imageRef, err := reference.ParseDockerRef(sb.Spec.Image)
 	if err != nil {
@@ -117,6 +219,11 @@ func (sb *Sandbox) start(
 	}
 
 	image, err := cc.Pull(ctx, imageRef.String(), containerd.WithPullUnpack)
+	if err != nil {
+		return err
+	}
+
+	imageOpts, err := sb.imageSpecOpts(ctx, image)
 	if err != nil {
 		return err
 	}
@@ -130,10 +237,7 @@ func (sb *Sandbox) start(
 		containerd.WithNewSnapshot(snapshotName, image),
 		containerd.WithRuntime("io.containerd.nerdbox.v1", nil),
 		containerd.WithContainerLabels(containerLabels()),
-		containerd.WithNewSpec(
-			withImageEnv(image),
-			oci.WithProcessArgs(args...),
-		),
+		containerd.WithNewSpec(append([]oci.SpecOpts{imageOpts}, opts...)...),
 	)
 	if err != nil {
 		return err
@@ -142,6 +246,26 @@ func (sb *Sandbox) start(
 	_, err = startTask(ctx, container)
 
 	return err
+}
+
+// imageSpecOpts reads the config of the image and derives the sandbox process
+// from it. An image without a valid user is rejected before anvil creates a
+// container or snapshot for it.
+func (sb *Sandbox) imageSpecOpts(
+	ctx context.Context, image containerd.Image,
+) (oci.SpecOpts, error) {
+	spec, err := image.Spec(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("could not read the config of image %s: %w",
+			sb.Spec.Image, err)
+	}
+
+	opts, err := sandboxSpecOpts(sb.Name, spec.Config)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox %s: image %s %w", sb.Name, sb.Spec.Image, err)
+	}
+
+	return opts, nil
 }
 
 // startTask boots the VM of the sandbox by creating and starting a new task for
@@ -315,13 +439,14 @@ func signalTerm(
 // Use the operations like Start/Stop/PullImage to manage the sandbox instance.
 func NewSandbox(name string, image string) (*Sandbox, error) {
 	if !isValidContainerName(name) {
-		return nil, fmt.Errorf(
-			"%w: %q (use lower case letters, digits and dashes; start with a letter)",
-			ErrInvalidName, name)
+		return nil, fmt.Errorf("%w: %q (use at most %d lower case letters, "+
+			"digits and dashes; start with a letter)",
+			ErrInvalidName, name, maxNameLength)
 	}
 
 	if image == "" {
-		return nil, fmt.Errorf("%w (pass an image such as ubuntu:26.04)",
+		return nil, fmt.Errorf(
+			"%w (pass an image such as ghcr.io/wmeints/anvil-base:latest)",
 			ErrInvalidImage)
 	}
 

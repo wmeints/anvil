@@ -27,7 +27,7 @@ func startTestSandbox(
 	removeSandbox(cc, name)
 	t.Cleanup(func() { removeSandbox(cc, name) })
 
-	sb, err := NewSandbox(name, "ubuntu:26.04")
+	sb, err := NewSandbox(name, testImage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,13 +236,13 @@ func TestStopKeepsFiles(t *testing.T) {
 	name := "stop-files-test"
 	startTestSandbox(ctx, t, cc, name)
 
-	runSession(ctx, t, cc, name, "echo hi > /root/marker")
+	runSession(ctx, t, cc, name, "echo hi > /home/agent/marker")
 
 	if err := Stop(ctx, cc, name, stopTimeout); err != nil {
 		t.Fatal(err)
 	}
 
-	out := runSession(ctx, t, cc, name, "cat /root/marker")
+	out := runSession(ctx, t, cc, name, "cat /home/agent/marker")
 	if !strings.Contains(out, "hi") {
 		t.Errorf("expected the marker file to survive the stop, got %q", out)
 	}
@@ -325,14 +325,15 @@ func TestStopKillsSandboxAfterTimeout(t *testing.T) {
 	removeSandbox(cc, name)
 	t.Cleanup(func() { removeSandbox(cc, name) })
 
-	sb, err := NewSandbox(name, "ubuntu:26.04")
+	sb, err := NewSandbox(name, testImage)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Sandboxes from before anvil stop existed run an init process that
+	// Without an init such as tini, `sleep infinity` runs as PID 1 and
 	// ignores SIGTERM.
-	if err := sb.start(ctx, cc, []string{"sleep", "infinity"}); err != nil {
+	err = sb.start(ctx, cc, oci.WithProcessArgs("sleep", "infinity"))
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -348,36 +349,6 @@ func TestStopKillsSandboxAfterTimeout(t *testing.T) {
 	}
 
 	assertStopped(ctx, t, cc, name)
-}
-
-func TestSandboxSurvivesKillingInitChild(t *testing.T) {
-	cc := newTestContainerClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	name := "init-child-test"
-	container := startTestSandbox(ctx, t, cc, name)
-
-	task, err := container.Task(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	exitC, err := task.Wait(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	out := runSession(ctx, t, cc, name, "pkill -x sleep && echo killed")
-	if !strings.Contains(out, "killed") {
-		t.Fatalf("expected pkill to kill the sleep of init, got %q", out)
-	}
-
-	select {
-	case <-exitC:
-		t.Error("expected the sandbox to keep running after its sleep was killed")
-	case <-time.After(2 * time.Second):
-	}
 }
 
 // assertRunning verifies that the sandbox has a running task and returns it.
@@ -416,7 +387,7 @@ func TestStartStoppedSandbox(t *testing.T) {
 	name := "start-stopped-test"
 	startTestSandbox(ctx, t, cc, name)
 
-	runSession(ctx, t, cc, name, "echo hi > /root/marker")
+	runSession(ctx, t, cc, name, "echo hi > /home/agent/marker")
 
 	if err := Stop(ctx, cc, name, stopTimeout); err != nil {
 		t.Fatal(err)
@@ -428,7 +399,7 @@ func TestStartStoppedSandbox(t *testing.T) {
 
 	assertRunning(ctx, t, cc, name)
 
-	out := runSession(ctx, t, cc, name, "cat /root/marker")
+	out := runSession(ctx, t, cc, name, "cat /home/agent/marker")
 	if !strings.Contains(out, "hi") {
 		t.Errorf("expected the marker file to survive the restart, got %q", out)
 	}

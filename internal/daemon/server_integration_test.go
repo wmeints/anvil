@@ -3,9 +3,11 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -17,6 +19,12 @@ import (
 	"github.com/wmeints/anvil/internal/sandbox"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
+
+// testImage is the image of the sandboxes in the integration tests. Set
+// ANVIL_TEST_IMAGE to test an image that isn't published yet, for example one
+// pushed to a local registry.
+var testImage = cmp.Or(
+	os.Getenv("ANVIL_TEST_IMAGE"), "ghcr.io/wmeints/anvil-base:latest")
 
 func newTestContainerClient(t *testing.T) *containerd.Client {
 	t.Helper()
@@ -47,7 +55,7 @@ func createTestSandbox(
 
 	_, err := client.CreateSandbox(ctx, &v1alpha1.CreateSandboxRequest{
 		Name:  name,
-		Image: "ubuntu:26.04",
+		Image: testImage,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +165,9 @@ func TestStopSandboxEndsSessionsAndKeepsFiles(t *testing.T) {
 
 	stream := attach(ctx, t, client, &v1alpha1.AttachStart{
 		Sandbox: name,
-		Args:    []string{"sh", "-c", "echo hi > /root/marker; echo ready; sleep 600"},
+		Args: []string{
+			"sh", "-c", "echo hi > /home/agent/marker; echo ready; sleep 600",
+		},
 	})
 
 	waitForOutput(t, stream, "ready")
@@ -176,7 +186,7 @@ func TestStopSandboxEndsSessionsAndKeepsFiles(t *testing.T) {
 
 	output, _ := collectSession(t, attach(ctx, t, client, &v1alpha1.AttachStart{
 		Sandbox: name,
-		Args:    []string{"cat", "/root/marker"},
+		Args:    []string{"cat", "/home/agent/marker"},
 	}))
 
 	if !strings.Contains(output, "hi") {

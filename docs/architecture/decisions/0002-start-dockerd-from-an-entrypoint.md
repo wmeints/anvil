@@ -29,6 +29,8 @@ the container command with `exec`.
   still killed without a clean shutdown.
 - `/var/lib/docker` is a volume, so Docker's overlay2 storage doesn't sit on
   overlay. Whether anvil and nerdbox honor the `VOLUME` still has to be
-  checked when anvil starts using the image.
+  checked when anvil starts using the image. Since
+  [decision 4](./0004-run-sandboxes-as-the-image-user-privileged-in-the-vm.md),
+  anvil backs each volume with a tmpfs.
 - A container without the privileges `dockerd` needs fails after 30 seconds
   with a clear error instead of hanging.

@@ -113,9 +113,11 @@ Build the CLI and the daemon. The executables end up in `dist/bin`:
 task build
 ```
 
-`anvil run` boots an `ubuntu:26.04` microVM and opens `/bin/bash` inside it.
-Type `exit` to return to the host. The VM keeps running after the session ends.
-Hibernate the sandbox with `anvil stop` to free its CPU and memory:
+`anvil run` boots an `anvil-base` microVM and opens `/bin/bash` inside it. You
+work as the non-root `agent` user, with passwordless `sudo` and Docker
+available. Type `exit` to return to the host. The VM keeps running after the
+session ends. Hibernate the sandbox with `anvil stop` to free its CPU and
+memory:
 
 ```bash
 dist/bin/anvil stop <name>
@@ -144,6 +146,17 @@ the containerd logs:
 ```bash
 journalctl --user -u containerd
 ```
+
+### Custom images
+
+`anvil create` uses `ghcr.io/wmeints/anvil-base:latest` unless you pass an
+image with `-i`. A custom image must declare a numeric non-root `USER`, such
+as `1000:1000`, because anvil can't resolve user names. Build it
+`FROM ghcr.io/wmeints/anvil-base` to keep the `agent` user, `sudo`, Docker and
+the entrypoint. Anvil runs the image's `ENTRYPOINT` with `sleep infinity` as
+its arguments and ignores `CMD`, so an entrypoint must end with `exec "$@"`.
+Image volumes, such as Docker's `/var/lib/docker`, start empty, live in memory
+and are lost when the sandbox stops.
 
 ## Documentation
 

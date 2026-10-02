@@ -72,7 +72,8 @@ C4Component
   the control API onto sandbox operations.
 - `internal/sandbox` - Creates, starts, stops and removes sandbox VMs and runs
   terminal sessions in them. Starting boots the VM of a stopped sandbox again
-  on its kept disk.
+  on its kept disk. It derives the sandbox process from the image, see
+  [crosscutting concepts](./08-crosscutting-concepts.md).
 - `api/v1alpha1` - Protobuf definition and generated code of the control API.
 - `internal/paths` - Well-known paths, such as the daemon socket, the
   containerd socket and the FIFO directory.
@@ -86,11 +87,13 @@ The image builds on `ubuntu:26.04` and adds:
 - `agent` - an unprivileged user (UID/GID `1000`, home `/home/agent`) with
   passwordless `sudo`. The image runs as this user by default. The `ubuntu`
   user that the base image ships with UID 1000 is removed.
-- Docker - Ubuntu's `docker.io` package. `agent` is in the `docker` group, so
-  it can use the Docker socket without `sudo`. Docker stores its data in a
-  volume at `/var/lib/docker`, so overlay2 doesn't sit on top of the image's
-  own overlay filesystem.
-- `anvil-entrypoint` - starts `dockerd` as root in the background, waits at
+- Docker - Ubuntu's `docker.io` package. `agent` is in the `docker` group, and
+  `dockerd` gives the socket to the `agent` group, so `agent` can use Docker
+  without `sudo`. Docker stores its data in a volume at `/var/lib/docker`, so
+  overlay2 doesn't sit on top of the image's own filesystem. Anvil backs the
+  volume with a tmpfs.
+- `anvil-entrypoint` - adds `localhost` and the hostname to `/etc/hosts` when
+  they're missing, starts `dockerd` as root in the background, waits at
   most 30 seconds until it answers, and then runs the container command. When
   `dockerd` doesn't start, for example without the privileges it needs, the
   entrypoint exits with status 1 and points to `/var/log/dockerd.log`. It
@@ -105,16 +108,20 @@ The image builds on `ubuntu:26.04` and adds:
 The image sets `USER 1000` without a GID, because Docker only adds the
 supplementary groups from `/etc/group`, such as `docker`, when the user has no
 explicit GID. anvil can't read `/etc/passwd` or `/etc/group` without mounting
-the rootfs on the host, so when anvil runs the image as `agent`, it must give
-`agent` access to the Docker socket another way, for example with
-`dockerd --group agent`.
+the rootfs on the host, so under anvil `agent` has no supplementary groups.
+`dockerd --group agent` gives it the Docker socket anyway.
+
+Docker writes `/etc/hosts` for a container, but anvil leaves the image's empty
+file in place. Without `localhost` in it, `dockerd` waits for DNS timeouts and
+takes 20 seconds to start, so the entrypoint adds the missing entries.
 
 The `base-image` workflow builds the image for `linux/amd64` and
 `linux/arm64`, and publishes it to `ghcr.io/wmeints/anvil-base` with the tags
 `latest` and `sha-<short sha>` on pushes to `main`. Derived images start with
 `FROM ghcr.io/wmeints/anvil-base:latest`. Run `task image:build` to build it
-locally.
+locally. The integration tests use the published image. To test a local build,
+push it to a registry on `localhost`, which containerd reaches over plain HTTP,
+and set `ANVIL_TEST_IMAGE`, for example to `localhost:5001/anvil-base:dev`.
 
-anvil doesn't use the image yet: `internal/sandbox` replaces the image command
-with its own init and runs as root, so it skips tini, the entrypoint and the
-`agent` user.
+`anvil create` uses the image by default. Custom images must declare a numeric
+non-root `USER` and should build `FROM ghcr.io/wmeints/anvil-base`.

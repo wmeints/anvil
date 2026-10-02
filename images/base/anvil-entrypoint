@@ -8,10 +8,24 @@ fail() {
     exit 1
 }
 
+# Docker writes /etc/hosts for a container, but anvil leaves the image's empty
+# file in place. Without localhost in it, lookups such as dockerd's wait for DNS
+# timeouts, and without the hostname sudo warns on every call.
+add_host() {
+    grep -qwF "$2" /etc/hosts \
+        || printf '%s\t%s\n' "$1" "$2" | sudo -n tee -a /etc/hosts >/dev/null \
+        || fail "cannot add $2 to /etc/hosts"
+}
+
+add_host 127.0.0.1 localhost
+add_host 127.0.1.1 "$(hostname)"
+
 # The runtime state, including pidfiles, survives a stop. dockerd refuses to
 # start when a stale pidfile names a PID that another process took.
+# The socket belongs to the agent group, because anvil can't add agent to the
+# docker group: it doesn't read /etc/group from the image.
 sudo -n sh -c 'rm -rf /var/run/docker /var/run/docker.pid /var/run/docker.sock
-    dockerd >/var/log/dockerd.log 2>&1 &' \
+    dockerd --group agent >/var/log/dockerd.log 2>&1 &' \
     || fail "cannot start dockerd with sudo"
 
 attempts=0
