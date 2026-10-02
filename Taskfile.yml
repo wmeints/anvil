@@ -33,3 +33,7 @@ tasks:
     desc: Run the integration tests (requires containerd)
     cmds:
       - go test -race -tags integration ./...
+  image:build:
+    desc: Build the anvil-base image locally
+    cmds:
+      - docker build -t anvil-base:latest images/base

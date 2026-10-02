@@ -1,0 +1,26 @@
+#!/bin/sh
+# Starts dockerd in the background, waits until it accepts requests and then
+# runs the command of the container.
+set -eu
+
+fail() {
+    echo "anvil-entrypoint: $1" >&2
+    exit 1
+}
+
+# The runtime state, including pidfiles, survives a stop. dockerd refuses to
+# start when a stale pidfile names a PID that another process took.
+sudo -n sh -c 'rm -rf /var/run/docker /var/run/docker.pid /var/run/docker.sock
+    dockerd >/var/log/dockerd.log 2>&1 &' \
+    || fail "cannot start dockerd with sudo"
+
+attempts=0
+until docker info >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 30 ]; then
+        fail "dockerd did not start, see /var/log/dockerd.log"
+    fi
+    sleep 1
+done
+
+exec "$@"
