@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -529,4 +531,132 @@ func TestStartReportsBootFailure(t *testing.T) {
 	if errors.Is(err, ErrSandboxNotFound) {
 		t.Errorf("expected a boot failure, not a missing sandbox, got %v", err)
 	}
+}
+
+// initCmdline returns the command line of PID 1 in the sandbox.
+func initCmdline(
+	ctx context.Context, t *testing.T, cc *containerd.Client, name string,
+) string {
+	t.Helper()
+
+	out := runSession(ctx, t, cc, name, "tr '\\0' ' ' < /proc/1/cmdline")
+
+	return strings.TrimSpace(out)
+}
+
+func TestSandboxRunsTiniAsInit(t *testing.T) {
+	cc := newTestContainerClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "tini-init-test"
+	startTestSandbox(ctx, t, cc, name)
+
+	want := strings.Join(initArgs, " ")
+	if got := initCmdline(ctx, t, cc, name); got != want {
+		t.Errorf("PID 1 = %q, want %q", got, want)
+	}
+}
+
+func TestInitMountIsReadOnly(t *testing.T) {
+	cc := newTestContainerClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "init-mount-test"
+	startTestSandbox(ctx, t, cc, name)
+
+	out := runSession(ctx, t, cc, name,
+		"touch /.anvil/x 2>/dev/null && echo writable || echo read-only")
+	if !strings.Contains(out, "read-only") {
+		t.Errorf("expected /.anvil to be read-only, got %q", out)
+	}
+}
+
+func TestInitReapsOrphans(t *testing.T) {
+	cc := newTestContainerClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "init-reap-test"
+	startTestSandbox(ctx, t, cc, name)
+
+	runSession(ctx, t, cc, name, `sh -c "sleep 1 &"; sleep 3`)
+
+	out := runSession(ctx, t, cc, name,
+		"grep -s '^State:' /proc/[0-9]*/status | grep -c Z")
+	if got := strings.TrimSpace(out); got != "0" {
+		t.Errorf("expected no zombie processes, found %s", got)
+	}
+}
+
+func TestStartReinstallsInit(t *testing.T) {
+	cc := newTestContainerClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// A separate init directory keeps the test from wiping the init of
+	// sandboxes outside the test.
+	dir := filepath.Join(t.TempDir(), "init")
+	setInitDir(t, dir)
+
+	name := "init-reinstall-test"
+	startTestSandbox(ctx, t, cc, name)
+
+	if err := Stop(ctx, cc, name, stopTimeout); err != nil {
+		t.Fatal(err)
+	}
+
+	// A host reboot wipes /run/user/<uid>, and the init with it.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	want := strings.Join(initArgs, " ")
+	if got := initCmdline(ctx, t, cc, name); got != want {
+		t.Errorf("PID 1 = %q, want %q", got, want)
+	}
+}
+
+func TestStartReportsInitInstallFailure(t *testing.T) {
+	cc := newTestContainerClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "init-install-failure-test"
+	startTestSandbox(ctx, t, cc, name)
+
+	if err := Stop(ctx, cc, name, stopTimeout); err != nil {
+		t.Fatal(err)
+	}
+
+	// A regular file in the path makes the init directory impossible to create.
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	setInitDir(t, filepath.Join(file, "init"))
+
+	err := Start(ctx, cc, name)
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("expected the error to wrap the cause, got %v", err)
+	}
+
+	if !errors.Is(err, ErrInitInstallFailed) {
+		t.Errorf("expected ErrInitInstallFailed, got %v", err)
+	}
+
+	assertTaskRemoved(ctx, t, cc, name)
+}
+
+// setInitDir points the sandboxes at another init directory until the test
+// finishes.
+func setInitDir(t *testing.T, dir string) {
+	t.Helper()
+
+	original := initDir
+	initDir = func() string { return dir }
+
+	t.Cleanup(func() { initDir = original })
 }

@@ -41,4 +41,8 @@ func TestUserPaths(t *testing.T) {
 	if got, want := FIFODir(), filepath.Join(runDir, "anvil/fifo"); got != want {
 		t.Errorf("FIFODir() = %q, want %q", got, want)
 	}
+
+	if got, want := InitDir(), filepath.Join(runDir, "anvil/init"); got != want {
+		t.Errorf("InitDir() = %q, want %q", got, want)
+	}
 }

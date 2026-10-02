@@ -72,10 +72,13 @@ C4Component
   the control API onto sandbox operations.
 - `internal/sandbox` - Creates, starts, stops and removes sandbox VMs and runs
   terminal sessions in them. Starting boots the VM of a stopped sandbox again
-  on its kept disk.
+  on its kept disk. It bundles a static [tini](https://github.com/krallin/tini)
+  binary for `amd64` and `arm64`, writes it to the init directory before
+  every boot and mounts that directory read-only at `/.anvil` as the init of
+  every sandbox.
 - `api/v1alpha1` - Protobuf definition and generated code of the control API.
 - `internal/paths` - Well-known paths, such as the daemon socket, the
-  containerd socket and the FIFO directory.
+  containerd socket, the FIFO directory and the init directory.
 
 ## Base image
 
@@ -111,5 +114,5 @@ The `base-image` workflow builds the image for `linux/amd64` and
 locally.
 
 anvil doesn't use the image yet: `internal/sandbox` replaces the image command
-with `sleep infinity` and runs as root, so it skips both the entrypoint and
+with its own init and runs as root, so it skips both the entrypoint and
 the `agent` user.

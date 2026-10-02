@@ -33,6 +33,12 @@ func FIFODir() string {
 	return filepath.Join(userRunDir(), "anvil/fifo")
 }
 
+// InitDir returns the directory with the init binary that anvil mounts in every
+// sandbox.
+func InitDir() string {
+	return filepath.Join(userRunDir(), "anvil/init")
+}
+
 func userRunDir() string {
 	return filepath.Join("/run/user", strconv.Itoa(os.Getuid()))
 }

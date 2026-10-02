@@ -41,12 +41,26 @@ sandbox is kept. Its processes and memory are gone.
 3. The daemon deletes the task, which kills the processes that are left and
    stops the VM. The container and its writable snapshot are kept.
 
-The init process of a sandbox exits on `SIGTERM`, so a sandbox stops right
-away unless the timeout runs out first. It runs `sleep infinity` in a loop, so
-a process in the sandbox that kills the `sleep` doesn't stop the sandbox, but
-root in the sandbox can stop it with `kill 1`. Init processes in a PID namespace only
-get the signals they handle, so sandboxes created before `anvil stop` existed
-run `sleep infinity` as init and always stop after the timeout.
+The init process of a sandbox is [tini](https://github.com/krallin/tini),
+which anvil bundles, so it works with any image. Before every boot, anvil
+writes tini to `/run/user/<uid>/anvil/init` on the host, because a host reboot
+wipes that directory, and mounts the directory read-only at `/.anvil` in the
+sandbox. PID 1 runs `/.anvil/tini -- /bin/sh -c 'while :; do sleep infinity &
+wait; done'`:
+
+- tini forwards `SIGTERM` to the shell, which isn't PID 1 and exits on it, so
+  a sandbox stops right away unless the timeout runs out first.
+- tini reaps orphaned processes, so zombies from sessions don't pile up.
+- The loop restarts the `sleep` when a process in the sandbox kills it, so
+  that doesn't stop the sandbox. Killing tini or the shell does stop it, for
+  example with `kill 1`, `pkill sh` or `kill -9 -1`, because the shell isn't
+  PID 1 and gets no protection from signals it doesn't handle.
+
+Sandboxes keep the init from the time they were created. Init processes in a
+PID namespace only get the signals they handle, so sandboxes created before
+`anvil stop` existed run `sleep infinity` as init and always stop after the
+timeout. Sandboxes created before tini was bundled run a shell that traps
+`SIGTERM` as init.
 
 Sessions attached to the sandbox end when it stops. Their CLI restores the
 terminal and exits with the non-zero exit code of the session process.

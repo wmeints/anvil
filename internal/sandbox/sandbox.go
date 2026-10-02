@@ -93,14 +93,6 @@ func withImageEnv(image containerd.Image) oci.SpecOpts {
 	}
 }
 
-// initArgs is the init process of a sandbox. It keeps the sandbox running
-// until it gets SIGTERM. Init ignores signals it doesn't handle, so a plain
-// `sleep infinity` would only stop when it's killed. The loop restarts the
-// sleep when a process in the sandbox kills it, so only SIGTERM ends init.
-var initArgs = []string{
-	"/bin/sh", "-c", "trap 'exit 0' TERM; while :; do sleep infinity & wait; done",
-}
-
 // Start boots the container for the sandbox and keeps it running.
 func (sb *Sandbox) Start(ctx context.Context, cc *containerd.Client) error {
 	return sb.start(ctx, cc, initArgs)
@@ -132,6 +124,7 @@ func (sb *Sandbox) start(
 		containerd.WithContainerLabels(containerLabels()),
 		containerd.WithNewSpec(
 			withImageEnv(image),
+			withInitMount(),
 			oci.WithProcessArgs(args...),
 		),
 	)
@@ -145,10 +138,17 @@ func (sb *Sandbox) start(
 }
 
 // startTask boots the VM of the sandbox by creating and starting a new task for
-// its container.
+// its container. It installs the init binary first, because the host may have
+// wiped it since the sandbox last booted.
 func startTask(
 	ctx context.Context, container containerd.Container,
 ) (containerd.Task, error) {
+	dir := initDir()
+	if err := installInit(dir); err != nil {
+		return nil, fmt.Errorf("%w: %s (check that the directory is writable) %w",
+			ErrInitInstallFailed, dir, err)
+	}
+
 	task, err := container.NewTask(ctx, cio.NullIO)
 	if err != nil {
 		return nil, err
