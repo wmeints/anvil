@@ -24,6 +24,9 @@ the container command with `exec`.
 - The container command runs as PID 1. It doesn't reap orphaned processes
   and, like bash, may ignore `SIGTERM`, so `dockerd` gets no clean shutdown
   on a stop. The entrypoint clears the stale runtime state on the next start.
+  Since [decision 3](./0003-tini-in-the-base-image.md), tini runs as PID 1,
+  so the command gets `SIGTERM` and orphans are reaped, but `dockerd` is
+  still killed without a clean shutdown.
 - `/var/lib/docker` is a volume, so Docker's overlay2 storage doesn't sit on
   overlay. Whether anvil and nerdbox honor the `VOLUME` still has to be
   checked when anvil starts using the image.
