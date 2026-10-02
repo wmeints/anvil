@@ -76,3 +76,40 @@ C4Component
 - `api/v1alpha1` - Protobuf definition and generated code of the control API.
 - `internal/paths` - Well-known paths, such as the daemon socket, the
   containerd socket and the FIFO directory.
+
+## Base image
+
+`images/base` holds the `anvil-base` image, a base for sandbox images.
+Coding agents often build and run containers, and they shouldn't work as root.
+The image builds on `ubuntu:26.04` and adds:
+
+- `agent` - an unprivileged user (UID/GID `1000`, home `/home/agent`) with
+  passwordless `sudo`. The image runs as this user by default. The `ubuntu`
+  user that the base image ships with UID 1000 is removed.
+- Docker - Ubuntu's `docker.io` package. `agent` is in the `docker` group, so
+  it can use the Docker socket without `sudo`. Docker stores its data in a
+  volume at `/var/lib/docker`, so overlay2 doesn't sit on top of the image's
+  own overlay filesystem.
+- `anvil-entrypoint` - starts `dockerd` as root in the background, waits at
+  most 30 seconds until it answers, and then runs the container command. When
+  `dockerd` doesn't start, for example without the privileges it needs, the
+  entrypoint exits with status 1 and points to `/var/log/dockerd.log`. It
+  clears Docker's runtime state in `/var/run/docker` first, because stale
+  pidfiles from before a stop keep `dockerd` from starting again.
+
+The image sets `USER 1000` without a GID, because Docker only adds the
+supplementary groups from `/etc/group`, such as `docker`, when the user has no
+explicit GID. anvil can't read `/etc/passwd` or `/etc/group` without mounting
+the rootfs on the host, so when anvil runs the image as `agent`, it must give
+`agent` access to the Docker socket another way, for example with
+`dockerd --group agent`.
+
+The `base-image` workflow builds the image for `linux/amd64` and
+`linux/arm64`, and publishes it to `ghcr.io/wmeints/anvil-base` with the tags
+`latest` and `sha-<short sha>` on pushes to `main`. Derived images start with
+`FROM ghcr.io/wmeints/anvil-base:latest`. Run `task image:build` to build it
+locally.
+
+anvil doesn't use the image yet: `internal/sandbox` replaces the image command
+with `sleep infinity` and runs as root, so it skips both the entrypoint and
+the `agent` user.
