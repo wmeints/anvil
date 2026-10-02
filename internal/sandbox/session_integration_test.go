@@ -4,17 +4,26 @@ package sandbox
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/errdefs"
 	"github.com/wmeints/anvil/internal/paths"
 )
+
+// testImage is the image of the sandboxes in the integration tests. Set
+// ANVIL_TEST_IMAGE to test an image that isn't published yet, for example one
+// pushed to a local registry.
+var testImage = cmp.Or(
+	os.Getenv("ANVIL_TEST_IMAGE"), "ghcr.io/wmeints/anvil-base:latest")
 
 func newTestContainerClient(t *testing.T) *containerd.Client {
 	t.Helper()
@@ -120,6 +129,18 @@ func runSession(
 ) string {
 	t.Helper()
 
+	out, _ := runSessionCode(ctx, t, cc, name, script)
+
+	return out
+}
+
+// runSessionCode runs a shell script in the sandbox and returns its output and
+// exit code.
+func runSessionCode(
+	ctx context.Context, t *testing.T, cc *containerd.Client, name, script string,
+) (string, uint32) {
+	t.Helper()
+
 	var stdout bytes.Buffer
 
 	session, err := StartSession(ctx, cc, name, SessionOptions{
@@ -133,11 +154,12 @@ func runSession(
 
 	defer func() { _ = session.Close(context.Background()) }()
 
-	if _, err := session.Wait(); err != nil {
+	code, err := session.Wait()
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	return stdout.String()
+	return stdout.String(), code
 }
 
 func TestStartSessionStartsStoppedSandbox(t *testing.T) {
@@ -185,4 +207,62 @@ func TestStartSessionStartsSandboxWithoutTask(t *testing.T) {
 	}
 
 	assertSessionRuns(ctx, t, cc, name)
+}
+
+func TestSessionRunsAsImageUser(t *testing.T) {
+	cc := newTestContainerClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "session-user-test"
+	startTestSandbox(ctx, t, cc, name)
+
+	if out := runSession(ctx, t, cc, name, "id -u"); strings.TrimSpace(out) != "1000" {
+		t.Errorf("id -u = %q, want 1000", out)
+	}
+
+	if out, code := runSessionCode(ctx, t, cc, name, "sudo -n true"); code != 0 {
+		t.Errorf("sudo -n true exited with %d: %q", code, out)
+	}
+}
+
+func TestSessionRunsDocker(t *testing.T) {
+	cc := newTestContainerClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "session-docker-test"
+	startTestSandbox(ctx, t, cc, name)
+
+	// The entrypoint starts dockerd in the background while the sandbox boots.
+	script := `timeout 60 sh -c 'until docker info >/dev/null 2>&1; do sleep 1; done'
+		docker run --rm hello-world`
+
+	out, code := runSessionCode(ctx, t, cc, name, script)
+	if code != 0 || !strings.Contains(out, "Hello from Docker!") {
+		t.Errorf("docker run exited with %d: %q", code, out)
+	}
+}
+
+func TestStartRejectsImageWithoutUser(t *testing.T) {
+	cc := newTestContainerClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	name := "no-user-test"
+	removeSandbox(cc, name)
+	t.Cleanup(func() { removeSandbox(cc, name) })
+
+	sb, err := NewSandbox(name, "ubuntu:26.04")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sb.Start(ctx, cc); !errors.Is(err, ErrInvalidImageUser) {
+		t.Fatalf("error = %v, want %v", err, ErrInvalidImageUser)
+	}
+
+	if _, err := cc.LoadContainer(ctx, name); !errdefs.IsNotFound(err) {
+		t.Errorf("expected no sandbox container, got %v", err)
+	}
 }

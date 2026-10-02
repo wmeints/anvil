@@ -52,7 +52,9 @@ reach `dockerd`, because tini runs as `agent` and can't signal the root
   that reaps orphans, and `anvil stop` waits for the timeout. The docs for
   building custom images must say so.
 - Until anvil runs the image's entrypoint, sandboxes keep anvil's shell init
-  and don't use tini.
+  and don't use tini. Since
+  [decision 4](./0004-run-sandboxes-as-the-image-user-privileged-in-the-vm.md),
+  anvil runs the entrypoint, so tini is the init of `anvil-base` sandboxes.
 - When the container command, such as `sleep infinity`, exits, tini exits and
   the sandbox stops. A process in the sandbox that kills that command stops
   the sandbox.

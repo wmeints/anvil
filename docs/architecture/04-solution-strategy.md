@@ -26,9 +26,9 @@
   alive and allow users to connect from multiple terminal windows to the same
   VM so the down time is zero if the sandbox is running.
 
-- **Compatibility:** Sandboxes use OCI images to ensure developers can easily 
-  build sandboxes using standard images like `ubuntu:26.04` or their own custom
-  images.
+- **Compatibility:** Sandboxes use OCI images to ensure developers can easily
+  build sandboxes with standard tooling. Images build on `anvil-base` and run
+  as a numeric non-root user.
 
   We'll use container images as the basis because it's so well-known in the
   community. We'll extend this with a specific configuration format to allow

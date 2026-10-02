@@ -10,3 +10,6 @@ The decision records live in [`decisions/`](./decisions/).
 3. [Run tini as the init of the base image](./decisions/0003-tini-in-the-base-image.md)
    - tini in the image's `ENTRYPOINT` over a shell init or a tini that anvil
      bundles and mounts, so anvil ships no third-party binaries.
+4. [Run sandboxes as the image user, privileged inside the VM](./decisions/0004-run-sandboxes-as-the-image-user-privileged-in-the-vm.md)
+   - the image's numeric non-root user and entrypoint over root and anvil's
+     own init, with a privileged container because the VM is the boundary.

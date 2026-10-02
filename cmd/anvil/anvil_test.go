@@ -184,7 +184,9 @@ func TestCreateUsesDefaultImage(t *testing.T) {
 	}
 
 	created := daemon.received().created
-	if created.GetName() != "demo" || created.GetImage() != "ubuntu:26.04" {
+	image := "ghcr.io/wmeints/anvil-base:latest"
+
+	if created.GetName() != "demo" || created.GetImage() != image {
 		t.Errorf("unexpected create request: %v", created)
 	}
 }
