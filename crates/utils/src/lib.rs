@@ -16,3 +16,12 @@ pub fn log_dir() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("anvil")
 }
+
+/// Returns the directory holding the SSH keys and config the daemon provisions for sandboxes.
+pub fn ssh_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("anvil/ssh")
+}

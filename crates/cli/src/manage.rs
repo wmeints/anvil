@@ -20,10 +20,21 @@ pub async fn start_sandbox(
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
     let spec = resolve_spec(working_dir)?;
+    let name = spec.name.clone();
 
     client
         .start_sandbox(build_start_request(spec, working_dir))
         .await?;
+
+    let hostname = client
+        .get_sandbox(GetSandboxRequest { name })
+        .await?
+        .into_inner()
+        .hostname;
+
+    if !hostname.is_empty() {
+        println!("Connect with: ssh {hostname}");
+    }
 
     Ok(())
 }
@@ -65,9 +76,11 @@ pub(crate) async fn ensure_running(
             SandboxStatus::Stopped | SandboxStatus::Crashed => {
                 eprintln!("Starting sandbox {name}...");
 
+                // The workspace lets the daemon name sandboxes created before SSH support.
                 client
                     .start_sandbox(StartSandboxRequest {
                         name: name.to_string(),
+                        workspace: workspace.to_string_lossy().into_owned(),
                         ..Default::default()
                     })
                     .await?;
@@ -146,7 +159,12 @@ pub async fn list_sandboxes(client: &mut SandboxManagementServiceClient<Channel>
     let response_data: ListSandboxesResponse = response.into_inner();
 
     for item in response_data.sandboxes {
-        println!("{}\t{}", item.name, format_status(item.status()));
+        println!(
+            "{}\t{}\t{}",
+            item.name,
+            format_status(item.status()),
+            item.hostname
+        );
     }
 
     Ok(())

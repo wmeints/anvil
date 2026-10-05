@@ -9,6 +9,7 @@ service SandboxManagementService {
   rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
   rpc RemoveSandbox(RemoveSandboxRequest) returns (RemoveSandboxResponse);
   rpc Attach(stream AttachRequest) returns (stream AttachResponse);
+  rpc SshTunnel(stream SshTunnelRequest) returns (stream SshTunnelResponse);
 }
 
 message StartSandboxRequest {
@@ -45,11 +46,15 @@ message GetSandboxRequest {
 message GetSandboxResponse {
   string name = 1;
   SandboxStatus status = 2;
+  // SSH host name of the sandbox, e.g. `project.anvil`. Empty when it has none.
+  string hostname = 3;
 }
 
 message SandboxSummary {
   string name = 1;
   SandboxStatus status = 2;
+  // SSH host name of the sandbox, e.g. `project.anvil`. Empty when it has none.
+  string hostname = 3;
 }
 
 enum SandboxStatus {
@@ -97,4 +102,16 @@ message AttachResponse {
     bytes output = 1;
     int32 exit_code = 2;
   }
+}
+
+message SshTunnelRequest {
+  oneof message {
+    // Must be the first message on the stream, and only the first.
+    string hostname = 1;
+    bytes data = 2;
+  }
+}
+
+message SshTunnelResponse {
+  bytes data = 1;
 }

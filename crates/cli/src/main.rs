@@ -1,6 +1,6 @@
 use std::env;
 
-use anvil_cli::{client, manage, session, validate};
+use anvil_cli::{client, manage, session, ssh, validate};
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
@@ -25,6 +25,12 @@ enum Commands {
     Run(RunArgs),
     /// Validate the .anvil.yml file in the working directory
     Validate,
+    /// Tunnel an SSH connection to a sandbox over stdin/stdout (used by the generated SSH config)
+    #[command(hide = true)]
+    SshProxy {
+        /// Host name of the sandbox, e.g. `project.anvil`
+        hostname: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -67,6 +73,12 @@ async fn main() -> Result<()> {
             .await?;
 
             std::process::exit(code);
+        }
+        Commands::SshProxy { hostname } => {
+            ssh::proxy(hostname, &mut client_instance).await?;
+
+            // Exit right away rather than wait for the stdin thread, which blocks on a read.
+            std::process::exit(0);
         }
         Commands::Validate => unreachable!("handled before connecting to the daemon"),
     }

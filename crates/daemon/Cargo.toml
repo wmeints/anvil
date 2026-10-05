@@ -28,7 +28,8 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 anvil-utils = { workspace = true }
 tracing-appender = "0.2.5"
-microsandbox = "0.7.6"
+microsandbox = { version = "0.7.6", features = ["ssh"] }
+russh = "0.63.1"
 anvil-spec = {
     path = "../spec"
 }
@@ -40,3 +41,4 @@ tonic-prost-build = "0.14.6"
 [dev-dependencies]
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 tower = "0.5.3"
+tempfile = "3.27.0"

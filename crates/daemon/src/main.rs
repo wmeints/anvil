@@ -3,7 +3,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
-use anvil_daemon::server;
+use anvil_daemon::{server, ssh};
 
 /// Sets up logging and runs the daemon on its unix socket until shutdown.
 #[tokio::main]
@@ -18,6 +18,9 @@ async fn main() -> Result<()> {
         .with(fmt::layer().with_ansi(false).with_writer(log_writer))
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
+
+    ssh::ensure_keys()?;
+    server::sync_ssh_config().await;
 
     let socket_path = anvil_utils::socket_path();
     tracing::info!(path = %log_dir.display(), "writing logs");
