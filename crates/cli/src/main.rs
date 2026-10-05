@@ -1,6 +1,6 @@
 use std::env;
 
-use anvil_cli::{client, manage, session};
+use anvil_cli::{client, manage, session, validate};
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
@@ -23,6 +23,8 @@ enum Commands {
     Rm,
     /// Run a command inside the sandbox
     Run(RunArgs),
+    /// Validate the .anvil.yml file in the working directory
+    Validate,
 }
 
 #[derive(Args, Debug)]
@@ -37,10 +39,16 @@ struct RunArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut client_instance = client::connect().await?;
+    let cli = Cli::parse();
     let working_dir = env::current_dir()?;
 
-    let cli = Cli::parse();
+    // Validating the spec doesn't need the daemon.
+    if let Commands::Validate = cli.command {
+        let valid = validate::validate_spec(&working_dir)?;
+        std::process::exit(if valid { 0 } else { 1 });
+    }
+
+    let mut client_instance = client::connect().await?;
 
     match cli.command {
         Commands::Start => manage::start_sandbox(&working_dir, &mut client_instance).await?,
@@ -60,6 +68,7 @@ async fn main() -> Result<()> {
 
             std::process::exit(code);
         }
+        Commands::Validate => unreachable!("handled before connecting to the daemon"),
     }
 
     Ok(())

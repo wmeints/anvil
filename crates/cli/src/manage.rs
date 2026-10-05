@@ -12,7 +12,7 @@ use crate::api::{
     sandbox_management_service_client::SandboxManagementServiceClient,
 };
 
-const SPEC_FILE_NAME: &str = ".anvil.yml";
+pub(crate) const SPEC_FILE_NAME: &str = ".anvil.yml";
 
 /// Starts the sandbox for the working directory, creating it when needed.
 pub async fn start_sandbox(

@@ -11,12 +11,46 @@ pub enum SandboxSpecError {
     FileNotFound,
     #[error("can't read contents of the input file")]
     CantReadInputFile(#[from] std::io::Error),
-    #[error("can't parse input yaml")]
+    #[error("can't parse input yaml: {0}")]
     InvalidSpec(#[from] serde_yaml::Error),
+}
+
+/// A problem in a spec file, pinned to the 1-based line and column it occurs at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecDiagnostic {
+    pub line: usize,
+    pub column: usize,
+    pub message: String,
+}
+
+impl SandboxSpecError {
+    /// Returns the position and description of the problem when the spec content is invalid.
+    pub fn diagnostic(&self) -> Option<SpecDiagnostic> {
+        let SandboxSpecError::InvalidSpec(err) = self else {
+            return None;
+        };
+
+        // Errors without a location concern the document as a whole.
+        let (line, column) = err
+            .location()
+            .map_or((1, 1), |location| (location.line(), location.column()));
+
+        // The yaml error message ends with the position, which we report separately.
+        let message = err.to_string();
+        let suffix = format!(" at line {line} column {column}");
+        let message = message.strip_suffix(&suffix).unwrap_or(&message).to_string();
+
+        Some(SpecDiagnostic {
+            line,
+            column,
+            message,
+        })
+    }
 }
 
 /// Describes a sandbox as configured in a spec file.
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct SandboxSpec {
     pub name: String,
     pub resources: Option<SandboxResourcesSpec>,
@@ -25,6 +59,7 @@ pub struct SandboxSpec {
 
 /// CPU and memory resources assigned to a sandbox.
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct SandboxResourcesSpec {
     pub cpu: u8,
     pub memory: String,
@@ -148,5 +183,47 @@ pub mod tests {
         let result = from_file(file.path());
 
         assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
+    }
+
+    #[test]
+    fn unknown_field_returns_invalid_spec() {
+        let file = write_spec("name: dev\nimgae: ubuntu:24.04\n");
+
+        let result = from_file(file.path());
+
+        assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
+    }
+
+    #[test]
+    fn diagnostic_reports_position_of_invalid_value() {
+        let file = write_spec("name: dev\nresources:\n  cpu: 256\n  memory: 4Gi\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!(diagnostic.line, 3);
+        assert_eq!(diagnostic.column, 8);
+        assert_eq!(
+            diagnostic.message,
+            "resources.cpu: invalid value: integer `256`, expected u8"
+        );
+    }
+
+    #[test]
+    fn diagnostic_reports_position_of_syntax_error() {
+        let file = write_spec("name: dev\n  bad: indent\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (2, 6));
+        assert!(!diagnostic.message.contains("at line"));
+    }
+
+    #[test]
+    fn missing_file_has_no_diagnostic() {
+        let dir = TempDir::new().unwrap();
+
+        let result = from_file(&dir.path().join("does-not-exist.yaml"));
+
+        assert!(result.unwrap_err().diagnostic().is_none());
     }
 }
