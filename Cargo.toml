@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["crates/cli", "crates/daemon", "crates/spec", "crates/utils"]
+
+[workspace.dependencies]
+anvil-utils = { path = "crates/utils" }
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Willem Meints"]
+edition = "2024"

@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package anvil;
+
+service SandboxManagementService {
+  rpc StartSandbox(StartSandboxRequest) returns (StartSandboxResponse);
+  rpc StopSandbox(StopSandboxRequest) returns (StopSandboxResponse);
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+  rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
+  rpc RemoveSandbox(RemoveSandboxRequest) returns (RemoveSandboxResponse);
+  rpc Attach(stream AttachRequest) returns (stream AttachResponse);
+}
+
+message StartSandboxRequest {
+  string name = 1;
+  string image = 2;
+  optional SandboxResources resources = 3;
+  // Absolute host path, mounted read/write at /workspaces/<leaf-name>.
+  string workspace = 4;
+}
+
+message SandboxResources {
+  uint32 cpu = 1;
+  string memory = 2;
+}
+
+message StartSandboxResponse {}
+
+message StopSandboxRequest {
+  string name = 1;
+}
+
+message StopSandboxResponse {}
+
+message ListSandboxesRequest {}
+
+message ListSandboxesResponse {
+  repeated SandboxSummary sandboxes = 1;
+}
+
+message GetSandboxRequest {
+  string name = 1;
+}
+
+message GetSandboxResponse {
+  string name = 1;
+  SandboxStatus status = 2;
+}
+
+message SandboxSummary {
+  string name = 1;
+  SandboxStatus status = 2;
+}
+
+enum SandboxStatus {
+  SANDBOX_STATUS_STOPPED = 0;
+  SANDBOX_STATUS_RUNNING = 1;
+  SANDBOX_STATUS_PAUSED = 2;
+  SANDBOX_STATUS_STARTING = 3;
+  SANDBOX_STATUS_STOPPING = 4;
+  SANDBOX_STATUS_CRASHED = 5;
+}
+
+message RemoveSandboxRequest {
+  string name = 1;
+}
+
+message RemoveSandboxResponse {}
+
+message AttachRequest {
+  oneof message {
+    // Must be the first message on the stream, and only the first.
+    AttachStart start = 1;
+    AttachInput input = 2;
+    AttachResize resize = 3;
+  }
+}
+
+message AttachStart {
+  string name = 1;
+  string command = 2;
+  repeated string args = 3;
+  AttachResize size = 4;
+}
+
+message AttachInput {
+  bytes data = 1;
+}
+
+message AttachResize {
+  uint32 width = 1;
+  uint32 height = 2;
+}
+
+message AttachResponse {
+  oneof message {
+    bytes output = 1;
+    int32 exit_code = 2;
+  }
+}

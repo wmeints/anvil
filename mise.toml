@@ -1,0 +1,4 @@
+[tools]
+buf = "latest"
+lefthook = "latest"
+rust = { version = "1.99.0", components = "rust-src,rust-analyzer" }

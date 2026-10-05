@@ -1,0 +1,30 @@
+[package]
+name = "anvil-cli"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "anvil"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+prost = "0.14.4"
+tokio = { version = "1.53.2", features = ["full"] }
+tonic = "0.14.6"
+tonic-prost = "0.14.6"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+anvil-utils = { workspace = true }
+tower = "0.5.3"
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+anvil-spec = { path = "../spec" }
+crossterm = "0.29"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[build-dependencies]
+tonic-prost-build = "0.14.6"

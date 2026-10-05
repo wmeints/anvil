@@ -1,0 +1,42 @@
+[package]
+name = "anvil-daemon"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "anvild"
+path = "src/main.rs"
+
+[features]
+# Integration tests that boot real microsandbox VMs.
+vm-tests = []
+
+[[test]]
+name = "grpc"
+required-features = ["vm-tests"]
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+prost = "0.14.4"
+thiserror = "2.0.21"
+tokio = { version = "1.53.2", features = ["full", "signal"] }
+tonic = { version = "0.14.6", features = ["server"] }
+tonic-prost = "0.14.6"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+anvil-utils = { workspace = true }
+tracing-appender = "0.2.5"
+microsandbox = "0.7.6"
+anvil-spec = {
+    path = "../spec"
+}
+async-trait = "0.1.92"
+
+[build-dependencies]
+tonic-prost-build = "0.14.6"
+
+[dev-dependencies]
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+tower = "0.5.3"
