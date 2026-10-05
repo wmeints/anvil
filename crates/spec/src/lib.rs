@@ -38,7 +38,10 @@ impl SandboxSpecError {
         // The yaml error message ends with the position, which we report separately.
         let message = err.to_string();
         let suffix = format!(" at line {line} column {column}");
-        let message = message.strip_suffix(&suffix).unwrap_or(&message).to_string();
+        let message = message
+            .strip_suffix(&suffix)
+            .unwrap_or(&message)
+            .to_string();
 
         Some(SpecDiagnostic {
             line,
@@ -71,11 +74,10 @@ pub fn from_file(path: &Path) -> Result<SandboxSpec, SandboxSpecError> {
         return Err(SandboxSpecError::FileNotFound);
     }
 
-    let file_content =
-        fs::read_to_string(path).map_err(|err| SandboxSpecError::CantReadInputFile(err))?;
+    let file_content = fs::read_to_string(path).map_err(SandboxSpecError::CantReadInputFile)?;
 
     let spec = serde_yaml::from_str::<SandboxSpec>(file_content.as_str())
-        .map_err(|err| SandboxSpecError::InvalidSpec(err))?;
+        .map_err(SandboxSpecError::InvalidSpec)?;
 
     Ok(spec)
 }
@@ -83,7 +85,7 @@ pub fn from_file(path: &Path) -> Result<SandboxSpec, SandboxSpecError> {
 /// Creates a spec with the given name and default image and resources.
 pub fn default_spec(name: String) -> SandboxSpec {
     SandboxSpec {
-        name: name,
+        name,
         image: Some("ubuntu:26.04".to_string()),
         resources: Some(SandboxResourcesSpec {
             cpu: 1,

@@ -55,9 +55,8 @@ impl SandboxManagementService for AnvilServer {
 
         let existing_sb = Sandbox::get(&request_data.name).await;
 
-        if existing_sb.is_ok() {
+        if let Ok(existing_sb) = existing_sb {
             existing_sb
-                .unwrap()
                 .start_detached()
                 .await
                 .map_err(|_| Status::internal("failed to start sandbox"))?;
@@ -369,7 +368,7 @@ pub async fn serve(
         .add_service(SandboxManagementServiceServer::new(AnvilServer::default()))
         .serve_with_incoming_shutdown(incoming, shutdown)
         .await
-        .map_err(|err| ServerError::FailedToListen(err.into()))?;
+        .map_err(ServerError::FailedToListen)?;
 
     fs::remove_file(socket_path)?;
 

@@ -201,7 +201,7 @@ fn format_status(status: SandboxStatus) -> String {
         SandboxStatus::Crashed => "Crashed",
     };
 
-    return status_text.to_string();
+    status_text.to_string()
 }
 
 #[cfg(test)]
