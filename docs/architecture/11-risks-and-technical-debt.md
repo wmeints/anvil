@@ -10,3 +10,9 @@
   microsandbox runtime in the exact version `anvild` was built with. A
   mismatch makes every sandbox start fail. Embedding the runtime with
   microsandbox's `embed-binaries` feature would remove this step.
+- **Ageing Linux build runners:** Linux releases build on the `ubuntu-22.04`
+  runners to support glibc 2.35. GitHub retires runner images before their
+  Ubuntu release reaches end of support (April 2027), after which the
+  release jobs fail. Building in an older-glibc container, or with
+  `cargo-zigbuild` against a pinned glibc version, would remove this
+  dependency.

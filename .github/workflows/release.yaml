@@ -29,13 +29,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install protoc (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install protoc (macOS)
-        if: runner.os == 'macOS'
-        run: brew install protobuf
+      # Ubuntu 22.04's apt protoc (3.12) rejects proto3 optional fields, so install a current release.
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "29.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       # Installs the Rust toolchain pinned in mise.toml.
       - uses: jdx/mise-action@v2
