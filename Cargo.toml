@@ -9,3 +9,4 @@ anvil-utils = { path = "crates/utils" }
 version = "0.1.0"
 authors = ["Willem Meints"]
 edition = "2024"
+license = "MIT"
