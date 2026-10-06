@@ -144,5 +144,7 @@ images. It builds on `ubuntu:26.04` and adds:
   default. The `ubuntu` user that the base image ships with UID 1000 is
   removed.
 
-No workflow builds or publishes the image yet, and anvil doesn't use it by
-default: the default image is `ubuntu:26.04`, and SSH logs in as `root`.
+The release workflow publishes the image as
+`ghcr.io/wmeints/anvil-base:<tag>` (see [Deployment view](07-deployment-view.md)),
+but anvil doesn't use it by default: the default image is `ubuntu:26.04`, and
+SSH logs in as `root`.
