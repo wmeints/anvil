@@ -82,11 +82,13 @@ C4Component
         Component(main, "main", "Rust", "Entrypoint")
         Component(server, "server", "Tonic server", "Control API server")
         Component(ssh, "ssh", "russh", "SSH access")
+        Component(runtime, "runtime", "Rust", "Runtime installation")
     }
     Component_Ext(utils, "anvil-utils", "Rust", "File locations")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
     System_Ext(sshconfig, "~/.ssh/config", "OpenSSH config")
 
+    Rel(main, runtime, "Ensures runtime")
     Rel(main, ssh, "Ensures keys")
     Rel(main, server, "Runs")
     Rel(server, ssh, "Host names, SSH config")
@@ -94,11 +96,13 @@ C4Component
     Rel(server, utils, "Finds socket")
     Rel(ssh, utils, "Finds SSH directory")
     Rel(ssh, sshconfig, "Adds Include")
+    Rel(runtime, microsandbox, "Installs msb and libkrunfw")
 ```
 
 - `main` - Sets up logging to stdout and to a daily log file in
-  `$XDG_STATE_HOME/anvil`, makes sure the SSH keys exist, syncs the SSH
-  config and serves the API until `SIGINT` or `SIGTERM`.
+  `$XDG_STATE_HOME/anvil`, exits when the socket is already in use, makes
+  sure the microsandbox runtime and the SSH keys exist, syncs the SSH config
+  and serves the API until `SIGINT` or `SIGTERM`.
 - `server` - Implements `SandboxManagementService` on top of microsandbox.
   It creates sandboxes from the requested image with the requested vCPUs and
   memory, and mounts the workspace read/write at `/workspaces/<leaf>`. It
@@ -108,6 +112,12 @@ C4Component
   connections with microsandbox's SSH server over an in-memory pipe, booting
   the sandbox when needed. It refuses to start when the socket already exists
   and removes the socket on shutdown.
+- `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
+  matches the runtime archive embedded in `anvild` at build time, so it never
+  needs network access. It extracts the archive when no runtime is installed,
+  and replaces a runtime in the microsandbox home whose `msb` has another
+  version. An explicitly configured runtime with another version, or a
+  partial installation, is an error.
 - `ssh` - Creates the ed25519 client and host keys, pins the host key for
   `*.anvil` in a `known_hosts` file, picks a unique `<leaf>.anvil` host name
   per sandbox (stored in the `anvil.hostname` label), and writes the

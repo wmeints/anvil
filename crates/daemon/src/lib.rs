@@ -3,5 +3,6 @@ pub mod api {
     tonic::include_proto!("anvil");
 }
 
+pub mod runtime;
 pub mod server;
 pub mod ssh;

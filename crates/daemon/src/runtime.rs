@@ -1,0 +1,211 @@
+//! Installation of the microsandbox runtime (`msb` and `libkrunfw`) the daemon runs sandboxes with.
+//!
+//! The runtime archive is embedded in `anvild` at build time, so installing it never needs
+//! network access.
+
+use anyhow::{Context, Result, bail};
+use microsandbox::config::GlobalConfig;
+use microsandbox::setup::{InstallOptions, InstallSource, ResolvedRuntime, RuntimeOrigin, Version};
+
+/// Makes sure the microsandbox runtime matches the one embedded in `anvild`.
+///
+/// A missing runtime is extracted from the embedded archive, and a runtime in the microsandbox
+/// home with another version is replaced by it. A runtime configured outside the home with
+/// another version, or a partial installation, is an error.
+pub async fn ensure(config: &GlobalConfig) -> Result<ResolvedRuntime> {
+    let runtime = microsandbox::setup::ensure_runtime(config, embedded(false))
+        .await
+        .context("failed to ensure the microsandbox runtime is installed")?;
+    let expected = expected_version()?;
+    let installed = installed_version(&runtime)?;
+    let runtime = match installed {
+        Some(ref version) if *version == expected => runtime,
+        _ if runtime.origin == RuntimeOrigin::Home => upgrade(config, installed, &expected).await?,
+        _ => bail!(
+            "microsandbox runtime {} has version {}, but anvild needs {expected}",
+            runtime.msb_path.display(),
+            describe(installed.as_ref())
+        ),
+    };
+    tracing::info!(
+        path = %runtime.msb_path.display(),
+        origin = ?runtime.origin,
+        "microsandbox runtime ready"
+    );
+    Ok(runtime)
+}
+
+/// Replaces the runtime in the microsandbox home with the embedded one.
+async fn upgrade(
+    config: &GlobalConfig,
+    installed: Option<Version>,
+    expected: &Version,
+) -> Result<ResolvedRuntime> {
+    tracing::info!(
+        from = describe(installed.as_ref()),
+        to = %expected,
+        "upgrading microsandbox runtime"
+    );
+    microsandbox::setup::install_runtime(config, embedded(true))
+        .await
+        .context("failed to upgrade the microsandbox runtime")
+}
+
+/// Returns the options that install the embedded runtime archive.
+fn embedded(force: bool) -> InstallOptions {
+    InstallOptions {
+        source: InstallSource::EmbeddedArchive,
+        force,
+        ..Default::default()
+    }
+}
+
+/// Returns the runtime version embedded in `anvild`.
+fn expected_version() -> Result<Version> {
+    let version = InstallOptions::default().version;
+    Version::parse(&version)
+        .with_context(|| format!("invalid embedded microsandbox runtime version {version}"))
+}
+
+/// Reads the version of the resolved `msb`; `None` means it predates version metadata.
+///
+/// An unreadable `msb` in the microsandbox home also counts as `None`, so it gets replaced.
+fn installed_version(runtime: &ResolvedRuntime) -> Result<Option<Version>> {
+    match microsandbox::setup::resolve_runtime_version(&runtime.msb_path) {
+        Ok(version) => Ok(version),
+        Err(error) if runtime.origin == RuntimeOrigin::Home => {
+            tracing::warn!(%error, "failed to read the microsandbox runtime version");
+            Ok(None)
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to read the version of {}",
+                runtime.msb_path.display()
+            )
+        }),
+    }
+}
+
+/// Formats an installed version for messages.
+fn describe(version: Option<&Version>) -> String {
+    version.map_or_else(|| "unknown".to_owned(), Version::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writes a copy of the test binary, an executable without an `msb` version section.
+    fn replace_with_unversioned_binary(path: &std::path::Path) {
+        std::fs::copy(std::env::current_exe().unwrap(), path).unwrap();
+    }
+
+    fn modified(path: &std::path::Path) -> std::time::SystemTime {
+        std::fs::metadata(path).unwrap().modified().unwrap()
+    }
+
+    fn config_in(home: &tempfile::TempDir) -> GlobalConfig {
+        GlobalConfig {
+            home: Some(home.path().to_path_buf()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn installs_embedded_runtime_when_absent() {
+        let home = tempfile::tempdir().unwrap();
+
+        let runtime = ensure(&config_in(&home)).await.unwrap();
+
+        assert_eq!(runtime.origin, RuntimeOrigin::Installed);
+        assert!(runtime.msb_path.starts_with(home.path()));
+        assert!(runtime.msb_path.is_file());
+        assert!(runtime.libkrunfw_path.is_file());
+    }
+
+    #[tokio::test]
+    async fn reuses_installed_runtime() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config_in(&home);
+        let installed = ensure(&config).await.unwrap();
+
+        let runtime = ensure(&config).await.unwrap();
+
+        assert_eq!(runtime.origin, RuntimeOrigin::Home);
+        assert_eq!(runtime.msb_path, installed.msb_path);
+        assert_eq!(modified(&runtime.msb_path), modified(&installed.msb_path));
+    }
+
+    #[tokio::test]
+    async fn upgrades_outdated_home_runtime() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config_in(&home);
+        let installed = ensure(&config).await.unwrap();
+        replace_with_unversioned_binary(&installed.msb_path);
+
+        let runtime = ensure(&config).await.unwrap();
+
+        assert_eq!(runtime.msb_path, installed.msb_path);
+        let version = microsandbox::setup::resolve_runtime_version(&runtime.msb_path).unwrap();
+        assert_eq!(version, Some(expected_version().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn replaces_unreadable_home_runtime() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config_in(&home);
+        let installed = ensure(&config).await.unwrap();
+        std::fs::write(&installed.msb_path, "#!/bin/sh\n").unwrap();
+
+        let runtime = ensure(&config).await.unwrap();
+
+        let version = microsandbox::setup::resolve_runtime_version(&runtime.msb_path).unwrap();
+        assert_eq!(version, Some(expected_version().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn accepts_current_explicit_runtime() {
+        let source = tempfile::tempdir().unwrap();
+        let installed = ensure(&config_in(&source)).await.unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let mut config = config_in(&home);
+        config.paths.msb = Some(installed.msb_path.clone());
+        config.paths.libkrunfw = Some(installed.libkrunfw_path);
+
+        let runtime = ensure(&config).await.unwrap();
+
+        assert_eq!(runtime.origin, RuntimeOrigin::Configuration);
+        assert_eq!(runtime.msb_path, installed.msb_path);
+        assert!(!home.path().join("bin").exists());
+    }
+
+    #[tokio::test]
+    async fn rejects_outdated_explicit_runtime() {
+        let home = tempfile::tempdir().unwrap();
+        let explicit = tempfile::tempdir().unwrap();
+        let msb = explicit.path().join("msb");
+        let libkrunfw = explicit.path().join("libkrunfw.so");
+        replace_with_unversioned_binary(&msb);
+        std::fs::write(&libkrunfw, b"").unwrap();
+        let mut config = config_in(&home);
+        config.paths.msb = Some(msb.clone());
+        config.paths.libkrunfw = Some(libkrunfw);
+
+        let error = ensure(&config).await.unwrap_err();
+
+        assert!(format!("{error:#}").contains("anvild needs"), "{error:#}");
+        assert!(!home.path().join("bin").exists());
+    }
+
+    #[tokio::test]
+    async fn rejects_partial_runtime() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config_in(&home);
+        let installed = ensure(&config).await.unwrap();
+        std::fs::remove_file(&installed.libkrunfw_path).unwrap();
+
+        let error = ensure(&config).await.unwrap_err();
+
+        assert!(format!("{error:#}").contains("expected both"), "{error:#}");
+    }
+}
