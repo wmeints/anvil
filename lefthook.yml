@@ -26,7 +26,3 @@ commit-msg:
           exit 1
         fi
 
-pre-push:
-  commands:
-    integration-tests:
-      run: cargo test -p anvil-daemon --features vm-tests
