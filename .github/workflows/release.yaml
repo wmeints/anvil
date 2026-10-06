@@ -15,13 +15,13 @@ jobs:
     name: Package ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: true
       matrix:
         include:
+          # Build on the oldest supported Ubuntu so the binaries need glibc 2.35 at most.
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
           # microsandbox only supports Apple Silicon on macOS.
           - target: aarch64-apple-darwin
             runner: macos-latest
@@ -40,23 +40,22 @@ jobs:
       # Installs the Rust toolchain pinned in mise.toml.
       - uses: jdx/mise-action@v2
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ matrix.target }}
-
       - name: Build
         run: cargo build --release --locked --bin anvil --bin anvild
 
       # The CLI starts anvild from its own directory, so both binaries ship side by side.
       - name: Package
-        id: package
         env:
           NAME: anvil-${{ github.ref_name }}-${{ matrix.target }}
         run: |
           mkdir "$NAME"
           cp target/release/anvil target/release/anvild "$NAME/"
           tar -czf "$NAME.tar.gz" "$NAME"
-          shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          if [ "$RUNNER_OS" = macOS ]; then
+            shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          else
+            sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -66,6 +65,8 @@ jobs:
 
   image:
     name: Publish anvil-base image
+    # Publish the image only once every package has built, so a failed build pushes nothing.
+    needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: read
