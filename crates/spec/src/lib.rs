@@ -1,6 +1,7 @@
 use std::{fs, path::Path};
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::result::Result;
 use thiserror::Error;
 
@@ -14,6 +15,20 @@ pub enum SandboxSpecError {
     #[error("can't parse input yaml: {0}")]
     InvalidSpec(#[from] serde_yaml::Error),
 }
+
+/// Errors that can occur while parsing a memory size.
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum MemorySizeError {
+    #[error(
+        "invalid memory size `{0}`, expected a positive number with a unit, such as `512 MiB` or `4Gi`"
+    )]
+    Invalid(String),
+    #[error("memory size `{0}` is too large")]
+    TooLarge(String),
+}
+
+/// Image a sandbox runs when its spec doesn't name one.
+pub const DEFAULT_IMAGE: &str = "ubuntu:26.04";
 
 /// A problem in a spec file, pinned to the 1-based line and column it occurs at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +80,69 @@ pub struct SandboxSpec {
 #[serde(deny_unknown_fields)]
 pub struct SandboxResourcesSpec {
     pub cpu: u8,
+    /// Memory size with a binary unit, such as `512 MiB` or `4Gi`.
+    #[serde(deserialize_with = "deserialize_memory")]
     pub memory: String,
+}
+
+impl Default for SandboxResourcesSpec {
+    /// Returns the resources a sandbox gets when its spec doesn't set them.
+    fn default() -> Self {
+        Self {
+            cpu: 2,
+            memory: "4 GiB".to_string(),
+        }
+    }
+}
+
+/// Parses a memory size such as `512 MiB`, `512Mi`, `4 GiB` or `4Gi` into mebibytes.
+pub fn parse_memory_mib(value: &str) -> Result<u32, MemorySizeError> {
+    let invalid = || MemorySizeError::Invalid(value.to_string());
+
+    let trimmed = value.trim();
+    let digits_end = trimmed
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(trimmed.len());
+    let (amount, unit) = trimmed.split_at(digits_end);
+
+    let amount: u64 = amount.parse().map_err(|_| invalid())?;
+    let multiplier: u64 = match unit.trim_start() {
+        "Mi" | "MiB" => 1,
+        "Gi" | "GiB" => 1024,
+        _ => return Err(invalid()),
+    };
+
+    if amount == 0 {
+        return Err(invalid());
+    }
+
+    amount
+        .checked_mul(multiplier)
+        .and_then(|mib| u32::try_from(mib).ok())
+        .ok_or_else(|| MemorySizeError::TooLarge(value.to_string()))
+}
+
+/// Deserializes a memory size, rejecting values that `parse_memory_mib` can't read.
+fn deserialize_memory<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    deserializer.deserialize_str(MemoryVisitor)
+}
+
+/// Checks the memory size while the parser still points at the value, so a problem is
+/// reported at the value's line and column instead of at the enclosing mapping.
+struct MemoryVisitor;
+
+impl Visitor<'_> for MemoryVisitor {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a memory size such as `512 MiB` or `4Gi`")
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<String, E> {
+        parse_memory_mib(value).map_err(E::custom)?;
+
+        Ok(value.to_string())
+    }
 }
 
 /// Loads and parses a sandbox spec from a YAML file.
@@ -86,11 +163,8 @@ pub fn from_file(path: &Path) -> Result<SandboxSpec, SandboxSpecError> {
 pub fn default_spec(name: String) -> SandboxSpec {
     SandboxSpec {
         name,
-        image: Some("ubuntu:26.04".to_string()),
-        resources: Some(SandboxResourcesSpec {
-            cpu: 1,
-            memory: "8 GiB".to_string(),
-        }),
+        image: Some(DEFAULT_IMAGE.to_string()),
+        resources: Some(SandboxResourcesSpec::default()),
     }
 }
 
@@ -218,6 +292,58 @@ pub mod tests {
 
         assert_eq!((diagnostic.line, diagnostic.column), (2, 6));
         assert!(!diagnostic.message.contains("at line"));
+    }
+
+    #[test]
+    fn parses_memory_sizes() {
+        let cases = [
+            ("512 MiB", 512),
+            ("512Mi", 512),
+            ("4 GiB", 4096),
+            ("4Gi", 4096),
+            (" 2GiB ", 2048),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(parse_memory_mib(input), Ok(expected), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_memory_sizes() {
+        for input in ["", "lots", "4", "4 GB", "0 GiB", "-1 GiB", "1.5 GiB", "GiB"] {
+            assert!(
+                matches!(parse_memory_mib(input), Err(MemorySizeError::Invalid(_))),
+                "{input:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_memory_sizes_that_overflow() {
+        assert!(matches!(
+            parse_memory_mib("4194304 GiB"),
+            Err(MemorySizeError::TooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn invalid_memory_returns_diagnostic() {
+        let file = write_spec("name: dev\nresources:\n  cpu: 2\n  memory: lots\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (4, 11));
+        assert!(diagnostic.message.contains("invalid memory size `lots`"));
+    }
+
+    #[test]
+    fn default_spec_uses_default_image_and_resources() {
+        let spec = default_spec("dev".to_string());
+        let resources = spec.resources.unwrap();
+
+        assert_eq!(spec.image.as_deref(), Some(DEFAULT_IMAGE));
+        assert_eq!((resources.cpu, resources.memory.as_str()), (2, "4 GiB"));
     }
 
     #[test]

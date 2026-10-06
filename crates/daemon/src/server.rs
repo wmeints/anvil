@@ -4,11 +4,12 @@ use crate::api::sandbox_management_service_server::{
 use crate::api::{
     AttachRequest, AttachResize, AttachResponse, GetSandboxRequest, GetSandboxResponse,
     ListSandboxesRequest, ListSandboxesResponse, RemoveSandboxRequest, RemoveSandboxResponse,
-    SandboxStatus, SandboxSummary, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
-    StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, attach_request, attach_response,
-    ssh_tunnel_request,
+    SandboxResources, SandboxStatus, SandboxSummary, SshTunnelRequest, SshTunnelResponse,
+    StartSandboxRequest, StartSandboxResponse, StopSandboxRequest, StopSandboxResponse,
+    attach_request, attach_response, ssh_tunnel_request,
 };
 use crate::ssh;
+use anvil_spec::SandboxResourcesSpec;
 use anyhow::Result;
 use async_trait::async_trait;
 use microsandbox::sandbox::exec::{ExecControl, ExecEvent, ExecHandle, ExecSink};
@@ -96,10 +97,13 @@ impl SandboxManagementService for AnvilServer {
             tracing::info!("started sandbox {}", request_data.name);
         } else {
             let guest_path = workspace_mount_path(&request_data.workspace)?;
+            let (cpus, memory_mib) = sandbox_resources(request_data.resources)?;
             let hostname = ssh::pick_hostname(&request_data.workspace, &taken_hostnames().await?);
 
             Sandbox::builder(&request_data.name)
-                .image("ubuntu:26.04")
+                .image(sandbox_image(&request_data.image))
+                .cpus(cpus)
+                .memory(memory_mib)
                 .label(ssh::HOSTNAME_LABEL, &hostname)
                 // Mounted read/write; Mirror propagates guest chmod changes to the host files.
                 .volume(&guest_path, |m| {
@@ -110,7 +114,10 @@ impl SandboxManagementService for AnvilServer {
                 .detached(true)
                 .create()
                 .await
-                .map_err(|_| Status::internal("failed to create sandbox"))?;
+                .map_err(|err| {
+                    tracing::warn!("failed to create sandbox {}: {err}", request_data.name);
+                    Status::internal("failed to create sandbox")
+                })?;
 
             tracing::info!("created sandbox {} as {hostname}", request_data.name);
         }
@@ -526,6 +533,37 @@ fn workspace_mount_path(workspace: &str) -> Result<String, Status> {
     Ok(format!("/workspaces/{}", leaf.to_string_lossy()))
 }
 
+/// Returns the requested image, or the default image when the request doesn't name one.
+fn sandbox_image(image: &str) -> &str {
+    if image.is_empty() {
+        anvil_spec::DEFAULT_IMAGE
+    } else {
+        image
+    }
+}
+
+/// Converts requested resources to vCPUs and MiB of memory, using the default resources when
+/// the request has none.
+fn sandbox_resources(resources: Option<SandboxResources>) -> Result<(u8, u32), Status> {
+    let resources = resources.unwrap_or_else(|| {
+        let defaults = SandboxResourcesSpec::default();
+
+        SandboxResources {
+            cpu: defaults.cpu.into(),
+            memory: defaults.memory,
+        }
+    });
+
+    let cpus = u8::try_from(resources.cpu)
+        .ok()
+        .filter(|cpus| *cpus > 0)
+        .ok_or_else(|| Status::invalid_argument("cpu must be between 1 and 255"))?;
+    let memory_mib = anvil_spec::parse_memory_mib(&resources.memory)
+        .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+    Ok((cpus, memory_mib))
+}
+
 /// Converts a requested window size to `(width, height)` as PTY columns and rows.
 fn window_size(size: Option<AttachResize>) -> Result<(u16, u16), Status> {
     let size = size.ok_or_else(|| Status::invalid_argument("window size is required"))?;
@@ -650,6 +688,45 @@ mod tests {
             window_size(Some(oversized)).unwrap_err().code(),
             tonic::Code::InvalidArgument
         );
+    }
+
+    #[test]
+    fn sandbox_image_falls_back_to_default() {
+        assert_eq!(sandbox_image("alpine:3.22"), "alpine:3.22");
+        assert_eq!(sandbox_image(""), anvil_spec::DEFAULT_IMAGE);
+    }
+
+    #[test]
+    fn sandbox_resources_converts_request() {
+        let resources = SandboxResources {
+            cpu: 4,
+            memory: "8 GiB".to_string(),
+        };
+
+        assert_eq!(sandbox_resources(Some(resources)).unwrap(), (4, 8192));
+    }
+
+    #[test]
+    fn sandbox_resources_falls_back_to_defaults() {
+        assert_eq!(sandbox_resources(None).unwrap(), (2, 4096));
+    }
+
+    #[test]
+    fn sandbox_resources_rejects_invalid_values() {
+        let cases = [(0, "1 GiB"), (256, "1 GiB"), (2, "lots"), (2, "")];
+
+        for (cpu, memory) in cases {
+            let resources = SandboxResources {
+                cpu,
+                memory: memory.to_string(),
+            };
+
+            assert_eq!(
+                sandbox_resources(Some(resources)).unwrap_err().code(),
+                tonic::Code::InvalidArgument,
+                "cpu {cpu}, memory {memory:?} should be rejected"
+            );
+        }
     }
 
     #[test]

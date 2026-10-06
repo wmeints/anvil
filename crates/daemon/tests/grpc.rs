@@ -10,12 +10,13 @@ use std::time::Duration;
 use anvil_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use anvil_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachStart, GetSandboxRequest, ListSandboxesRequest,
-    RemoveSandboxRequest, SandboxStatus, StartSandboxRequest, StopSandboxRequest, attach_request,
-    attach_response,
+    RemoveSandboxRequest, SandboxResources, SandboxStatus, StartSandboxRequest, StopSandboxRequest,
+    attach_request, attach_response,
 };
 use anvil_daemon::server;
 use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
+use microsandbox::sandbox::RootfsSource;
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -290,6 +291,72 @@ async fn sandbox_lifecycle() {
         .await
         .expect("failed to restart sandbox");
     wait_for_status(&mut client, NAME, SandboxStatus::Running).await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
+async fn start_sandbox_uses_requested_image_and_resources() {
+    const NAME: &str = "anvil-it-resources";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("resources").await;
+    let mut client = daemon.client().await;
+
+    client
+        .start_sandbox(StartSandboxRequest {
+            image: "alpine:3.22".to_string(),
+            resources: Some(SandboxResources {
+                cpu: 1,
+                memory: "1 GiB".to_string(),
+            }),
+            ..start_request(NAME)
+        })
+        .await
+        .expect("failed to create sandbox");
+    wait_for_status(&mut client, NAME, SandboxStatus::Running).await;
+
+    let spec = Sandbox::get(NAME)
+        .await
+        .expect("failed to get sandbox")
+        .config()
+        .expect("failed to read sandbox config")
+        .spec;
+
+    assert!(
+        matches!(&spec.image, RootfsSource::Oci(oci) if oci.reference.contains("alpine")),
+        "unexpected image: {:?}",
+        spec.image
+    );
+    assert_eq!(spec.resources.cpus, 1);
+    assert_eq!(spec.resources.memory_mib, 1024);
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
+async fn start_sandbox_rejects_invalid_resources() {
+    const NAME: &str = "anvil-it-bad-resources";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("bad-resources").await;
+    let mut client = daemon.client().await;
+
+    let status = client
+        .start_sandbox(StartSandboxRequest {
+            resources: Some(SandboxResources {
+                cpu: 2,
+                memory: "lots".to_string(),
+            }),
+            ..start_request(NAME)
+        })
+        .await
+        .expect_err("start_sandbox should reject invalid memory");
+
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(Sandbox::get(NAME).await.is_err(), "sandbox was created");
 
     daemon.stop().await;
     remove_sandbox(NAME).await;
