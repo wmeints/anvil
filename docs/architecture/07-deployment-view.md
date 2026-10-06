@@ -33,17 +33,21 @@ on unix signals. See
 ## Host requirements
 
 `anvild` runs sandboxes through the microsandbox runtime (`msb` and
-`libkrunfw`), which needs KVM on Linux or Apple Silicon on macOS. The
-release archives don't contain this runtime, and `anvild` doesn't install
-it. Install it with the
-[microsandbox installer](https://docs.microsandbox.dev/getting-started/quickstart)
-before running anvil:
+`libkrunfw`), which needs KVM on Linux or Apple Silicon on macOS. `anvild`
+embeds the runtime that matches the `microsandbox` crate it's built with
+(currently `0.7.6`). On startup it extracts that runtime when none is
+installed, and replaces an installed runtime with another version. See [ADR 0002](decisions/0002-embed-the-microsandbox-runtime-in-anvild.md).
 
-- The runtime version must match the `microsandbox` crate that `anvild` is
-  built with (currently `0.7.6`); `anvild` refuses runtime versions it
-  hasn't been tested against.
 - The runtime lives in `~/.microsandbox`, or in the directory that the
-  `MSB_HOME` environment variable points to.
+  `MSB_HOME` environment variable points to. `MSB_PATH` and
+  `MSB_LIBKRUNFW_PATH` point `anvild` at a runtime elsewhere.
+- `anvild` reads the version from the `msb` binary without running it. A
+  runtime without version information predates it and counts as outdated,
+  and so does an `msb` in the microsandbox home whose version can't be read.
+- A runtime that `MSB_PATH` or `paths.msb` points to is never replaced. When
+  its version differs from the embedded one, `anvild` refuses to start.
+- A partial runtime (one of the two files missing) stops `anvild` from
+  starting. Remove both files to let `anvild` reinstall the runtime.
 
 The macOS binaries aren't signed. When the archive is downloaded through a
 browser, macOS quarantines them; remove the quarantine with

@@ -6,6 +6,12 @@ removes a stale socket file, spawns `anvild` and polls the socket for at most
 5 seconds. The diagrams below show this step once, in
 [Running a session](#running-a-session), and leave it out of the others.
 
+Before `anvild` listens, it exits when the socket already exists, and then
+makes sure the microsandbox runtime matches the runtime embedded in its
+binary. It extracts the embedded runtime when the runtime is missing or has
+another version. When `MSB_PATH` or `paths.msb` selects a runtime with
+another version, `anvild` exits instead, and the CLI reports a timeout.
+
 The CLI resolves the sandbox name from `.anvil.yml` in the working directory,
 or derives it from the full working directory path when there's no spec file.
 

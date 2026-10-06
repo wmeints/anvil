@@ -38,7 +38,9 @@ Windows is left out until the CLI and daemon are ported off unix-only APIs.
   the image is only pushed when every package succeeds. An image push can
   still succeed while the release step fails.
 - Users install the microsandbox runtime themselves, in the version that
-  matches the `microsandbox` crate; the archives don't bundle it.
+  matches the `microsandbox` crate; the archives don't bundle it. Superseded
+  by [ADR 0002](0002-embed-the-microsandbox-runtime-in-anvild.md): `anvild`
+  now embeds the runtime.
 - The `anvil-base` package must be made public once after its first push.
 - Windows users can't install anvil from a release, which leaves the
   Windows constraint unmet (see
