@@ -1,0 +1,165 @@
+# Anvil
+
+Anvil runs coding agents safely inside a microVM-based sandbox on your own
+machine. Each project gets its own lightweight VM, built from an OCI image,
+with only the project directory shared from the host. You don't need a cloud
+account, a commercial license or root permissions.
+
+Anvil supports two ways of working:
+
+- **Terminal agents** such as [Claude Code](https://claude.ai/code),
+  [OpenCode](https://opencode.ai) and [Oh-my-pi](https://omp.sh): run them in
+  the sandbox with `anvil run`.
+- **IDE-integrated agents** such as GitHub Copilot: connect your IDE to the
+  sandbox over SSH.
+
+> [!NOTE]
+> Anvil is early in development. Egress control and secret proxying are
+> planned but not available yet.
+
+## How it works
+
+Anvil consists of two executables:
+
+- `anvil` - the CLI you use to manage sandboxes and run commands in them.
+- `anvild` - a daemon that manages the sandboxes through
+  [microsandbox](https://docs.microsandbox.dev). The CLI starts it
+  automatically when it isn't running.
+
+The CLI and daemon talk gRPC over a unix socket
+(`$XDG_RUNTIME_DIR/anvild.sock`, or `anvild.sock` in the temp directory when
+`XDG_RUNTIME_DIR` isn't set). The daemon mounts the working directory
+read/write in the sandbox at `/workspaces/<leaf>`, where `<leaf>` is the name
+of the directory.
+
+## Requirements
+
+- Linux with KVM, or macOS on Apple Silicon.
+- On Linux, glibc 2.35 or newer for the release binaries.
+
+Windows isn't supported. `anvild` embeds the microsandbox runtime and installs
+it in `~/.microsandbox` on first start.
+
+## Installation
+
+Download the archive for your platform from the
+[GitHub releases](https://github.com/wmeints/anvil/releases), extract it and
+put the `anvil` and `anvild` binaries on your `PATH`. Keep both binaries in
+the same directory, because the CLI starts the daemon from its own directory.
+
+The macOS binaries aren't signed. Remove the quarantine flag after
+downloading:
+
+```sh
+xattr -d com.apple.quarantine anvil anvild
+```
+
+## Usage
+
+Run the commands from your project directory. Anvil derives the sandbox from
+that directory.
+
+| Command                     | Description                                          |
+| --------------------------- | ---------------------------------------------------- |
+| `anvil start`               | Start the sandbox for the current directory.         |
+| `anvil run <cmd> [args...]` | Start the sandbox when needed and run a command in it with a terminal attached. |
+| `anvil stop`                | Stop the sandbox. Files on its disk are kept.        |
+| `anvil ls`                  | List all sandboxes.                                  |
+| `anvil rm`                  | Remove the sandbox.                                  |
+| `anvil validate`            | Check the `.anvil.yml` file in the current directory. |
+
+For example, to open a shell in the sandbox:
+
+```sh
+anvil run bash
+```
+
+The sandbox keeps running after the command exits.
+
+### Configuring a sandbox
+
+Add an `.anvil.yml` file to the project directory to configure the sandbox:
+
+```yaml
+name: my-project
+image: ubuntu:26.04
+resources:
+  cpu: 2
+  memory: 4 GiB
+```
+
+| Field              | Description                                                      | Default        |
+| ------------------ | ---------------------------------------------------------------- | -------------- |
+| `name`             | Name of the sandbox.                                             | Required       |
+| `image`            | OCI image the sandbox runs.                                      | `ubuntu:26.04` |
+| `resources.cpu`    | Number of vCPUs.                                                 | `2`            |
+| `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`. | `4 GiB`        |
+
+Without `.anvil.yml`, Anvil names the sandbox after the full path of the
+working directory and uses the defaults.
+
+The image and resources apply when the sandbox is created. To change them for
+an existing sandbox, run `anvil rm` and start it again.
+
+### Connecting over SSH
+
+`anvild` generates SSH keys and an SSH config, and includes that config in
+`~/.ssh/config`. Each sandbox gets a host name after its project directory,
+such as `my-project.anvil`. When two projects share a directory name, the
+second gets `my-project-2.anvil`:
+
+```sh
+ssh my-project.anvil
+```
+
+Point your IDE's remote SSH support at the same host name to work in the
+sandbox from your editor.
+
+### Base image
+
+The [`Dockerfile`](Dockerfile) describes a base image for sandboxes with
+`git`, `curl`, `sudo`, [mise](https://mise.jdx.dev) and an unprivileged
+`agent` user. Releases publish it as `ghcr.io/wmeints/anvil-base:<tag>`. Use
+it, or an image built on top of it, through the `image` field in
+`.anvil.yml`.
+
+## Development
+
+Install the toolchain (Rust, `buf` and `lefthook`) with
+[mise](https://mise.jdx.dev). This also installs the git hooks:
+
+```sh
+mise install
+```
+
+Building also needs `protoc` 3.15 or newer, which supports proto3 optional
+fields. The `protobuf-compiler` package on older distributions, such as
+Ubuntu 22.04, is too old; install a current release from the
+[protobuf releases](https://github.com/protocolbuffers/protobuf/releases)
+instead.
+
+| Command                                                 | Description                                   |
+| ------------------------------------------------------- | --------------------------------------------- |
+| `cargo build`                                           | Build the `anvil` and `anvild` binaries.      |
+| `cargo test --workspace`                                | Run the unit tests.                           |
+| `cargo test -p anvil-daemon --features vm-tests`        | Run the integration tests that boot real VMs. |
+| `cargo clippy --workspace --all-targets -- -D warnings` | Run the linter.                               |
+| `cargo fmt --all`                                       | Format the code.                              |
+
+The workspace contains four crates:
+
+| Crate          | Folder           | Purpose                                         |
+| -------------- | ---------------- | ----------------------------------------------- |
+| `anvil-cli`    | `crates/cli`     | The `anvil` CLI.                                |
+| `anvil-daemon` | `crates/daemon`  | The `anvild` daemon.                            |
+| `anvil-spec`   | `crates/spec`    | Parses and validates `.anvil.yml`.              |
+| `anvil-utils`  | `crates/utils`   | Shared paths for the socket, logs and SSH files. |
+
+The gRPC contract lives in [`proto/daemon.v1.proto`](proto/daemon.v1.proto).
+
+## Documentation
+
+- [Architecture](docs/architecture/01-introduction-and-goals.md) - the arc42
+  architecture documentation.
+- [Decisions](docs/architecture/decisions/) - architecture decision records.
+- [CLAUDE.md](CLAUDE.md) - coding guidelines and the definition of done.
