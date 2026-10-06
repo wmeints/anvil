@@ -3,6 +3,7 @@ name = "anvil-cli"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "anvil"

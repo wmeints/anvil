@@ -163,3 +163,7 @@ The gRPC contract lives in [`proto/daemon.v1.proto`](proto/daemon.v1.proto).
   architecture documentation.
 - [Decisions](docs/architecture/decisions/) - architecture decision records.
 - [CLAUDE.md](CLAUDE.md) - coding guidelines and the definition of done.
+
+## License
+
+Anvil is licensed under the [MIT License](LICENSE).
