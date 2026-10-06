@@ -1,0 +1,58 @@
+---
+name: fix-bug
+description: "Fix a bug through root cause analysis and a reproducing test. Use when the user reports a bug, a crash, a failing command, an unexpected error, or wrong behavior and wants it fixed."
+---
+
+# Fix bug
+
+Fix the cause of a bug, not its symptom, and leave a test behind that fails
+without the fix.
+
+## Steps
+
+### 1. Reproduce the bug
+
+- Restate the observed and the expected behavior in one sentence each.
+- Reproduce the bug with the smallest command or input you can find. Build the
+  project first with the build task described in `CLAUDE.md`.
+- If you can't reproduce it, stop and ask the user for the missing details. Do
+  not fix a bug you haven't seen.
+
+### 2. Find the root cause
+
+- Trace the failure from the symptom back to the code that makes the wrong
+  decision. Read the code; don't guess from names.
+- Ask "why" until the answer is a line of code or a wrong assumption, not a
+  side effect of one.
+- Check the architecture docs in `docs/architecture` for the structure of the
+  project and any known pitfalls.
+- Write down the root cause in one or two sentences. If several causes are
+  plausible, rule them out one by one with evidence.
+
+### 3. Write a failing test
+
+- Add a test that reproduces the bug through the public interface of the
+  affected module, next to the existing tests. Follow the test conventions
+  already used in the project.
+- Prefer a unit test. Use an integration test only when the bug depends on an
+  external system, such as a database, a network service, or the file system.
+- Run it and confirm it fails for the reason you found in step 2.
+
+### 4. Fix the root cause
+
+- Make the smallest change that fixes the cause. Follow the engineering
+  guidelines in `docs/engineering`.
+- Look for the same mistake elsewhere in the code and fix it there as well.
+
+### 5. Verify
+
+- Run the new test and confirm it passes.
+- Run the format, lint, and test tasks described in `CLAUDE.md`. Run the
+  integration tests as well when the fix touches code that they cover.
+- Repeat the reproduction from step 1 and confirm the bug is gone.
+
+### 6. Report
+
+Tell the user the root cause, the fix, the test that covers it, and any
+related spots you changed. Suggest a commit message of the form
+`fix(<scope>): <description>`.

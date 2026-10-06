@@ -2,3 +2,7 @@
 buf = "latest"
 lefthook = "latest"
 rust = { version = "1.99.0", components = "rust-src,rust-analyzer" }
+
+[hooks]
+# Install the git hooks from lefthook.yml after `mise install`.
+postinstall = "lefthook install"

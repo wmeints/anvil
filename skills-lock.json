@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "create-issue": {
+      "source": "wmeints/skills",
+      "sourceType": "github",
+      "skillPath": "skills/create-issue/SKILL.md",
+      "computedHash": "e8ddb6c9c801b08681727f3abfcbeea64546d207f0c8023573626d544e86a357"
+    },
+    "fix-bug": {
+      "source": "wmeints/skills",
+      "sourceType": "github",
+      "skillPath": "skills/fix-bug/SKILL.md",
+      "computedHash": "3f64f77fb2480f40f9da48c60b673d2973f91e9b967948981e8eeb9619d14198"
+    },
+    "implement-feature": {
+      "source": "wmeints/skills",
+      "sourceType": "github",
+      "skillPath": "skills/implement-feature/SKILL.md",
+      "computedHash": "6855997e44408294eca4e7e3a5782c0dda4d90402c00172d5488ae264fbf0bf1"
+    },
+    "submit-pr": {
+      "source": "wmeints/skills",
+      "sourceType": "github",
+      "skillPath": "skills/submit-pr/SKILL.md",
+      "computedHash": "6dec3c5874e6d24c420c7765578c3ba7979f9efa82b9e404fb6d4ad3e7ba02e5"
+    }
+  }
+}
