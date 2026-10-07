@@ -64,7 +64,7 @@ that directory.
 | `anvil start`               | Start the sandbox for the current directory.         |
 | `anvil run <cmd> [args...]` | Start the sandbox when needed and run a command in it with a terminal attached. |
 | `anvil stop`                | Stop the sandbox. Files on its disk are kept.        |
-| `anvil ls`                  | List all sandboxes.                                  |
+| `anvil ls [--format json]`  | List all sandboxes as a table, or as JSON with `--format json`. |
 | `anvil rm`                  | Remove the sandbox.                                  |
 | `anvil validate`            | Check the `.anvil.yml` file in the current directory. |
 

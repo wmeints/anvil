@@ -65,7 +65,9 @@ C4Component
   `PATH`) and waits at most 5 seconds for the socket.
 - `manage` - Resolves the sandbox spec for the working directory and starts,
   stops, lists and removes sandboxes. Without `.anvil.yml`, it names the
-  sandbox after the full working directory path.
+  sandbox after the full working directory path. `ls` prints the name,
+  status and host name of each sandbox as a table rendered with `ratatui`,
+  or as a JSON array with `--format json`.
 - `session` - Runs a command in the sandbox through the `Attach` stream. It
   makes sure the sandbox runs first, puts the terminal in raw mode and
   forwards input, output and window resizes.

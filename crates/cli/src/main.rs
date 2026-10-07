@@ -1,5 +1,6 @@
 use std::env;
 
+use anvil_cli::manage::OutputFormat;
 use anvil_cli::{client, manage, session, ssh, validate};
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -18,7 +19,11 @@ enum Commands {
     /// Stop a running sandbox
     Stop,
     /// List all sandboxes
-    Ls,
+    Ls {
+        /// Output format
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
+    },
     /// Remove a sandbox
     Rm,
     /// Run a command inside the sandbox
@@ -59,8 +64,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Start => manage::start_sandbox(&working_dir, &mut client_instance).await?,
         Commands::Stop => manage::stop_sandbox(&working_dir, &mut client_instance).await?,
-        Commands::Ls => {
-            manage::list_sandboxes(&mut client_instance).await?;
+        Commands::Ls { format } => {
+            manage::list_sandboxes(&mut client_instance, format).await?;
         }
         Commands::Rm => manage::remove_sandbox(&working_dir, &mut client_instance).await?,
         Commands::Run(run_args) => {
