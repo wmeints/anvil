@@ -390,6 +390,7 @@ async fn start_existing_sandbox(
 }
 
 /// Gives the sandbox a host name based on its workspace, logging a warning when that fails.
+/// Fails when the host names other sandboxes use can't be listed.
 async fn assign_hostname(sb: &SandboxHandle, request: &StartSandboxRequest) -> Result<(), Status> {
     let workspace = match request.workspace.as_str() {
         "" => request.name.as_str(),

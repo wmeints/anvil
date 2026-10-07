@@ -29,6 +29,10 @@ use tower::service_fn;
 
 const STATUS_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+const DEFAULT_SIZE: AttachResize = AttachResize {
+    width: 80,
+    height: 24,
+};
 
 struct TestDaemon {
     socket_path: PathBuf,
@@ -447,18 +451,13 @@ async fn remove_sandbox_removes_stopped_sandbox() {
     remove_sandbox(NAME).await;
 }
 
-fn attach_start(
-    name: &str,
-    command: &str,
-    args: &[&str],
-    (width, height): (u32, u32),
-) -> AttachRequest {
+fn attach_start(name: &str, command: &str, args: &[&str], size: AttachResize) -> AttachRequest {
     AttachRequest {
         message: Some(attach_request::Message::Start(AttachStart {
             name: name.to_string(),
             command: command.to_string(),
             args: args.iter().map(|arg| arg.to_string()).collect(),
-            size: Some(AttachResize { width, height }),
+            size: Some(size),
         })),
     }
 }
@@ -526,7 +525,7 @@ async fn run_command(
     args: &[&str],
 ) -> (String, i32) {
     let (tx, responses) =
-        open_session(client, attach_start(sandbox, command, args, (80, 24))).await;
+        open_session(client, attach_start(sandbox, command, args, DEFAULT_SIZE)).await;
     let result = collect_session(responses).await;
 
     // Closing the input ends the session, so keep it open until the session has exited.
@@ -577,9 +576,14 @@ async fn attach_returns_not_found_for_unknown_sandbox() {
     let mut client = daemon.client().await;
 
     let (tx, rx) = mpsc::channel(4);
-    tx.send(attach_start("anvil-it-does-not-exist", "sh", &[], (80, 24)))
-        .await
-        .unwrap();
+    tx.send(attach_start(
+        "anvil-it-does-not-exist",
+        "sh",
+        &[],
+        DEFAULT_SIZE,
+    ))
+    .await
+    .unwrap();
 
     let status = client
         .attach(ReceiverStream::new(rx))
@@ -600,7 +604,7 @@ async fn attach_runs_command_and_streams_output() {
     let mut client = daemon.client().await;
     start_running_sandbox(&mut client, NAME).await;
 
-    let start = attach_start(NAME, "sh", &["-c", "read x; echo got:$x"], (80, 24));
+    let start = attach_start(NAME, "sh", &["-c", "read x; echo got:$x"], DEFAULT_SIZE);
     let (tx, responses) = open_session(&mut client, start).await;
     tx.send(attach_input(b"hi\n")).await.unwrap();
 
@@ -627,7 +631,10 @@ async fn attach_applies_window_size_and_resize() {
         NAME,
         "sh",
         &["-c", "stty size; read x; stty size"],
-        (100, 40),
+        AttachResize {
+            width: 100,
+            height: 40,
+        },
     );
     let (tx, responses) = open_session(&mut client, start).await;
 
@@ -686,7 +693,7 @@ async fn attach_disconnect_ends_session() {
     let mut client = daemon.client().await;
     start_running_sandbox(&mut client, NAME).await;
 
-    let start = attach_start(NAME, "sleep", &["300"], (80, 24));
+    let start = attach_start(NAME, "sleep", &["300"], DEFAULT_SIZE);
     let (tx, responses) = open_session(&mut client, start).await;
 
     sleep(Duration::from_millis(500)).await;

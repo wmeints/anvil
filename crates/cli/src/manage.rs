@@ -2,6 +2,7 @@ use anvil_spec::SandboxSpec;
 use anyhow::{Result, bail};
 use clap::ValueEnum;
 use serde::Serialize;
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
@@ -64,8 +65,11 @@ pub(crate) async fn ensure_running(
             return Ok(());
         };
 
-        if status != SandboxStatus::Starting {
-            return start_settled_sandbox(&name, status, workspace, client).await;
+        if start_existing_sandbox(&name, status, workspace, client)
+            .await?
+            .is_break()
+        {
+            return Ok(());
         }
 
         if Instant::now() >= deadline {
@@ -92,15 +96,17 @@ async fn sandbox_status(
     }
 }
 
-/// Starts an existing sandbox that isn't starting, or fails when it can't be started now.
-async fn start_settled_sandbox(
+/// Starts an existing sandbox when it's stopped. Returns `Continue` while the sandbox is still
+/// starting, and fails when it can't be started now.
+async fn start_existing_sandbox(
     name: &str,
     status: SandboxStatus,
     workspace: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
-) -> Result<()> {
+) -> Result<ControlFlow<()>> {
     match status {
-        SandboxStatus::Running => Ok(()),
+        SandboxStatus::Running => Ok(ControlFlow::Break(())),
+        SandboxStatus::Starting => Ok(ControlFlow::Continue(())),
         SandboxStatus::Stopped | SandboxStatus::Crashed => {
             eprintln!("Starting sandbox {name}...");
 
@@ -113,9 +119,9 @@ async fn start_settled_sandbox(
                 })
                 .await?;
 
-            Ok(())
+            Ok(ControlFlow::Break(()))
         }
-        status @ (SandboxStatus::Starting | SandboxStatus::Stopping | SandboxStatus::Paused) => {
+        status @ (SandboxStatus::Stopping | SandboxStatus::Paused) => {
             bail!(
                 "sandbox {name} is {}; try again once it has stopped",
                 format_status(status).to_lowercase()
