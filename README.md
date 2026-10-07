@@ -14,8 +14,8 @@ Anvil supports two ways of working:
   sandbox over SSH.
 
 > [!NOTE]
-> Anvil is early in development. Egress control and secret proxying are
-> planned but not available yet.
+> Anvil is early in development. Egress control is planned but not
+> available yet.
 
 ## How it works
 
@@ -183,6 +183,8 @@ that directory.
 | `anvil rm`                  | Remove the sandbox.                                  |
 | `anvil validate`            | Check the `.anvil.yml` file in the current directory. |
 | `anvil secret set <name> [<value>]` | Set a secret for all sandboxes. See [Secrets](#secrets). |
+| `anvil secret ls [--format json]` | List the secrets and their allowed hosts, without their values. |
+| `anvil secret rm <name>` | Remove a secret from all sandboxes. |
 
 For example, to open a shell in the sandbox:
 
@@ -244,6 +246,11 @@ which you can repeat:
 
 Secrets apply to all sandboxes. A running sandbox gets a new or changed
 secret after `anvil stop` and `anvil start`.
+
+`anvil secret ls` shows the names and allowed hosts of the secrets, never
+their values. `anvil secret rm <name>` removes a secret, but a running
+sandbox keeps using it until it restarts. If a token leaked, revoke it where
+you created it as well.
 
 Keep in mind that:
 

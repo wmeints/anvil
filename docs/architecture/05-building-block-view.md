@@ -40,6 +40,7 @@ C4Component
         Component(ssh, "ssh", "Rust", "SSH proxy")
         Component(validate, "validate", "Rust", "Spec validation")
         Component(secret, "secret", "Rust", "Secrets")
+        Component(table, "table", "ratatui", "Tables")
         Component(client, "client", "Tonic client", "Daemon client")
     }
     Component_Ext(spec, "anvil-spec", "serde_yaml", "Sandbox spec")
@@ -52,6 +53,8 @@ C4Component
     Rel(main, validate, "Uses")
     Rel(main, secret, "Uses")
     Rel(main, client, "Connects")
+    Rel(manage, table, "Renders sandboxes")
+    Rel(secret, table, "Renders secrets")
     Rel(session, manage, "Ensures running")
     Rel(manage, spec, "Loads .anvil.yml")
     Rel(validate, spec, "Loads .anvil.yml")
@@ -59,8 +62,8 @@ C4Component
     Rel(client, anvild, "gRPC")
 ```
 
-- `main` - Parses the `start`, `stop`, `ls`, `rm`, `run`, `validate` and
-  `secret set` commands, and the hidden `ssh-proxy` command. `validate` runs without the
+- `main` - Parses the `start`, `stop`, `ls`, `rm`, `run`, `validate`,
+  `secret set`, `secret ls` and `secret rm` commands, and the hidden `ssh-proxy` command. `validate` runs without the
   daemon.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `anvild` from next to the `anvil` binary (or from
@@ -68,8 +71,8 @@ C4Component
 - `manage` - Resolves the sandbox spec for the working directory and starts,
   stops, lists and removes sandboxes. Without `.anvil.yml`, it names the
   sandbox after the full working directory path. `ls` prints the name,
-  status and host name of each sandbox as a table rendered with `ratatui`,
-  or as a JSON array with `--format json`.
+  status and host name of each sandbox as a table, or as a JSON array with
+  `--format json`.
 - `session` - Runs a command in the sandbox through the `Attach` stream. It
   makes sure the sandbox runs first, puts the terminal in raw mode and
   forwards input, output and window resizes.
@@ -77,7 +80,13 @@ C4Component
   `SshTunnel` stream. The generated SSH config uses it as `ProxyCommand`.
 - `secret` - Sends a secret to the daemon with `SetSecret`. With
   `--from-stdin`, it reads the value from stdin and removes one trailing line
-  ending. It warns about sandboxes the daemon couldn't add the secret to.
+  ending. `secret ls` prints the names and allowed hosts from `ListSecrets`
+  as a table or, with `--format json`, as a JSON array. `secret rm` removes
+  a secret with `RemoveSecret`. It warns about sandboxes the daemon couldn't
+  add the secret to or remove it from.
+- `table` - Renders rows as a bordered table with `ratatui` into an
+  in-memory buffer and returns it as plain text lines
+  ([ADR 0003](decisions/0003-render-cli-tables-with-ratatui.md)).
 - `validate` - Checks `.anvil.yml` and reports problems as
   `file:line:column: error: message`.
 
@@ -123,7 +132,11 @@ C4Component
   connections with microsandbox's SSH server over an in-memory pipe, booting
   the sandbox when needed. It adds the stored secrets to new sandboxes, and
   `SetSecret` stores a secret and adds it to the existing sandboxes anvil
-  created. It refuses to start when the socket already exists
+  created. `ListSecrets` returns the names and allowed hosts, sorted by name,
+  never the values. `RemoveSecret` removes a secret from the existing
+  sandboxes anvil created and then from the store, keeps it in the store
+  when a sandbox fails so the removal can be retried, and returns
+  `NOT_FOUND` for an unknown name. It refuses to start when the socket already exists
   and removes the socket on shutdown.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `anvild` at build time, so it never

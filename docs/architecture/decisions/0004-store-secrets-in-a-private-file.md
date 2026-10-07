@@ -76,12 +76,19 @@ the remaining gain of option B, protection at rest, is small.
   with an `anvil.hostname` label) with `modify().secret(..).next_start()`.
   New sandboxes get all stored secrets when they're created. microsandbox
   enables TLS interception for sandboxes with secrets.
+- `anvil secret ls` lists the names and allowed hosts, never the values.
+  `anvil secret rm` removes a secret from the sandboxes with
+  `modify().remove_secret(..).next_start()`, and then from `secrets.yml`.
+  When a sandbox fails, the secret stays in `secrets.yml`, so running
+  `anvil secret rm` again retries it.
 - On startup, `anvild` sets the microsandbox `db` directory to `0700`.
 
 ## Consequences
 
 - The real values never enter the VM. A running sandbox gets a new or
-  changed secret the next time it starts.
+  changed secret the next time it starts. A running sandbox also keeps a
+  removed secret until it restarts, because microsandbox can't reconfigure
+  secrets live yet.
 - The values are in plaintext at rest, readable by every process that runs
   as the user. **When the host may be compromised, rotate the secrets** at
   their issuers (GitHub, Anthropic) and set the new values with

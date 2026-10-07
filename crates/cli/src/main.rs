@@ -45,6 +45,17 @@ enum Commands {
 enum SecretCommands {
     /// Set a secret for all sandboxes
     Set(SetSecretArgs),
+    /// List the secrets and their allowed hosts, without their values
+    Ls {
+        /// Output format
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
+    },
+    /// Remove a secret from all sandboxes
+    Rm {
+        /// Name of the secret, e.g. GH_TOKEN
+        name: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -121,7 +132,13 @@ async fn main() -> Result<()> {
             // Exit right away rather than wait for the stdin thread, which blocks on a read.
             std::process::exit(0);
         }
-        Commands::Validate | Commands::Secret(_) => {
+        Commands::Secret(SecretCommands::Ls { format }) => {
+            secret::list(format, &mut client_instance).await?;
+        }
+        Commands::Secret(SecretCommands::Rm { name }) => {
+            secret::remove(name, &mut client_instance).await?;
+        }
+        Commands::Validate | Commands::Secret(SecretCommands::Set(_)) => {
             unreachable!("handled before connecting to the daemon")
         }
     }
@@ -180,6 +197,29 @@ mod tests {
 
         assert!(args.from_stdin);
         assert_eq!(args.value, None);
+    }
+
+    #[test]
+    fn secret_ls_defaults_to_table() {
+        let cli = Cli::try_parse_from(["anvil", "secret", "ls"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Commands::Secret(SecretCommands::Ls {
+                format: OutputFormat::Table
+            })
+        ));
+    }
+
+    #[test]
+    fn secret_rm_requires_name() {
+        assert!(Cli::try_parse_from(["anvil", "secret", "rm"]).is_err());
+
+        let cli = Cli::try_parse_from(["anvil", "secret", "rm", "GH_TOKEN"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Secret(SecretCommands::Rm { name }) if name == "GH_TOKEN"
+        ));
     }
 
     #[test]

@@ -205,6 +205,15 @@ the allowed hosts, and blocks requests that carry the placeholder to other
 hosts. A running sandbox gets a new or changed secret the next time it
 starts.
 
+`anvil secret rm <name>` works the same way with `RemoveSecret`. `anvild`
+returns `NOT_FOUND` when the secret isn't in `secrets.yml`. Otherwise it
+removes the secret from each sandbox with
+`modify().remove_secret(name).next_start()`, and then from `secrets.yml`.
+When a sandbox fails, it keeps the secret in `secrets.yml` and returns the
+failed sandboxes, so running `anvil secret rm` again retries them. microsandbox can't change the
+secrets of a running sandbox, so a running sandbox keeps the placeholder,
+and its proxy keeps putting in the real value, until it restarts.
+
 ## Connecting via SSH
 
 `ssh <leaf>.anvil`, `scp` and IDEs reach a sandbox through the SSH config the

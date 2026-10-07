@@ -3,10 +3,12 @@ use crate::api::sandbox_management_service_server::{
 };
 use crate::api::{
     AttachRequest, AttachResize, AttachResponse, GetSandboxRequest, GetSandboxResponse,
-    ListSandboxesRequest, ListSandboxesResponse, RemoveSandboxRequest, RemoveSandboxResponse,
-    SandboxResources, SandboxStatus, SandboxSummary, SetSecretRequest, SetSecretResponse,
-    SshTunnelRequest, SshTunnelResponse, StartSandboxRequest, StartSandboxResponse,
-    StopSandboxRequest, StopSandboxResponse, attach_request, attach_response, ssh_tunnel_request,
+    ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse,
+    RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse,
+    SandboxResources, SandboxStatus, SandboxSummary, SecretSummary, SetSecretRequest,
+    SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
+    StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, attach_request, attach_response,
+    ssh_tunnel_request,
 };
 use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
@@ -17,6 +19,7 @@ use microsandbox::sandbox::exec::{ExecControl, ExecEvent, ExecHandle, ExecSink};
 use microsandbox::sandbox::{HostPermissions, SandboxHandle};
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::HashSet;
+use std::fmt;
 use std::fs;
 use std::path::Path;
 use std::pin::Pin;
@@ -170,13 +173,82 @@ impl SandboxManagementService for AnvilServer {
             Status::internal("failed to store secret")
         })?;
 
-        let failed_sandboxes = add_to_existing_sandboxes(&secret).await.map_err(|_| {
-            Status::internal("stored the secret, but failed to list the sandboxes to add it to")
-        })?;
+        let failed_sandboxes = update_anvil_sandboxes(SecretChange::Add(&secret))
+            .await
+            .map_err(|_| {
+                Status::internal("stored the secret, but failed to list the sandboxes to add it to")
+            })?;
 
         tracing::info!("set secret {}", secret.name());
 
         Ok(Response::new(SetSecretResponse { failed_sandboxes }))
+    }
+
+    /// Lists the stored secrets by name, without their values.
+    async fn list_secrets(
+        &self,
+        _request: Request<ListSecretsRequest>,
+    ) -> Result<Response<ListSecretsResponse>, Status> {
+        let mut secrets: Vec<SecretSummary> = self
+            .secrets
+            .load()
+            .map_err(|err| {
+                tracing::warn!("failed to load secrets: {err:#}");
+                Status::internal("failed to load secrets")
+            })?
+            .iter()
+            .map(|secret| SecretSummary {
+                name: secret.name().to_string(),
+                allowed_hosts: secret.allowed_hosts().to_vec(),
+            })
+            .collect();
+
+        secrets.sort_by(|a, b| a.name.cmp(&b.name));
+
+        Ok(Response::new(ListSecretsResponse { secrets }))
+    }
+
+    /// Removes a stored secret and removes it from the existing sandboxes. Running sandboxes
+    /// keep it until they restart.
+    async fn remove_secret(
+        &self,
+        request: Request<RemoveSecretRequest>,
+    ) -> Result<Response<RemoveSecretResponse>, Status> {
+        let name = request.into_inner().name;
+        secrets::validate_name(&name).map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+        let _secrets_guard = self.secrets_lock.lock().await;
+
+        let exists = self
+            .secrets
+            .load()
+            .map_err(|err| {
+                tracing::warn!("failed to load secrets: {err:#}");
+                Status::internal("failed to load secrets")
+            })?
+            .iter()
+            .any(|secret| secret.name() == name);
+
+        if !exists {
+            return Err(Status::not_found(format!("secret {name} doesn't exist")));
+        }
+
+        // Remove the secret from the store last, so it can be removed again when a sandbox
+        // fails.
+        let failed_sandboxes = update_anvil_sandboxes(SecretChange::Remove(&name)).await?;
+
+        if !failed_sandboxes.is_empty() {
+            return Ok(Response::new(RemoveSecretResponse { failed_sandboxes }));
+        }
+
+        self.secrets.remove(&name).map_err(|err| {
+            tracing::warn!("failed to remove secret {name}: {err:#}");
+            Status::internal("failed to remove secret")
+        })?;
+
+        tracing::info!("removed secret {name}");
+
+        Ok(Response::new(RemoveSecretResponse { failed_sandboxes }))
     }
 
     /// Stops a running sandbox.
@@ -465,9 +537,24 @@ async fn list_all_sandboxes() -> Result<Vec<SandboxHandle>, Status> {
     Ok(sandboxes)
 }
 
-/// Adds a secret to every sandbox anvil created, which are the ones with a host name. Returns
-/// the names of the sandboxes it couldn't add the secret to.
-async fn add_to_existing_sandboxes(secret: &Secret) -> Result<Vec<String>, Status> {
+/// A change to the secrets of existing sandboxes.
+enum SecretChange<'a> {
+    Add(&'a Secret),
+    Remove(&'a str),
+}
+
+impl fmt::Display for SecretChange<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SecretChange::Add(secret) => write!(f, "add secret {} to", secret.name()),
+            SecretChange::Remove(name) => write!(f, "remove secret {name} from"),
+        }
+    }
+}
+
+/// Applies a secret change to every sandbox anvil created, which are the ones with a host
+/// name. Returns the names of the sandboxes the change failed for.
+async fn update_anvil_sandboxes(change: SecretChange<'_>) -> Result<Vec<String>, Status> {
     let mut failed = vec![];
 
     for handle in list_all_sandboxes().await? {
@@ -475,12 +562,13 @@ async fn add_to_existing_sandboxes(secret: &Secret) -> Result<Vec<String>, Statu
             continue;
         }
 
-        if let Err(err) = secrets::add_to_sandbox(&handle, secret).await {
-            tracing::warn!(
-                "failed to add secret {} to sandbox {}: {err}",
-                secret.name(),
-                handle.name()
-            );
+        let result = match change {
+            SecretChange::Add(secret) => secrets::add_to_sandbox(&handle, secret).await,
+            SecretChange::Remove(name) => secrets::remove_from_sandbox(&handle, name).await,
+        };
+
+        if let Err(err) = result {
+            tracing::warn!("failed to {change} sandbox {}: {err}", handle.name());
             failed.push(handle.name().to_string());
         }
     }
@@ -895,5 +983,65 @@ mod tests {
 
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn list_secrets_returns_names_and_hosts_sorted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SecretStore::new(dir.path().join("secrets.yml"));
+        for name in ["B_TOKEN", "A_TOKEN"] {
+            let secret =
+                Secret::new(name.into(), "value".into(), vec!["example.com".into()]).unwrap();
+            store.set(secret).unwrap();
+        }
+        let server = AnvilServer::new(store);
+
+        let secrets = server
+            .list_secrets(Request::new(ListSecretsRequest {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .secrets;
+
+        let expected: Vec<SecretSummary> = ["A_TOKEN", "B_TOKEN"]
+            .map(|name| SecretSummary {
+                name: name.to_string(),
+                allowed_hosts: vec!["example.com".to_string()],
+            })
+            .into();
+        assert_eq!(secrets, expected);
+    }
+
+    #[tokio::test]
+    async fn remove_secret_rejects_invalid_name() {
+        let server = AnvilServer::new(unused_store());
+
+        let status = server
+            .remove_secret(Request::new(RemoveSecretRequest {
+                name: "NOT-A-NAME".to_string(),
+            }))
+            .await
+            .expect_err("an invalid name should be rejected");
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn remove_secret_returns_not_found_for_unknown_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SecretStore::new(dir.path().join("secrets.yml"));
+        let secret = Secret::new("A".into(), "value".into(), vec!["example.com".into()]).unwrap();
+        store.set(secret).unwrap();
+        let server = AnvilServer::new(store);
+
+        let status = server
+            .remove_secret(Request::new(RemoveSecretRequest {
+                name: "B".to_string(),
+            }))
+            .await
+            .expect_err("removing an unknown secret should fail");
+
+        assert_eq!(status.code(), tonic::Code::NotFound);
+        assert_eq!(server.secrets.load().unwrap().len(), 1);
     }
 }

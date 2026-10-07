@@ -115,6 +115,11 @@ impl Secret {
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    /// Returns the hosts that may receive the real value.
+    pub fn allowed_hosts(&self) -> &[String] {
+        &self.allowed_hosts
+    }
 }
 
 /// Leaves the value out, so secrets don't end up in logs.
@@ -129,7 +134,7 @@ impl fmt::Debug for Secret {
 }
 
 /// Checks that a secret name is an environment variable name that microsandbox doesn't reserve.
-fn validate_name(name: &str) -> Result<(), SecretError> {
+pub fn validate_name(name: &str) -> Result<(), SecretError> {
     let mut chars = name.chars();
     let valid = chars
         .next()
@@ -226,19 +231,43 @@ impl SecretStore {
 
     /// Adds a secret, or replaces the secret with the same name.
     pub fn set(&self, secret: Secret) -> Result<(), SecretError> {
+        self.update(|secrets| {
+            secrets.retain(|existing| existing.name != secret.name);
+            secrets.push(secret);
+            true
+        })?;
+
+        Ok(())
+    }
+
+    /// Removes the secret with the given name. Returns whether the secret existed.
+    pub fn remove(&self, name: &str) -> Result<bool, SecretError> {
+        self.update(|secrets| {
+            let count = secrets.len();
+            secrets.retain(|existing| existing.name != name);
+            secrets.len() < count
+        })
+    }
+
+    /// Loads the secrets and lets `change` change them. Writes them back and returns `true`
+    /// when `change` returns `true`.
+    fn update(&self, change: impl FnOnce(&mut Vec<Secret>) -> bool) -> Result<bool, SecretError> {
         // The lock guards no data, so a panic while holding it leaves nothing inconsistent.
         let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
 
         let mut secrets = self.load()?;
-        secrets.retain(|existing| existing.name != secret.name);
-        secrets.push(secret);
+        if !change(&mut secrets) {
+            return Ok(false);
+        }
 
         let content = serde_yaml::to_string(&secrets).map_err(SecretError::Encode)?;
 
         write_private(&self.path, &content).map_err(|source| SecretError::Write {
             path: self.path.clone(),
             source,
-        })
+        })?;
+
+        Ok(true)
     }
 }
 
@@ -283,6 +312,19 @@ pub async fn add_to_sandbox(handle: &SandboxHandle, secret: &Secret) -> Microsan
             let s = s.env(&secret.name).value(&secret.value);
             secret.allowed_hosts.iter().fold(s, |s, host| s.allow(host))
         })
+        .next_start()
+        .apply()
+        .await?;
+
+    Ok(())
+}
+
+/// Removes a secret from an existing sandbox. A running sandbox keeps the secret until it
+/// restarts. Removing a secret the sandbox doesn't have does nothing.
+pub async fn remove_from_sandbox(handle: &SandboxHandle, name: &str) -> MicrosandboxResult<()> {
+    handle
+        .modify()
+        .remove_secret(name)
         .next_start()
         .apply()
         .await?;
@@ -441,6 +483,40 @@ mod tests {
         store.set(updated.clone()).unwrap();
 
         assert_eq!(store.load().unwrap(), [updated]);
+    }
+
+    #[test]
+    fn remove_deletes_only_the_named_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.yml");
+        let store = SecretStore::new(&path);
+        store.set(secret("A", &["example.com"]).unwrap()).unwrap();
+        store.set(secret("B", &["example.com"]).unwrap()).unwrap();
+
+        assert!(store.remove("A").unwrap());
+
+        let names: Vec<_> = store.load().unwrap().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["B"]);
+        assert_eq!(mode(&path), 0o600);
+    }
+
+    #[test]
+    fn remove_reports_missing_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SecretStore::new(dir.path().join("secrets.yml"));
+        store.set(secret("A", &["example.com"]).unwrap()).unwrap();
+
+        assert!(!store.remove("B").unwrap());
+        assert_eq!(store.load().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remove_without_file_creates_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.yml");
+
+        assert!(!SecretStore::new(&path).remove("A").unwrap());
+        assert!(!path.exists());
     }
 
     #[test]

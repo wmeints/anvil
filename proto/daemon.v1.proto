@@ -11,6 +11,8 @@ service SandboxManagementService {
   rpc Attach(stream AttachRequest) returns (stream AttachResponse);
   rpc SshTunnel(stream SshTunnelRequest) returns (stream SshTunnelResponse);
   rpc SetSecret(SetSecretRequest) returns (SetSecretResponse);
+  rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
+  rpc RemoveSecret(RemoveSecretRequest) returns (RemoveSecretResponse);
 }
 
 message StartSandboxRequest {
@@ -127,5 +129,27 @@ message SetSecretRequest {
 
 message SetSecretResponse {
   // Existing sandboxes the secret couldn't be added to.
+  repeated string failed_sandboxes = 1;
+}
+
+message ListSecretsRequest {}
+
+message ListSecretsResponse {
+  // Sorted by name. Values are never returned.
+  repeated SecretSummary secrets = 1;
+}
+
+message SecretSummary {
+  string name = 1;
+  repeated string allowed_hosts = 2;
+}
+
+message RemoveSecretRequest {
+  string name = 1;
+}
+
+message RemoveSecretResponse {
+  // Existing sandboxes the secret couldn't be removed from. When there are any, the secret
+  // stays stored, so removing it again retries them.
   repeated string failed_sandboxes = 1;
 }
