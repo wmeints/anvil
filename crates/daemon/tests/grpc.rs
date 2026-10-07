@@ -13,6 +13,7 @@ use anvil_daemon::api::{
     RemoveSandboxRequest, SandboxResources, SandboxStatus, StartSandboxRequest, StopSandboxRequest,
     attach_request, attach_response,
 };
+use anvil_daemon::secrets::{self, Secret, SecretStore};
 use anvil_daemon::server;
 use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
@@ -37,6 +38,17 @@ struct TestDaemon {
 
 impl TestDaemon {
     async fn start(name: &str) -> Self {
+        let secrets_path = std::env::temp_dir().join(format!(
+            "anvil-it-{}-{}-secrets.yml",
+            std::process::id(),
+            name
+        ));
+        let _ = std::fs::remove_file(&secrets_path);
+
+        Self::start_with_secrets(name, SecretStore::new(secrets_path)).await
+    }
+
+    async fn start_with_secrets(name: &str, secrets: SecretStore) -> Self {
         let socket_path =
             std::env::temp_dir().join(format!("anvil-it-{}-{}.sock", std::process::id(), name));
         let _ = std::fs::remove_file(&socket_path);
@@ -44,7 +56,7 @@ impl TestDaemon {
         let (tx, rx) = oneshot::channel();
         let path = socket_path.clone();
         let handle = tokio::spawn(async move {
-            server::serve(&path, async {
+            server::serve(&path, secrets, async {
                 let _ = rx.await;
             })
             .await
@@ -727,6 +739,141 @@ async fn workspace_is_mounted_read_write() {
         std::fs::read_to_string(workspace.join("from-guest.txt")).unwrap(),
         "hello from guest\n"
     );
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+fn test_secret(name: &str) -> Secret {
+    Secret::new(
+        name.to_string(),
+        "anvil-it-secret-value".to_string(),
+        vec!["example.com".to_string()],
+    )
+    .unwrap()
+}
+
+/// Prints the environment variable in the sandbox and returns the output.
+async fn print_env(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    sandbox: &str,
+    var: &str,
+) -> String {
+    let (output, code) = run_print_env(client, sandbox, var).await;
+    assert_eq!(code, 0, "printenv {var} failed: {output:?}");
+
+    output
+}
+
+/// Runs `printenv` for the variable in the sandbox and returns its output and exit code.
+async fn run_print_env(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    sandbox: &str,
+    var: &str,
+) -> (String, i32) {
+    let (tx, rx) = mpsc::channel(4);
+    tx.send(attach_start(sandbox, "printenv", &[var], 80, 24))
+        .await
+        .unwrap();
+
+    let responses = client
+        .attach(ReceiverStream::new(rx))
+        .await
+        .expect("attach failed")
+        .into_inner();
+
+    collect_session(responses).await
+}
+
+/// Stops the sandbox and starts it again.
+async fn restart_sandbox(client: &mut SandboxManagementServiceClient<Channel>, name: &str) {
+    client
+        .stop_sandbox(StopSandboxRequest {
+            name: name.to_string(),
+        })
+        .await
+        .expect("failed to stop sandbox");
+    wait_for_status(client, name, SandboxStatus::Stopped).await;
+    start_running_sandbox(client, name).await;
+}
+
+#[tokio::test]
+async fn new_sandbox_sees_secret_placeholder_only() {
+    const NAME: &str = "anvil-it-secret-new";
+    remove_sandbox(NAME).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SecretStore::new(dir.path().join("secrets.yml"));
+    store.set(test_secret("ANVIL_IT_TOKEN")).unwrap();
+
+    let daemon = TestDaemon::start_with_secrets("secret-new", store).await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+
+    let output = print_env(&mut client, NAME, "ANVIL_IT_TOKEN").await;
+
+    assert!(
+        output.contains("$MSB_ANVIL_IT_TOKEN"),
+        "unexpected output: {output:?}"
+    );
+    assert!(!output.contains("anvil-it-secret-value"));
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
+async fn existing_sandbox_sees_added_secret_after_restart() {
+    const NAME: &str = "anvil-it-secret-existing";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("secret-existing").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+
+    let handle = Sandbox::get(NAME).await.unwrap();
+    secrets::add_to_sandbox(&handle, &test_secret("ANVIL_IT_TOKEN"))
+        .await
+        .expect("failed to add secret");
+
+    restart_sandbox(&mut client, NAME).await;
+
+    let output = print_env(&mut client, NAME, "ANVIL_IT_TOKEN").await;
+
+    assert!(
+        output.contains("$MSB_ANVIL_IT_TOKEN"),
+        "unexpected output: {output:?}"
+    );
+    assert!(!output.contains("anvil-it-secret-value"));
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
+async fn existing_sandbox_loses_removed_secret_after_restart() {
+    const NAME: &str = "anvil-it-secret-removed";
+    remove_sandbox(NAME).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SecretStore::new(dir.path().join("secrets.yml"));
+    store.set(test_secret("ANVIL_IT_TOKEN")).unwrap();
+
+    let daemon = TestDaemon::start_with_secrets("secret-removed", store).await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+
+    // The RemoveSecret RPC would change every anvil sandbox on the host, so remove the secret
+    // from the test sandbox only.
+    let handle = Sandbox::get(NAME).await.unwrap();
+    secrets::remove_from_sandbox(&handle, "ANVIL_IT_TOKEN")
+        .await
+        .expect("failed to remove secret");
+    restart_sandbox(&mut client, NAME).await;
+
+    let (output, code) = run_print_env(&mut client, NAME, "ANVIL_IT_TOKEN").await;
+
+    assert_ne!(code, 0, "secret is still set: {output:?}");
 
     daemon.stop().await;
     remove_sandbox(NAME).await;

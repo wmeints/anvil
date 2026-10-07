@@ -166,6 +166,54 @@ sequenceDiagram
 `anvil run` and SSH connections start a sandbox the same way when it isn't
 running, so `anvil start` is optional.
 
+## Setting a secret
+
+`anvil secret set <name> <value>` stores a secret that sandboxes use without
+seeing its value. With `--from-stdin`, the CLI reads the value from stdin
+instead.
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer
+    participant CLI as anvil
+    participant D as anvild
+    participant F as secrets.yml
+    participant MS as microsandbox
+
+    Dev->>CLI: anvil secret set GH_TOKEN --from-stdin
+    CLI->>CLI: Read value from stdin
+    CLI->>D: SetSecret(name, value, allowed_hosts)
+    D->>D: Validate name, value and hosts,<br/>use default hosts when none are given
+    alt Invalid
+        D-->>CLI: INVALID_ARGUMENT
+        CLI-->>Dev: Error
+    end
+    D->>F: Replace secret (mode 0600)
+    D->>MS: List sandboxes
+    loop For each sandbox with an anvil.hostname label
+        D->>MS: modify().secret(name, value, hosts).next_start()
+    end
+    D-->>CLI: SetSecretResponse(failed_sandboxes)
+    CLI-->>Dev: Secret set, warnings for failed sandboxes
+```
+
+When `anvild` creates a sandbox, it adds all secrets from `secrets.yml`.
+microsandbox enables TLS interception for the sandbox and sets each secret's
+environment variable to a placeholder such as `$MSB_GH_TOKEN`. Its TLS proxy
+replaces the placeholder with the real value in HTTP headers of requests to
+the allowed hosts, and blocks requests that carry the placeholder to other
+hosts. A running sandbox gets a new or changed secret the next time it
+starts.
+
+`anvil secret rm <name>` works the same way with `RemoveSecret`. `anvild`
+returns `NOT_FOUND` when the secret isn't in `secrets.yml`. Otherwise it
+removes the secret from each sandbox with
+`modify().remove_secret(name).next_start()`, and then from `secrets.yml`.
+When a sandbox fails, it keeps the secret in `secrets.yml` and returns the
+failed sandboxes, so running `anvil secret rm` again retries them. microsandbox can't change the
+secrets of a running sandbox, so a running sandbox keeps the placeholder,
+and its proxy keeps putting in the real value, until it restarts.
+
 ## Connecting via SSH
 
 `ssh <leaf>.anvil`, `scp` and IDEs reach a sandbox through the SSH config the

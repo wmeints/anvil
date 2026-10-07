@@ -14,8 +14,8 @@ Anvil supports two ways of working:
   sandbox over SSH.
 
 > [!NOTE]
-> Anvil is early in development. Egress control and secret proxying are
-> planned but not available yet.
+> Anvil is early in development. Egress control is planned but not
+> available yet.
 
 ## How it works
 
@@ -182,6 +182,9 @@ that directory.
 | `anvil ls [--format json]`  | List all sandboxes as a table, or as JSON with `--format json`. |
 | `anvil rm`                  | Remove the sandbox.                                  |
 | `anvil validate`            | Check the `.anvil.yml` file in the current directory. |
+| `anvil secret set <name> [<value>]` | Set a secret for all sandboxes. See [Secrets](#secrets). |
+| `anvil secret ls [--format json]` | List the secrets and their allowed hosts, without their values. |
+| `anvil secret rm <name>` | Remove a secret from all sandboxes. |
 
 For example, to open a shell in the sandbox:
 
@@ -215,6 +218,47 @@ working directory and uses the defaults.
 
 The image and resources apply when the sandbox is created. To change them for
 an existing sandbox, run `anvil rm` and start it again.
+
+### Secrets
+
+Give agents tokens without letting the real values into the sandbox:
+
+```sh
+gh auth token | anvil secret set GH_TOKEN --from-stdin
+anvil secret set ANTHROPIC_API_KEY --from-stdin < ~/anthropic-key.txt
+anvil secret set MY_TOKEN --from-stdin --allow-host api.example.com
+```
+
+In the sandbox, the environment variable holds a placeholder such as
+`$MSB_GH_TOKEN`. When a request to one of the secret's allowed hosts carries
+the placeholder in an HTTP header, the host replaces it with the real value.
+Requests that carry it to other hosts are blocked. Use `--from-stdin` rather
+than the value as an argument, so the value stays out of your shell history.
+
+These names have default allowed hosts. Other names need `--allow-host`,
+which you can repeat:
+
+| Name | Allowed hosts |
+| --- | --- |
+| `GH_TOKEN`, `GITHUB_TOKEN` | `github.com`, `api.github.com`, `uploads.github.com` |
+| `COPILOT_GITHUB_TOKEN` | `github.com`, `api.github.com`, `*.githubcopilot.com` |
+| `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` | `api.anthropic.com` |
+
+Secrets apply to all sandboxes. A running sandbox gets a new or changed
+secret after `anvil stop` and `anvil start`.
+
+`anvil secret ls` shows the names and allowed hosts of the secrets, never
+their values. `anvil secret rm <name>` removes a secret, but a running
+sandbox keeps using it until it restarts. If a token leaked, revoke it where
+you created it as well.
+
+Keep in mind that:
+
+- `git` over HTTPS can't use secrets, because it sends the token in a way
+  the placeholder can't be replaced. Use `gh` or SSH keys for git.
+- The values are stored unencrypted in files only your user can read. If
+  your machine may be compromised, rotate the tokens where you created them
+  and set the new values.
 
 ### Connecting over SSH
 

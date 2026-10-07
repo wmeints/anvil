@@ -6,6 +6,14 @@
   ([ADR 0001](decisions/0001-release-through-github-releases-and-ghcr.md)).
   Porting needs a cross-platform transport, such as named pipes, and
   microsandbox's Windows support is still in preview.
+- **Secrets in plaintext at rest:** the secret values are stored in
+  plaintext in `secrets.yml` and in microsandbox's database, readable by
+  every process that runs as the user. When the host may be compromised,
+  rotate the secrets at their issuers
+  ([ADR 0003](decisions/0004-store-secrets-in-a-private-file.md)).
+- **Secrets only work in HTTP headers:** microsandbox substitutes secret
+  placeholders in headers only, so `git` over HTTPS, which sends the token
+  base64-encoded in Basic auth, can't use them.
 - **Ageing Linux build runners:** Linux releases build on the `ubuntu-22.04`
   runners to support glibc 2.35. GitHub retires runner images before their
   Ubuntu release reaches end of support (April 2027), after which the
