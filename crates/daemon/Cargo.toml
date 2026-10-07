@@ -35,6 +35,8 @@ anvil-spec = {
     path = "../spec"
 }
 async-trait = "0.1.92"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_yaml = "0.9.34"
 
 [build-dependencies]
 tonic-prost-build = "0.14.6"

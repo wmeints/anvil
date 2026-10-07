@@ -10,6 +10,7 @@ service SandboxManagementService {
   rpc RemoveSandbox(RemoveSandboxRequest) returns (RemoveSandboxResponse);
   rpc Attach(stream AttachRequest) returns (stream AttachResponse);
   rpc SshTunnel(stream SshTunnelRequest) returns (stream SshTunnelResponse);
+  rpc SetSecret(SetSecretRequest) returns (SetSecretResponse);
 }
 
 message StartSandboxRequest {
@@ -114,4 +115,17 @@ message SshTunnelRequest {
 
 message SshTunnelResponse {
   bytes data = 1;
+}
+
+message SetSecretRequest {
+  // Environment variable that exposes the secret's placeholder in sandboxes.
+  string name = 1;
+  string value = 2;
+  // Hosts that may receive the real value. Empty uses the defaults for well-known names.
+  repeated string allowed_hosts = 3;
+}
+
+message SetSecretResponse {
+  // Existing sandboxes the secret couldn't be added to.
+  repeated string failed_sandboxes = 1;
 }

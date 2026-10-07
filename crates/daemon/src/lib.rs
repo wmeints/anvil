@@ -4,5 +4,6 @@ pub mod api {
 }
 
 pub mod runtime;
+pub mod secrets;
 pub mod server;
 pub mod ssh;

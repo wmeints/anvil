@@ -1,5 +1,6 @@
 pub mod client;
 pub mod manage;
+pub mod secret;
 pub mod session;
 pub mod ssh;
 pub mod validate;

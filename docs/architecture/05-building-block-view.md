@@ -39,6 +39,7 @@ C4Component
         Component(session, "session", "crossterm", "Terminal sessions")
         Component(ssh, "ssh", "Rust", "SSH proxy")
         Component(validate, "validate", "Rust", "Spec validation")
+        Component(secret, "secret", "Rust", "Secrets")
         Component(client, "client", "Tonic client", "Daemon client")
     }
     Component_Ext(spec, "anvil-spec", "serde_yaml", "Sandbox spec")
@@ -49,6 +50,7 @@ C4Component
     Rel(main, session, "Uses")
     Rel(main, ssh, "Uses")
     Rel(main, validate, "Uses")
+    Rel(main, secret, "Uses")
     Rel(main, client, "Connects")
     Rel(session, manage, "Ensures running")
     Rel(manage, spec, "Loads .anvil.yml")
@@ -57,8 +59,8 @@ C4Component
     Rel(client, anvild, "gRPC")
 ```
 
-- `main` - Parses the `start`, `stop`, `ls`, `rm`, `run` and `validate`
-  commands, and the hidden `ssh-proxy` command. `validate` runs without the
+- `main` - Parses the `start`, `stop`, `ls`, `rm`, `run`, `validate` and
+  `secret set` commands, and the hidden `ssh-proxy` command. `validate` runs without the
   daemon.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `anvild` from next to the `anvil` binary (or from
@@ -73,6 +75,9 @@ C4Component
   forwards input, output and window resizes.
 - `ssh` - Tunnels SSH protocol bytes between stdin/stdout and the
   `SshTunnel` stream. The generated SSH config uses it as `ProxyCommand`.
+- `secret` - Sends a secret to the daemon with `SetSecret`. With
+  `--from-stdin`, it reads the value from stdin and removes one trailing line
+  ending. It warns about sandboxes the daemon couldn't add the secret to.
 - `validate` - Checks `.anvil.yml` and reports problems as
   `file:line:column: error: message`.
 
@@ -85,6 +90,7 @@ C4Component
         Component(server, "server", "Tonic server", "Control API server")
         Component(ssh, "ssh", "russh", "SSH access")
         Component(runtime, "runtime", "Rust", "Runtime installation")
+        Component(secrets, "secrets", "serde_yaml", "Secrets")
     }
     Component_Ext(utils, "anvil-utils", "Rust", "File locations")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
@@ -92,6 +98,8 @@ C4Component
 
     Rel(main, runtime, "Ensures runtime")
     Rel(main, ssh, "Ensures keys")
+    Rel(main, secrets, "Protects microsandbox database")
+    Rel(server, secrets, "Loads, stores and applies secrets")
     Rel(main, server, "Runs")
     Rel(server, ssh, "Host names, SSH config")
     Rel(server, microsandbox, "Manages sandboxes, sessions, SSH servers")
@@ -103,7 +111,8 @@ C4Component
 
 - `main` - Sets up logging to stdout and to a daily log file in
   `$XDG_STATE_HOME/anvil`, exits when the socket is already in use, makes
-  sure the microsandbox runtime and the SSH keys exist, syncs the SSH config
+  sure the microsandbox runtime and the SSH keys exist, makes the
+  microsandbox `db` directory readable by the user only, syncs the SSH config
   and serves the API until `SIGINT` or `SIGTERM`.
 - `server` - Implements `SandboxManagementService` on top of microsandbox.
   It creates sandboxes from the requested image with the requested vCPUs and
@@ -112,7 +121,9 @@ C4Component
   or resources, and rejects invalid resources with `INVALID_ARGUMENT` before
   it creates anything. It starts, stops, lists and removes sandboxes. It runs `Attach` sessions with a TTY, and serves `SshTunnel`
   connections with microsandbox's SSH server over an in-memory pipe, booting
-  the sandbox when needed. It refuses to start when the socket already exists
+  the sandbox when needed. It adds the stored secrets to new sandboxes, and
+  `SetSecret` stores a secret and adds it to the existing sandboxes anvil
+  created. It refuses to start when the socket already exists
   and removes the socket on shutdown.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `anvild` at build time, so it never
@@ -120,6 +131,12 @@ C4Component
   and replaces a runtime in the microsandbox home whose `msb` has another
   version. An explicitly configured runtime with another version, or a
   partial installation, is an error.
+- `secrets` - Validates secrets, keeps them in `secrets.yml` (mode `0600`)
+  and adds them to sandboxes through microsandbox's secrets feature: the
+  guest sees a placeholder such as `$MSB_GH_TOKEN`, and microsandbox's TLS
+  proxy puts the real value in requests to the secret's allowed hosts. It
+  knows the default allowed hosts for well-known names such as `GH_TOKEN`
+  and `ANTHROPIC_API_KEY` ([ADR 0004](decisions/0004-store-secrets-in-a-private-file.md)).
 - `ssh` - Creates the ed25519 client and host keys, pins the host key for
   `*.anvil` in a `known_hosts` file, picks a unique `<leaf>.anvil` host name
   per sandbox (stored in the `anvil.hostname` label), and writes the
@@ -135,8 +152,9 @@ C4Component
   The CLI and daemon both use them.
 - `anvil-utils` (`crates/utils`) - Well-known paths: the daemon socket
   (`$XDG_RUNTIME_DIR/anvild.sock`), the log directory
-  (`$XDG_STATE_HOME/anvil`) and the SSH directory
-  (`$XDG_DATA_HOME/anvil/ssh`).
+  (`$XDG_STATE_HOME/anvil`), the SSH directory
+  (`$XDG_DATA_HOME/anvil/ssh`) and the secrets file
+  (`$XDG_DATA_HOME/anvil/secrets.yml`).
 
 The image and resources apply when a sandbox is created. Changing them in
 `.anvil.yml` doesn't change an existing sandbox; remove it with `anvil rm`

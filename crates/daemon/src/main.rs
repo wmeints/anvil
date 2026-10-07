@@ -3,6 +3,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
+use anvil_daemon::secrets::{self, SecretStore};
 use anvil_daemon::{runtime, server, ssh};
 
 /// Sets up logging and runs the daemon on its unix socket until shutdown.
@@ -29,6 +30,8 @@ async fn main() -> Result<()> {
     let msb_config =
         microsandbox::config::config().context("failed to load the microsandbox configuration")?;
     runtime::ensure(&msb_config).await?;
+    secrets::protect_database(&msb_config.home())
+        .context("failed to protect the microsandbox database")?;
     ssh::ensure_keys()?;
     server::sync_ssh_config().await;
 
@@ -37,5 +40,5 @@ async fn main() -> Result<()> {
         path = socket_path.to_str().unwrap(),
         "listening on unix socket"
     );
-    Ok(server::run(&socket_path).await?)
+    Ok(server::run(&socket_path, SecretStore::new(anvil_utils::secrets_path())).await?)
 }
