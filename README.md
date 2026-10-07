@@ -57,6 +57,9 @@ the CLI starts the daemon from its own directory.
 
 ### 1. Download and install the binaries
 
+The commands in this step use bash or zsh syntax. If you use fish, run
+`bash` first and run them in that shell.
+
 Set the release to install and pick the target for your machine:
 
 ```sh
@@ -65,10 +68,14 @@ case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)  TARGET=x86_64-unknown-linux-gnu ;;
   Linux-aarch64) TARGET=aarch64-unknown-linux-gnu ;;
   Darwin-arm64)  TARGET=aarch64-apple-darwin ;;
-  *) echo "Unsupported platform: $(uname -s)-$(uname -m)" ;;
+  *) echo "Unsupported platform: $(uname -s)-$(uname -m). Stop here and build from source." ;;
 esac
 NAME="anvil-$VERSION-$TARGET"
 ```
+
+When this prints `Unsupported platform`, there's no release archive for your
+machine. Skip the remaining steps and follow
+[Building from source](#building-from-source) instead.
 
 Download the archive and its checksum, and verify the archive:
 
@@ -118,11 +125,12 @@ shell and open a new terminal:
 ### 3. Verify the installation
 
 ```sh
-anvil --help
+anvil ls
 ```
 
-The first command that needs the daemon starts `anvild`, which installs the
-microsandbox runtime in `~/.microsandbox`.
+This starts `anvild`, which installs the microsandbox runtime in
+`~/.microsandbox`, and lists your sandboxes (none yet). An error here means
+`anvild` couldn't start, for example because it isn't next to `anvil`.
 
 ### macOS: remove the quarantine flag
 
