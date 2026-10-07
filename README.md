@@ -42,16 +42,123 @@ it in `~/.microsandbox` on first start.
 
 ## Installation
 
-Download the archive for your platform from the
-[GitHub releases](https://github.com/wmeints/anvil/releases), extract it and
-put the `anvil` and `anvild` binaries on your `PATH`. Keep both binaries in
-the same directory, because the CLI starts the daemon from its own directory.
+Each [GitHub release](https://github.com/wmeints/anvil/releases) has an
+archive per platform with the `anvil` and `anvild` binaries:
 
-The macOS binaries aren't signed. Remove the quarantine flag after
-downloading:
+| Platform              | Target                       |
+| --------------------- | ---------------------------- |
+| Linux x86_64          | `x86_64-unknown-linux-gnu`   |
+| Linux ARM64           | `aarch64-unknown-linux-gnu`  |
+| macOS (Apple Silicon) | `aarch64-apple-darwin`       |
+
+The steps below install both binaries in `~/.local/bin`, which doesn't need
+root permissions. Keep `anvil` and `anvild` in the same directory, because
+the CLI starts the daemon from its own directory.
+
+### 1. Download and install the binaries
+
+Set the release to install and pick the target for your machine:
 
 ```sh
-xattr -d com.apple.quarantine anvil anvild
+VERSION=v0.1.0
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64)  TARGET=x86_64-unknown-linux-gnu ;;
+  Linux-aarch64) TARGET=aarch64-unknown-linux-gnu ;;
+  Darwin-arm64)  TARGET=aarch64-apple-darwin ;;
+  *) echo "Unsupported platform: $(uname -s)-$(uname -m)" ;;
+esac
+NAME="anvil-$VERSION-$TARGET"
+```
+
+Download the archive and its checksum, and verify the archive:
+
+```sh
+curl -fLO "https://github.com/wmeints/anvil/releases/download/$VERSION/$NAME.tar.gz"
+curl -fLO "https://github.com/wmeints/anvil/releases/download/$VERSION/$NAME.tar.gz.sha256"
+shasum -a 256 -c "$NAME.tar.gz.sha256"   # or: sha256sum -c "$NAME.tar.gz.sha256"
+```
+
+Extract the archive and copy both binaries to `~/.local/bin`:
+
+```sh
+tar -xzf "$NAME.tar.gz"
+mkdir -p ~/.local/bin
+install -m 755 "$NAME/anvil" "$NAME/anvild" ~/.local/bin/
+```
+
+### 2. Add `~/.local/bin` to your `PATH`
+
+Check whether the directory is on your `PATH` already:
+
+```sh
+command -v anvil
+```
+
+When this prints nothing, add the directory to the startup file of your
+shell and open a new terminal:
+
+- **zsh**, the default shell on macOS:
+
+  ```sh
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+  ```
+
+- **bash**, the default shell on most Linux distributions:
+
+  ```sh
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+  ```
+
+- **fish**:
+
+  ```sh
+  fish_add_path ~/.local/bin
+  ```
+
+### 3. Verify the installation
+
+```sh
+anvil --help
+```
+
+The first command that needs the daemon starts `anvild`, which installs the
+microsandbox runtime in `~/.microsandbox`.
+
+### macOS: remove the quarantine flag
+
+The macOS binaries aren't signed. When you download the archive through a
+browser instead of `curl`, macOS quarantines the binaries and refuses to run
+them. Remove the quarantine flag:
+
+```sh
+xattr -d com.apple.quarantine ~/.local/bin/anvil ~/.local/bin/anvild
+```
+
+### Upgrading and uninstalling
+
+To upgrade, repeat step 1 with the new `VERSION`, then stop the running
+daemon so the CLI starts the new one on the next command:
+
+```sh
+pkill -TERM -x anvild
+```
+
+To uninstall, stop the daemon and remove the binaries:
+
+```sh
+pkill -TERM -x anvild
+rm ~/.local/bin/anvil ~/.local/bin/anvild
+```
+
+### Building from source
+
+With the [development toolchain](#development) installed, `cargo install`
+puts both binaries in `~/.cargo/bin`. Make sure that directory is on your
+`PATH`, as in step 2:
+
+```sh
+cargo install --locked --path crates/cli
+cargo install --locked --path crates/daemon
 ```
 
 ## Usage
