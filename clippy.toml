@@ -1,0 +1,11 @@
+# Max lines per function body (default: 100)
+too-many-lines-threshold = 30
+
+# Max nesting depth of blocks (default: 0 = disabled)
+excessive-nesting-threshold = 3
+
+# Max function arguments (default: 7)
+too-many-arguments-threshold = 4
+
+# Max bool parameters per function (default: 3)
+max-fn-params-bools = 1

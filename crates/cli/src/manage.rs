@@ -55,54 +55,71 @@ pub(crate) async fn ensure_running(
     let deadline = Instant::now() + STARTING_TIMEOUT;
 
     loop {
-        let response = match client
-            .get_sandbox(GetSandboxRequest {
-                name: name.to_string(),
-            })
-            .await
-        {
-            Ok(response) => response.into_inner(),
-            Err(status) if status.code() == Code::NotFound => {
-                eprintln!("Creating sandbox {name}...");
+        let Some(status) = sandbox_status(client, &name).await? else {
+            eprintln!("Creating sandbox {name}...");
+            client
+                .start_sandbox(build_start_request(spec, workspace))
+                .await?;
 
-                client
-                    .start_sandbox(build_start_request(spec, workspace))
-                    .await?;
-
-                return Ok(());
-            }
-            Err(status) => return Err(status.into()),
+            return Ok(());
         };
 
-        match response.status() {
-            SandboxStatus::Running => return Ok(()),
-            SandboxStatus::Stopped | SandboxStatus::Crashed => {
-                eprintln!("Starting sandbox {name}...");
+        if status != SandboxStatus::Starting {
+            return start_settled_sandbox(&name, status, workspace, client).await;
+        }
 
-                // The workspace lets the daemon name sandboxes created before SSH support.
-                client
-                    .start_sandbox(StartSandboxRequest {
-                        name: name.to_string(),
-                        workspace: workspace.to_string_lossy().into_owned(),
-                        ..Default::default()
-                    })
-                    .await?;
+        if Instant::now() >= deadline {
+            bail!("timed out waiting for sandbox {name} to start");
+        }
 
-                return Ok(());
-            }
-            SandboxStatus::Starting => {
-                if Instant::now() >= deadline {
-                    bail!("timed out waiting for sandbox {name} to start");
-                }
+        sleep(STARTING_POLL_INTERVAL).await;
+    }
+}
 
-                sleep(STARTING_POLL_INTERVAL).await;
-            }
-            status @ (SandboxStatus::Stopping | SandboxStatus::Paused) => {
-                bail!(
-                    "sandbox {name} is {}; try again once it has stopped",
-                    format_status(status).to_lowercase()
-                );
-            }
+/// Returns the status of the sandbox, or `None` when it doesn't exist.
+async fn sandbox_status(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> Result<Option<SandboxStatus>> {
+    let request = GetSandboxRequest {
+        name: name.to_string(),
+    };
+
+    match client.get_sandbox(request).await {
+        Ok(response) => Ok(Some(response.into_inner().status())),
+        Err(status) if status.code() == Code::NotFound => Ok(None),
+        Err(status) => Err(status.into()),
+    }
+}
+
+/// Starts an existing sandbox that isn't starting, or fails when it can't be started now.
+async fn start_settled_sandbox(
+    name: &str,
+    status: SandboxStatus,
+    workspace: &Path,
+    client: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<()> {
+    match status {
+        SandboxStatus::Running => Ok(()),
+        SandboxStatus::Stopped | SandboxStatus::Crashed => {
+            eprintln!("Starting sandbox {name}...");
+
+            // The workspace lets the daemon name sandboxes created before SSH support.
+            client
+                .start_sandbox(StartSandboxRequest {
+                    name: name.to_string(),
+                    workspace: workspace.to_string_lossy().into_owned(),
+                    ..Default::default()
+                })
+                .await?;
+
+            Ok(())
+        }
+        status @ (SandboxStatus::Starting | SandboxStatus::Stopping | SandboxStatus::Paused) => {
+            bail!(
+                "sandbox {name} is {}; try again once it has stopped",
+                format_status(status).to_lowercase()
+            )
         }
     }
 }

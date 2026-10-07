@@ -16,15 +16,17 @@ use anvil_spec::SandboxResourcesSpec;
 use anyhow::Result;
 use async_trait::async_trait;
 use microsandbox::sandbox::exec::{ExecControl, ExecEvent, ExecHandle, ExecSink};
+use microsandbox::sandbox::ssh::SshServer;
 use microsandbox::sandbox::{HostPermissions, SandboxHandle};
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::HashSet;
 use std::fmt;
 use std::fs;
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::pin::Pin;
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
@@ -60,6 +62,61 @@ impl AnvilServer {
             secrets_lock: tokio::sync::Mutex::new(()),
         }
     }
+
+    /// Returns the stored secrets.
+    fn load_secrets(&self) -> Result<Vec<Secret>, Status> {
+        self.secrets.load().map_err(|err| {
+            tracing::warn!("failed to load secrets: {err:#}");
+            Status::internal("failed to load secrets")
+        })
+    }
+
+    /// Fails with `NotFound` when no secret with the name is stored.
+    fn ensure_secret_exists(&self, name: &str) -> Result<(), Status> {
+        if self
+            .load_secrets()?
+            .iter()
+            .any(|secret| secret.name() == name)
+        {
+            Ok(())
+        } else {
+            Err(Status::not_found(format!("secret {name} doesn't exist")))
+        }
+    }
+
+    /// Creates a sandbox for the workspace with the stored secrets.
+    async fn create_sandbox(&self, request: &StartSandboxRequest) -> Result<(), Status> {
+        let guest_path = workspace_mount_path(&request.workspace)?;
+        let (cpus, memory_mib) = sandbox_resources(request.resources.clone())?;
+        let hostname = ssh::pick_hostname(&request.workspace, &taken_hostnames().await?);
+        let _secrets_guard = self.secrets_lock.lock().await;
+        let secrets = self.load_secrets()?;
+
+        let builder = Sandbox::builder(&request.name)
+            .image(sandbox_image(&request.image))
+            .cpus(cpus)
+            .memory(memory_mib)
+            .label(ssh::HOSTNAME_LABEL, &hostname)
+            // Mounted read/write; Mirror propagates guest chmod changes to the host files.
+            .volume(&guest_path, |m| {
+                m.bind(&request.workspace)
+                    .host_permissions(HostPermissions::Mirror)
+            })
+            .workdir(&guest_path)
+            .detached(true);
+
+        secrets::add_to_builder(builder, &secrets)
+            .create()
+            .await
+            .map_err(|err| {
+                tracing::warn!("failed to create sandbox {}: {err}", request.name);
+                Status::internal("failed to create sandbox")
+            })?;
+
+        tracing::info!("created sandbox {} as {hostname}", request.name);
+
+        Ok(())
+    }
 }
 
 /// Stream of responses sent back to the client during an attached session.
@@ -86,65 +143,9 @@ impl SandboxManagementService for AnvilServer {
     ) -> Result<Response<StartSandboxResponse>, Status> {
         let request_data = request.into_inner();
 
-        let existing_sb = Sandbox::get(&request_data.name).await;
-
-        if let Ok(existing_sb) = existing_sb {
-            // Sandboxes created before SSH support have no host name yet.
-            if ssh::hostname_of(&existing_sb).is_none() {
-                let workspace = match request_data.workspace.as_str() {
-                    "" => request_data.name.as_str(),
-                    workspace => workspace,
-                };
-                let hostname = ssh::pick_hostname(workspace, &taken_hostnames().await?);
-
-                if let Err(err) = existing_sb
-                    .modify()
-                    .label(ssh::HOSTNAME_LABEL, &hostname)
-                    .apply()
-                    .await
-                {
-                    tracing::warn!("failed to assign host name to {}: {err}", request_data.name);
-                }
-            }
-
-            existing_sb
-                .start_detached()
-                .await
-                .map_err(|_| Status::internal("failed to start sandbox"))?;
-
-            tracing::info!("started sandbox {}", request_data.name);
-        } else {
-            let guest_path = workspace_mount_path(&request_data.workspace)?;
-            let (cpus, memory_mib) = sandbox_resources(request_data.resources)?;
-            let hostname = ssh::pick_hostname(&request_data.workspace, &taken_hostnames().await?);
-            let _secrets_guard = self.secrets_lock.lock().await;
-            let secrets = self.secrets.load().map_err(|err| {
-                tracing::warn!("failed to load secrets: {err:#}");
-                Status::internal("failed to load secrets")
-            })?;
-
-            let builder = Sandbox::builder(&request_data.name)
-                .image(sandbox_image(&request_data.image))
-                .cpus(cpus)
-                .memory(memory_mib)
-                .label(ssh::HOSTNAME_LABEL, &hostname)
-                // Mounted read/write; Mirror propagates guest chmod changes to the host files.
-                .volume(&guest_path, |m| {
-                    m.bind(&request_data.workspace)
-                        .host_permissions(HostPermissions::Mirror)
-                })
-                .workdir(&guest_path)
-                .detached(true);
-
-            secrets::add_to_builder(builder, &secrets)
-                .create()
-                .await
-                .map_err(|err| {
-                    tracing::warn!("failed to create sandbox {}: {err}", request_data.name);
-                    Status::internal("failed to create sandbox")
-                })?;
-
-            tracing::info!("created sandbox {} as {hostname}", request_data.name);
+        match Sandbox::get(&request_data.name).await {
+            Ok(existing_sb) => start_existing_sandbox(&existing_sb, &request_data).await?,
+            Err(_) => self.create_sandbox(&request_data).await?,
         }
 
         sync_ssh_config().await;
@@ -190,12 +191,7 @@ impl SandboxManagementService for AnvilServer {
         _request: Request<ListSecretsRequest>,
     ) -> Result<Response<ListSecretsResponse>, Status> {
         let mut secrets: Vec<SecretSummary> = self
-            .secrets
-            .load()
-            .map_err(|err| {
-                tracing::warn!("failed to load secrets: {err:#}");
-                Status::internal("failed to load secrets")
-            })?
+            .load_secrets()?
             .iter()
             .map(|secret| SecretSummary {
                 name: secret.name().to_string(),
@@ -218,20 +214,7 @@ impl SandboxManagementService for AnvilServer {
         secrets::validate_name(&name).map_err(|err| Status::invalid_argument(err.to_string()))?;
 
         let _secrets_guard = self.secrets_lock.lock().await;
-
-        let exists = self
-            .secrets
-            .load()
-            .map_err(|err| {
-                tracing::warn!("failed to load secrets: {err:#}");
-                Status::internal("failed to load secrets")
-            })?
-            .iter()
-            .any(|secret| secret.name() == name);
-
-        if !exists {
-            return Err(Status::not_found(format!("secret {name} doesn't exist")));
-        }
+        self.ensure_secret_exists(&name)?;
 
         // Remove the secret from the store last, so it can be removed again when a sandbox
         // fails.
@@ -256,16 +239,7 @@ impl SandboxManagementService for AnvilServer {
         &self,
         request: Request<StopSandboxRequest>,
     ) -> Result<Response<StopSandboxResponse>, Status> {
-        let sandbox_name = request.into_inner().name;
-
-        let sb = Sandbox::get(sandbox_name.as_str())
-            .await
-            .map_err(|err| match err {
-                MicrosandboxError::SandboxNotFound(_) => {
-                    Status::not_found("couldn't find specified sandbox")
-                }
-                _ => Status::internal("invalid command"),
-            })?;
+        let sb = get_sandbox(&request.into_inner().name).await?;
 
         sb.stop()
             .await
@@ -297,16 +271,7 @@ impl SandboxManagementService for AnvilServer {
         &self,
         request: Request<GetSandboxRequest>,
     ) -> Result<Response<GetSandboxResponse>, Status> {
-        let request_data = request.into_inner();
-
-        let sb = Sandbox::get(request_data.name.as_str())
-            .await
-            .map_err(|err| match err {
-                MicrosandboxError::SandboxNotFound(_) => {
-                    Status::not_found("couldn't find specified sandbox")
-                }
-                _ => Status::internal("failed to get sandbox"),
-            })?;
+        let sb = get_sandbox(&request.into_inner().name).await?;
 
         Ok(Response::new(GetSandboxResponse {
             name: sb.name().to_string(),
@@ -320,16 +285,8 @@ impl SandboxManagementService for AnvilServer {
         &self,
         request: Request<RemoveSandboxRequest>,
     ) -> std::result::Result<Response<RemoveSandboxResponse>, Status> {
-        let request_data = request.into_inner();
+        let sb = get_sandbox(&request.into_inner().name).await?;
 
-        let sb = Sandbox::get(request_data.name.as_str())
-            .await
-            .map_err(|err| match err {
-                MicrosandboxError::SandboxNotFound(_) => {
-                    Status::not_found("couldn't find specified sandbox")
-                }
-                _ => Status::internal("failed to get sandbox"),
-            })?;
         sb.remove()
             .await
             .map_err(|_| Status::internal("failed to remove sandbox"))?;
@@ -355,37 +312,19 @@ impl SandboxManagementService for AnvilServer {
 
         let (width, height) = window_size(start.size)?;
 
-        let sb = Sandbox::get(start.name.as_str())
-            .await
-            .map_err(|err| match err {
-                MicrosandboxError::SandboxNotFound(_) => {
-                    Status::not_found("couldn't find specified sandbox")
-                }
-                _ => Status::internal("failed to get sandbox"),
-            })?
+        let sb = get_sandbox(&start.name)
+            .await?
             .connect()
             .await
             .map_err(|_| Status::failed_precondition("sandbox is not running"))?;
 
-        let mut handle = sb
-            .exec_stream_with(start.command, |e| e.args(start.args).stdin_pipe().tty(true))
-            .await
-            .map_err(|_| Status::internal("failed to start session"))?;
-
-        let stdin = handle
-            .take_stdin()
-            .ok_or_else(|| Status::internal("session has no stdin"))?;
-        let control = handle.control();
-
-        if control.resize(height, width).await.is_err() {
-            end_session(&control).await;
-            return Err(Status::internal("failed to resize session"));
-        }
+        let session = Session::open(&sb, start.command, start.args).await?;
+        session.resize(width, height).await?;
 
         let (tx, rx) = mpsc::channel(32);
 
         tokio::spawn(async move {
-            run_session(inbound, handle, stdin, control, tx).await;
+            run_session(inbound, session, tx).await;
             // The connected handle only owns the agent connection; dropping it leaves the VM running.
             drop(sb);
         });
@@ -407,45 +346,12 @@ impl SandboxManagementService for AnvilServer {
             _ => return Err(Status::invalid_argument("first message must be hostname")),
         };
 
-        let sb = Sandbox::list_with(|opt| opt.label(ssh::HOSTNAME_LABEL, &hostname))
-            .await
-            .map_err(|_| Status::internal("failed to list sandboxes"))?
-            .sandboxes
-            .into_iter()
-            .next()
-            .ok_or_else(|| Status::not_found("couldn't find a sandbox with that host name"))?
-            .connect_or_start_detached()
-            .await
-            .map_err(|_| Status::failed_precondition("failed to start sandbox"))?;
-
-        // The proxy process owns the connection, so it decides when the session ends.
-        let server = sb
-            .ssh()
-            .server_with(|opts| {
-                opts.host_key_path(ssh::host_key_path())
-                    .authorized_keys_path(ssh::client_public_key_path())
-                    .disable_inactivity_timeout()
-            })
-            .await
-            .map_err(|err| {
-                tracing::warn!("failed to prepare SSH server: {err}");
-                Status::internal("failed to prepare SSH server")
-            })?;
-
-        let (client_end, server_end) = tokio::io::duplex(TUNNEL_BUFFER_SIZE);
+        let sb = connect_by_hostname(&hostname).await?;
+        let server = ssh_server(&sb).await?;
         let (tx, rx) = mpsc::channel(32);
 
         tokio::spawn(async move {
-            let serve = tokio::spawn(async move { server.serve(server_end).await });
-
-            run_tunnel(inbound, client_end, tx).await;
-
-            match serve.await {
-                Ok(Err(err)) => tracing::info!("SSH session to {hostname} ended: {err}"),
-                Err(err) => tracing::warn!("SSH server for {hostname} failed: {err}"),
-                Ok(Ok(())) => {}
-            }
-
+            serve_tunnel(server, inbound, tx, &hostname).await;
             // The connected handle only owns the agent connection; dropping it leaves the VM running.
             drop(sb);
         });
@@ -454,61 +360,170 @@ impl SandboxManagementService for AnvilServer {
     }
 }
 
+/// Returns the sandbox with the name.
+async fn get_sandbox(name: &str) -> Result<SandboxHandle, Status> {
+    Sandbox::get(name).await.map_err(|err| match err {
+        MicrosandboxError::SandboxNotFound(_) => {
+            Status::not_found("couldn't find specified sandbox")
+        }
+        _ => Status::internal("failed to get sandbox"),
+    })
+}
+
+/// Starts an existing sandbox, first giving it a host name when it has none.
+async fn start_existing_sandbox(
+    sb: &SandboxHandle,
+    request: &StartSandboxRequest,
+) -> Result<(), Status> {
+    // Sandboxes created before SSH support have no host name yet.
+    if ssh::hostname_of(sb).is_none() {
+        assign_hostname(sb, request).await?;
+    }
+
+    sb.start_detached()
+        .await
+        .map_err(|_| Status::internal("failed to start sandbox"))?;
+
+    tracing::info!("started sandbox {}", request.name);
+
+    Ok(())
+}
+
+/// Gives the sandbox a host name based on its workspace, logging a warning when that fails.
+async fn assign_hostname(sb: &SandboxHandle, request: &StartSandboxRequest) -> Result<(), Status> {
+    let workspace = match request.workspace.as_str() {
+        "" => request.name.as_str(),
+        workspace => workspace,
+    };
+    let hostname = ssh::pick_hostname(workspace, &taken_hostnames().await?);
+
+    let result = sb
+        .modify()
+        .label(ssh::HOSTNAME_LABEL, &hostname)
+        .apply()
+        .await;
+
+    if let Err(err) = result {
+        tracing::warn!("failed to assign host name to {}: {err}", request.name);
+    }
+
+    Ok(())
+}
+
+/// Connects to the sandbox with the SSH host name, starting it when needed.
+async fn connect_by_hostname(hostname: &str) -> Result<Sandbox, Status> {
+    Sandbox::list_with(|opt| opt.label(ssh::HOSTNAME_LABEL, hostname))
+        .await
+        .map_err(|_| Status::internal("failed to list sandboxes"))?
+        .sandboxes
+        .into_iter()
+        .next()
+        .ok_or_else(|| Status::not_found("couldn't find a sandbox with that host name"))?
+        .connect_or_start_detached()
+        .await
+        .map_err(|_| Status::failed_precondition("failed to start sandbox"))
+}
+
+/// Prepares the SSH server of a sandbox for a tunnel.
+async fn ssh_server(sb: &Sandbox) -> Result<SshServer, Status> {
+    // The proxy process owns the connection, so it decides when the session ends.
+    sb.ssh()
+        .server_with(|opts| {
+            opts.host_key_path(ssh::host_key_path())
+                .authorized_keys_path(ssh::client_public_key_path())
+                .disable_inactivity_timeout()
+        })
+        .await
+        .map_err(|err| {
+            tracing::warn!("failed to prepare SSH server: {err}");
+            Status::internal("failed to prepare SSH server")
+        })
+}
+
+/// Serves an SSH session through the tunnel until it closes.
+async fn serve_tunnel(
+    server: SshServer,
+    inbound: Streaming<SshTunnelRequest>,
+    tx: mpsc::Sender<Result<SshTunnelResponse, Status>>,
+    hostname: &str,
+) {
+    let (client_end, server_end) = tokio::io::duplex(TUNNEL_BUFFER_SIZE);
+    let serve = tokio::spawn(async move { server.serve(server_end).await });
+
+    run_tunnel(inbound, client_end, tx).await;
+
+    match serve.await {
+        Ok(Err(err)) => tracing::info!("SSH session to {hostname} ended: {err}"),
+        Err(err) => tracing::warn!("SSH server for {hostname} failed: {err}"),
+        Ok(Ok(())) => {}
+    }
+}
+
 /// Copies client bytes to the SSH server and server bytes to the client until the server
 /// closes its end or the client goes away.
 async fn run_tunnel(
-    mut inbound: Streaming<SshTunnelRequest>,
+    inbound: Streaming<SshTunnelRequest>,
     stream: DuplexStream,
     tx: mpsc::Sender<Result<SshTunnelResponse, Status>>,
 ) {
-    let (mut reader, mut writer) = tokio::io::split(stream);
+    let (reader, writer) = tokio::io::split(stream);
 
-    // Both directions run concurrently so a full pipe in one direction can't stall the other.
+    // The server closes its end in response to the end of input, which ends downstream.
     let upstream = async {
-        loop {
-            match inbound.message().await {
-                Ok(Some(SshTunnelRequest {
-                    message: Some(ssh_tunnel_request::Message::Data(data)),
-                })) => {
-                    if writer.write_all(&data).await.is_err() {
-                        break;
-                    }
-                }
-                Ok(Some(SshTunnelRequest {
-                    message: Some(ssh_tunnel_request::Message::Hostname(_)),
-                })) => tracing::warn!("ignoring hostname message on open tunnel"),
-                Ok(Some(SshTunnelRequest { message: None })) => {}
-                Ok(None) | Err(_) => break,
-            }
-        }
-
-        // Signal end of input; the server closes its end in response, which ends downstream.
-        let _ = writer.shutdown().await;
+        copy_upstream(inbound, writer).await;
         std::future::pending::<()>().await;
     };
 
-    let downstream = async {
-        let mut buffer = vec![0; TUNNEL_CHUNK_SIZE];
-
-        loop {
-            match reader.read(&mut buffer).await {
-                Ok(0) | Err(_) => return,
-                Ok(n) => {
-                    let response = SshTunnelResponse {
-                        data: buffer[..n].to_vec(),
-                    };
-
-                    if tx.send(Ok(response)).await.is_err() {
-                        return;
-                    }
-                }
-            }
-        }
-    };
-
+    // Both directions run concurrently so a full pipe in one direction can't stall the other.
     tokio::select! {
         _ = upstream => {}
-        _ = downstream => {}
+        _ = copy_downstream(reader, &tx) => {}
+    }
+}
+
+/// Copies client bytes to the SSH server, then signals the end of input.
+async fn copy_upstream(
+    mut inbound: Streaming<SshTunnelRequest>,
+    mut writer: WriteHalf<DuplexStream>,
+) {
+    while let Some(data) = next_tunnel_data(&mut inbound).await {
+        if writer.write_all(&data).await.is_err() {
+            break;
+        }
+    }
+
+    let _ = writer.shutdown().await;
+}
+
+/// Returns the next bytes the client sends, or `None` when the client goes away.
+async fn next_tunnel_data(inbound: &mut Streaming<SshTunnelRequest>) -> Option<Vec<u8>> {
+    loop {
+        match inbound.message().await.ok()??.message {
+            Some(ssh_tunnel_request::Message::Data(data)) => return Some(data),
+            Some(ssh_tunnel_request::Message::Hostname(_)) => {
+                tracing::warn!("ignoring hostname message on open tunnel");
+            }
+            None => {}
+        }
+    }
+}
+
+/// Copies SSH server bytes to the client until the server closes its end or the client goes
+/// away.
+async fn copy_downstream(
+    mut reader: ReadHalf<DuplexStream>,
+    tx: &mpsc::Sender<Result<SshTunnelResponse, Status>>,
+) {
+    let mut buffer = vec![0; TUNNEL_CHUNK_SIZE];
+
+    while let Ok(count @ 1..) = reader.read(&mut buffer).await {
+        let response = SshTunnelResponse {
+            data: buffer[..count].to_vec(),
+        };
+
+        if tx.send(Ok(response)).await.is_err() {
+            return;
+        }
     }
 }
 
@@ -601,75 +616,168 @@ pub async fn sync_ssh_config() {
     }
 }
 
+/// An interactive process in a sandbox, with its input and controls.
+struct Session {
+    handle: ExecHandle,
+    stdin: ExecSink,
+    control: ExecControl,
+}
+
+impl Session {
+    /// Starts the command with a terminal in the sandbox.
+    async fn open(sb: &Sandbox, command: String, args: Vec<String>) -> Result<Self, Status> {
+        let mut handle = sb
+            .exec_stream_with(command, |e| e.args(args).stdin_pipe().tty(true))
+            .await
+            .map_err(|_| Status::internal("failed to start session"))?;
+
+        let stdin = handle
+            .take_stdin()
+            .ok_or_else(|| Status::internal("session has no stdin"))?;
+        let control = handle.control();
+
+        Ok(Self {
+            handle,
+            stdin,
+            control,
+        })
+    }
+
+    /// Sets the terminal size of the session, ending the session when that fails.
+    async fn resize(&self, width: u16, height: u16) -> Result<(), Status> {
+        if self.control.resize(height, width).await.is_err() {
+            end_session(&self.control).await;
+            return Err(Status::internal("failed to resize session"));
+        }
+
+        Ok(())
+    }
+}
+
 /// Forwards client input to the session and session output to the client until either side ends.
 async fn run_session(
     mut inbound: Streaming<AttachRequest>,
-    mut handle: ExecHandle,
-    stdin: ExecSink,
-    control: ExecControl,
+    mut session: Session,
     tx: mpsc::Sender<Result<AttachResponse, Status>>,
 ) {
     loop {
-        tokio::select! {
-            message = inbound.message() => match message {
-                Ok(Some(AttachRequest { message: Some(message) })) => match message {
-                    attach_request::Message::Input(input) => {
-                        if let Err(err) = stdin.write(input.data).await {
-                            tracing::warn!("failed to write session input: {err}");
-                        }
-                    }
-                    attach_request::Message::Resize(size) => match window_size(Some(size)) {
-                        Ok((width, height)) => {
-                            if let Err(err) = control.resize(height, width).await {
-                                tracing::warn!("failed to resize session: {err}");
-                            }
-                        }
-                        Err(_) => tracing::warn!("ignoring invalid resize request"),
-                    },
-                    attach_request::Message::Start(_) => {
-                        tracing::warn!("ignoring start message on running session");
-                    }
-                },
-                Ok(Some(AttachRequest { message: None })) => {}
-                Ok(None) | Err(_) => {
-                    tracing::info!("client disconnected, ending session");
-                    end_session(&control).await;
-                    return;
-                }
-            },
-            event = handle.recv() => match event {
-                Some(ExecEvent::Stdout(data)) | Some(ExecEvent::Stderr(data)) => {
-                    let response = AttachResponse {
-                        message: Some(attach_response::Message::Output(data.to_vec())),
-                    };
-
-                    if tx.send(Ok(response)).await.is_err() {
-                        end_session(&control).await;
-                        return;
-                    }
-                }
-                Some(ExecEvent::Exited { code }) => {
-                    let response = AttachResponse {
-                        message: Some(attach_response::Message::ExitCode(code)),
-                    };
-                    let _ = tx.send(Ok(response)).await;
-                    return;
-                }
-                Some(ExecEvent::Failed(failed)) => {
-                    tracing::warn!("session failed to start: {failed:?}");
-                    let _ = tx.send(Err(Status::internal("session failed to start"))).await;
-                    return;
-                }
-                Some(_) => {}
-                None => return,
-            },
-            _ = tx.closed() => {
-                tracing::info!("client disconnected, ending session");
-                end_session(&control).await;
-                return;
+        let flow = tokio::select! {
+            message = inbound.message() => {
+                handle_client_message(message, &session.stdin, &session.control).await
             }
+            event = session.handle.recv() => forward_event(event, &tx, &session.control).await,
+            _ = tx.closed() => disconnect(&session.control).await,
+        };
+
+        if flow.is_break() {
+            return;
         }
     }
+}
+
+/// Applies a message from the client to the session, ending the session when the client is gone.
+async fn handle_client_message(
+    message: Result<Option<AttachRequest>, Status>,
+    stdin: &ExecSink,
+    control: &ExecControl,
+) -> ControlFlow<()> {
+    match message {
+        Ok(Some(AttachRequest {
+            message: Some(message),
+        })) => apply_client_message(message, stdin, control).await,
+        Ok(Some(AttachRequest { message: None })) => {}
+        Ok(None) | Err(_) => return disconnect(control).await,
+    }
+
+    ControlFlow::Continue(())
+}
+
+/// Writes client input to the session or resizes it.
+async fn apply_client_message(
+    message: attach_request::Message,
+    stdin: &ExecSink,
+    control: &ExecControl,
+) {
+    match message {
+        attach_request::Message::Input(input) => write_input(stdin, input.data).await,
+        attach_request::Message::Resize(size) => resize_session(control, size).await,
+        attach_request::Message::Start(_) => {
+            tracing::warn!("ignoring start message on running session");
+        }
+    }
+}
+
+/// Writes client input to the session, logging a warning when that fails.
+async fn write_input(stdin: &ExecSink, data: Vec<u8>) {
+    if let Err(err) = stdin.write(data).await {
+        tracing::warn!("failed to write session input: {err}");
+    }
+}
+
+/// Resizes the session terminal, logging a warning when that fails.
+async fn resize_session(control: &ExecControl, size: AttachResize) {
+    let Ok((width, height)) = window_size(Some(size)) else {
+        tracing::warn!("ignoring invalid resize request");
+        return;
+    };
+
+    if let Err(err) = control.resize(height, width).await {
+        tracing::warn!("failed to resize session: {err}");
+    }
+}
+
+/// Sends session output and its exit code to the client, stopping when the session ends.
+async fn forward_event(
+    event: Option<ExecEvent>,
+    tx: &mpsc::Sender<Result<AttachResponse, Status>>,
+    control: &ExecControl,
+) -> ControlFlow<()> {
+    match event {
+        Some(ExecEvent::Stdout(data) | ExecEvent::Stderr(data)) => {
+            forward_output(data.to_vec(), tx, control).await
+        }
+        Some(ExecEvent::Exited { code }) => {
+            let response = AttachResponse {
+                message: Some(attach_response::Message::ExitCode(code)),
+            };
+            let _ = tx.send(Ok(response)).await;
+            ControlFlow::Break(())
+        }
+        Some(ExecEvent::Failed(failed)) => {
+            tracing::warn!("session failed to start: {failed:?}");
+            let _ = tx
+                .send(Err(Status::internal("session failed to start")))
+                .await;
+            ControlFlow::Break(())
+        }
+        Some(_) => ControlFlow::Continue(()),
+        None => ControlFlow::Break(()),
+    }
+}
+
+/// Sends session output to the client, ending the session when the client is gone.
+async fn forward_output(
+    data: Vec<u8>,
+    tx: &mpsc::Sender<Result<AttachResponse, Status>>,
+    control: &ExecControl,
+) -> ControlFlow<()> {
+    let response = AttachResponse {
+        message: Some(attach_response::Message::Output(data)),
+    };
+
+    if tx.send(Ok(response)).await.is_err() {
+        end_session(control).await;
+        return ControlFlow::Break(());
+    }
+
+    ControlFlow::Continue(())
+}
+
+/// Ends the session because the client disconnected.
+async fn disconnect(control: &ExecControl) -> ControlFlow<()> {
+    tracing::info!("client disconnected, ending session");
+    end_session(control).await;
+    ControlFlow::Break(())
 }
 
 /// Kills the session, logging a warning when that fails.
@@ -811,6 +919,38 @@ mod tests {
         std::env::temp_dir().join(format!("anvil-test-{}-{}", std::process::id(), name))
     }
 
+    /// Returns a store at `path` with a secret for `example.com` under each name.
+    fn store_with_secrets(path: &Path, names: &[&str]) -> SecretStore {
+        let store = SecretStore::new(path);
+        let secrets = names
+            .iter()
+            .map(|name| Secret::new(name.to_string(), "value".into(), vec!["example.com".into()]));
+
+        for secret in secrets {
+            store.set(secret.unwrap()).unwrap();
+        }
+
+        store
+    }
+
+    /// Serves on the socket until `stop` fires.
+    async fn serve_until(
+        path: PathBuf,
+        stop: tokio::sync::oneshot::Receiver<()>,
+    ) -> Result<(), ServerError> {
+        serve(&path, unused_store(), async {
+            let _ = stop.await;
+        })
+        .await
+    }
+
+    /// Waits until the server accepts connections on the socket.
+    async fn wait_for_socket(path: &Path) {
+        while tokio::net::UnixStream::connect(path).await.is_err() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     #[test]
     fn map_sandbox_status_maps_every_variant() {
         let cases = [
@@ -939,17 +1079,8 @@ mod tests {
         let path = temp_path("shutdown.sock");
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
-        let server_path = path.clone();
-        let handle = tokio::spawn(async move {
-            serve(&server_path, unused_store(), async {
-                let _ = rx.await;
-            })
-            .await
-        });
-
-        while tokio::net::UnixStream::connect(&path).await.is_err() {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        let handle = tokio::spawn(serve_until(path.clone(), rx));
+        wait_for_socket(&path).await;
 
         tx.send(()).unwrap();
         handle.await.unwrap().unwrap();
@@ -988,12 +1119,7 @@ mod tests {
     #[tokio::test]
     async fn list_secrets_returns_names_and_hosts_sorted() {
         let dir = tempfile::tempdir().unwrap();
-        let store = SecretStore::new(dir.path().join("secrets.yml"));
-        for name in ["B_TOKEN", "A_TOKEN"] {
-            let secret =
-                Secret::new(name.into(), "value".into(), vec!["example.com".into()]).unwrap();
-            store.set(secret).unwrap();
-        }
+        let store = store_with_secrets(&dir.path().join("secrets.yml"), &["B_TOKEN", "A_TOKEN"]);
         let server = AnvilServer::new(store);
 
         let secrets = server

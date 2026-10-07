@@ -1,6 +1,6 @@
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
@@ -47,7 +47,7 @@ pub async fn ensure_daemon(socket_path: &Path) -> Result<UnixStream> {
             .with_context(|| format!("failed to remove stale socket {}", socket_path.display()))?;
     }
 
-    let mut child = Command::new(daemon_binary())
+    let child = Command::new(daemon_binary())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -55,6 +55,11 @@ pub async fn ensure_daemon(socket_path: &Path) -> Result<UnixStream> {
         .spawn()
         .context("failed to start the anvil daemon")?;
 
+    wait_for_daemon(socket_path, child).await
+}
+
+/// Waits until the spawned daemon listens on the socket, failing when it exits or times out.
+async fn wait_for_daemon(socket_path: &Path, mut child: Child) -> Result<UnixStream> {
     let deadline = Instant::now() + DAEMON_START_TIMEOUT;
 
     loop {

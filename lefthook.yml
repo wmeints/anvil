@@ -7,7 +7,7 @@ pre-commit:
       glob: "*.rs"
       run: cargo fmt --all --check
     clippy:
-      run: cargo clippy --workspace --all-targets -- -D warnings
+      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
     unit-tests:
       run: cargo test --workspace
 

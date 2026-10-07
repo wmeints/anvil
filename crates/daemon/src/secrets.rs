@@ -218,8 +218,7 @@ impl SecretStore {
                 source: Box::new(source),
             })?;
 
-        let mut names = HashSet::new();
-        if let Some(secret) = secrets.iter().find(|secret| !names.insert(&secret.name)) {
+        if let Some(secret) = first_duplicate(&secrets) {
             return Err(SecretError::Duplicate {
                 path: self.path.clone(),
                 name: secret.name.clone(),
@@ -269,6 +268,12 @@ impl SecretStore {
 
         Ok(true)
     }
+}
+
+/// Returns the first secret whose name an earlier secret already uses.
+fn first_duplicate(secrets: &[Secret]) -> Option<&Secret> {
+    let mut names = HashSet::new();
+    secrets.iter().find(|secret| !names.insert(&secret.name))
 }
 
 /// Replaces a file with `content` that only the user can read, without leaving a partial file.

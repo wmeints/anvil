@@ -5,12 +5,13 @@ use anyhow::{Result, bail};
 use crossterm::terminal;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
+use tonic::Streaming;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 
 use crate::api::{
-    AttachInput, AttachRequest, AttachResize, AttachStart, attach_request, attach_response,
-    sandbox_management_service_client::SandboxManagementServiceClient,
+    AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, attach_request,
+    attach_response, sandbox_management_service_client::SandboxManagementServiceClient,
 };
 use crate::manage::{ensure_running, resolve_spec};
 
@@ -70,58 +71,66 @@ pub async fn attach(
 
     let _guard = RawModeGuard::enable()?;
 
-    let mut responses = client.attach(ReceiverStream::new(rx)).await?.into_inner();
+    let responses = client.attach(ReceiverStream::new(rx)).await?.into_inner();
 
     forward_stdin(tx.clone());
     let resize_task = tokio::spawn(forward_resizes(tx));
 
-    let result = async {
-        let mut stdout = std::io::stdout();
-
-        while let Some(response) = responses.message().await? {
-            match response.message {
-                Some(attach_response::Message::Output(data)) => {
-                    stdout.write_all(&data)?;
-                    stdout.flush()?;
-                }
-                Some(attach_response::Message::ExitCode(code)) => return Ok(code),
-                None => {}
-            }
-        }
-
-        bail!("session ended without an exit code")
-    }
-    .await;
+    let result = copy_output(responses).await;
 
     resize_task.abort();
 
     result
 }
 
+/// Writes session output to stdout until the session reports its exit code.
+async fn copy_output(mut responses: Streaming<AttachResponse>) -> Result<i32> {
+    let mut stdout = std::io::stdout();
+
+    while let Some(response) = responses.message().await? {
+        match response.message {
+            Some(attach_response::Message::Output(data)) => write_flushed(&mut stdout, &data)?,
+            Some(attach_response::Message::ExitCode(code)) => return Ok(code),
+            None => {}
+        }
+    }
+
+    bail!("session ended without an exit code")
+}
+
+/// Writes data to the output and flushes it, so the terminal shows it right away.
+fn write_flushed(output: &mut impl Write, data: &[u8]) -> std::io::Result<()> {
+    output.write_all(data)?;
+    output.flush()
+}
+
 /// Sends stdin to the session from a plain thread. A tokio stdin reader would keep the runtime
 /// from shutting down while it waits for input after the session has ended.
 fn forward_stdin(tx: mpsc::Sender<AttachRequest>) {
-    std::thread::spawn(move || {
-        let mut stdin = std::io::stdin();
-        let mut buffer = [0u8; 1024];
+    std::thread::spawn(move || copy_stdin(&tx));
+}
 
-        loop {
-            let count = match stdin.read(&mut buffer) {
-                Ok(0) | Err(_) => return,
-                Ok(count) => count,
-            };
+/// Sends stdin to the session until stdin closes or the session goes away.
+fn copy_stdin(tx: &mpsc::Sender<AttachRequest>) {
+    let mut stdin = std::io::stdin();
+    let mut buffer = [0u8; 1024];
 
-            let request = AttachRequest {
-                message: Some(attach_request::Message::Input(AttachInput {
-                    data: buffer[..count].to_vec(),
-                })),
-            };
+    loop {
+        let count = match stdin.read(&mut buffer) {
+            Ok(0) | Err(_) => return,
+            Ok(count) => count,
+        };
 
-            if tx.blocking_send(request).is_err() {
-                return;
-            }
+        let request = AttachRequest {
+            message: Some(attach_request::Message::Input(AttachInput {
+                data: buffer[..count].to_vec(),
+            })),
+        };
+
+        if tx.blocking_send(request).is_err() {
+            return;
         }
-    });
+    }
 }
 
 /// Sends the new window size to the session whenever the terminal is resized.
