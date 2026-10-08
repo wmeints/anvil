@@ -10,3 +10,9 @@ version = "0.1.0"
 authors = ["Willem Meints"]
 edition = "2024"
 license = "MIT"
+
+[workspace.lints.clippy]
+too_many_lines = "warn"           # pedantic, so off by default
+excessive_nesting = "warn"        # restriction, so off by default
+too_many_arguments = "warn"       # on by default; listed for clarity
+fn_params_excessive_bools = "warn"

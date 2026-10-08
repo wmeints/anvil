@@ -9,26 +9,30 @@ use std::time::Duration;
 
 use anvil_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use anvil_daemon::api::{
-    AttachInput, AttachRequest, AttachResize, AttachStart, GetSandboxRequest, ListSandboxesRequest,
-    RemoveSandboxRequest, SandboxResources, SandboxStatus, StartSandboxRequest, StopSandboxRequest,
-    attach_request, attach_response,
+    AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, GetSandboxRequest,
+    GetSandboxResponse, ListSandboxesRequest, RemoveSandboxRequest, SandboxResources,
+    SandboxStatus, StartSandboxRequest, StopSandboxRequest, attach_request, attach_response,
 };
 use anvil_daemon::secrets::{self, Secret, SecretStore};
 use anvil_daemon::server;
 use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
-use microsandbox::sandbox::RootfsSource;
+use microsandbox::sandbox::{RootfsSource, SandboxSpec};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
-use tonic::Code;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint, Uri};
+use tonic::{Code, Streaming};
 use tower::service_fn;
 
 const STATUS_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+const DEFAULT_SIZE: AttachResize = AttachResize {
+    width: 80,
+    height: 24,
+};
 
 struct TestDaemon {
     socket_path: PathBuf,
@@ -54,13 +58,7 @@ impl TestDaemon {
         let _ = std::fs::remove_file(&socket_path);
 
         let (tx, rx) = oneshot::channel();
-        let path = socket_path.clone();
-        let handle = tokio::spawn(async move {
-            server::serve(&path, secrets, async {
-                let _ = rx.await;
-            })
-            .await
-        });
+        let handle = tokio::spawn(serve_until(socket_path.clone(), secrets, rx));
 
         wait_for_socket(&socket_path).await;
 
@@ -75,17 +73,11 @@ impl TestDaemon {
         let path = self.socket_path.clone();
 
         // The HTTP endpoint isn't used; it only shows up in the authority header.
-        let channel =
-            Endpoint::try_from("http://localhost")
-                .unwrap()
-                .connect_with_connector(service_fn(move |_: Uri| {
-                    let path = path.clone();
-                    async move {
-                        Ok::<_, std::io::Error>(TokioIo::new(UnixStream::connect(path).await?))
-                    }
-                }))
-                .await
-                .expect("failed to connect to test daemon");
+        let channel = Endpoint::try_from("http://localhost")
+            .unwrap()
+            .connect_with_connector(service_fn(move |_: Uri| connect_unix(path.clone())))
+            .await
+            .expect("failed to connect to test daemon");
 
         SandboxManagementServiceClient::new(channel)
     }
@@ -97,6 +89,23 @@ impl TestDaemon {
             .unwrap()
             .expect("daemon exited with an error");
     }
+}
+
+/// Serves the daemon on the socket until `stop` fires.
+async fn serve_until(
+    path: PathBuf,
+    secrets: SecretStore,
+    stop: oneshot::Receiver<()>,
+) -> Result<(), server::ServerError> {
+    server::serve(&path, secrets, async {
+        let _ = stop.await;
+    })
+    .await
+}
+
+/// Connects to the daemon socket for a gRPC channel.
+async fn connect_unix(path: PathBuf) -> std::io::Result<TokioIo<UnixStream>> {
+    Ok(TokioIo::new(UnixStream::connect(path).await?))
 }
 
 async fn wait_for_socket(path: &Path) {
@@ -172,12 +181,54 @@ fn test_workspace(name: &str) -> PathBuf {
     workspace
 }
 
+/// Returns the path the daemon mounts a workspace at in the guest.
+fn guest_workspace(workspace: &Path) -> String {
+    let leaf = workspace.file_name().unwrap().to_string_lossy();
+
+    format!("/workspaces/{leaf}")
+}
+
 fn start_request(name: &str) -> StartSandboxRequest {
     StartSandboxRequest {
         name: name.to_string(),
         workspace: test_workspace(name).to_string_lossy().into_owned(),
         ..Default::default()
     }
+}
+
+/// Returns the sandbox as the daemon reports it.
+async fn get_sandbox(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> GetSandboxResponse {
+    client
+        .get_sandbox(GetSandboxRequest {
+            name: name.to_string(),
+        })
+        .await
+        .expect("failed to get sandbox")
+        .into_inner()
+}
+
+/// Stops the sandbox and waits until it has stopped.
+async fn stop_sandbox(client: &mut SandboxManagementServiceClient<Channel>, name: &str) {
+    client
+        .stop_sandbox(StopSandboxRequest {
+            name: name.to_string(),
+        })
+        .await
+        .expect("failed to stop sandbox");
+    wait_for_status(client, name, SandboxStatus::Stopped).await;
+}
+
+/// Returns the configuration microsandbox stores for the sandbox.
+async fn sandbox_spec(name: &str) -> SandboxSpec {
+    Sandbox::get(name)
+        .await
+        .expect("failed to get sandbox")
+        .config()
+        .expect("failed to read sandbox config")
+        .spec
 }
 
 #[tokio::test]
@@ -235,40 +286,19 @@ async fn get_sandbox_returns_name_and_status() {
     let daemon = TestDaemon::start("get").await;
     let mut client = daemon.client().await;
 
-    client
-        .start_sandbox(start_request(NAME))
-        .await
-        .expect("failed to create sandbox");
-    wait_for_status(&mut client, NAME, SandboxStatus::Running).await;
+    start_running_sandbox(&mut client, NAME).await;
 
-    let sandbox = client
-        .get_sandbox(GetSandboxRequest {
-            name: NAME.to_string(),
-        })
-        .await
-        .expect("failed to get sandbox")
-        .into_inner();
+    let sandbox = get_sandbox(&mut client, NAME).await;
 
     assert_eq!(sandbox.name, NAME);
     assert_eq!(sandbox.status(), SandboxStatus::Running);
 
-    client
-        .stop_sandbox(StopSandboxRequest {
-            name: NAME.to_string(),
-        })
-        .await
-        .expect("failed to stop sandbox");
-    wait_for_status(&mut client, NAME, SandboxStatus::Stopped).await;
+    stop_sandbox(&mut client, NAME).await;
 
-    let sandbox = client
-        .get_sandbox(GetSandboxRequest {
-            name: NAME.to_string(),
-        })
-        .await
-        .expect("failed to get sandbox")
-        .into_inner();
-
-    assert_eq!(sandbox.status(), SandboxStatus::Stopped);
+    assert_eq!(
+        get_sandbox(&mut client, NAME).await.status(),
+        SandboxStatus::Stopped
+    );
 
     daemon.stop().await;
     remove_sandbox(NAME).await;
@@ -329,12 +359,7 @@ async fn start_sandbox_uses_requested_image_and_resources() {
         .expect("failed to create sandbox");
     wait_for_status(&mut client, NAME, SandboxStatus::Running).await;
 
-    let spec = Sandbox::get(NAME)
-        .await
-        .expect("failed to get sandbox")
-        .config()
-        .expect("failed to read sandbox config")
-        .spec;
+    let spec = sandbox_spec(NAME).await;
 
     assert!(
         matches!(&spec.image, RootfsSource::Oci(oci) if oci.reference.contains("alpine")),
@@ -426,19 +451,13 @@ async fn remove_sandbox_removes_stopped_sandbox() {
     remove_sandbox(NAME).await;
 }
 
-fn attach_start(
-    name: &str,
-    command: &str,
-    args: &[&str],
-    width: u32,
-    height: u32,
-) -> AttachRequest {
+fn attach_start(name: &str, command: &str, args: &[&str], size: AttachResize) -> AttachRequest {
     AttachRequest {
         message: Some(attach_request::Message::Start(AttachStart {
             name: name.to_string(),
             command: command.to_string(),
             args: args.iter().map(|arg| arg.to_string()).collect(),
-            size: Some(AttachResize { width, height }),
+            size: Some(size),
         })),
     }
 }
@@ -461,9 +480,7 @@ fn attach_resize(width: u32, height: u32) -> AttachRequest {
 }
 
 /// Collects session output until the session reports its exit code.
-async fn collect_session(
-    mut responses: tonic::Streaming<anvil_daemon::api::AttachResponse>,
-) -> (String, i32) {
+async fn collect_session(mut responses: Streaming<AttachResponse>) -> (String, i32) {
     let mut output = Vec::new();
 
     loop {
@@ -483,12 +500,56 @@ async fn collect_session(
     }
 }
 
+/// Sends the start message and returns the sender for further messages and the session output.
+async fn open_session(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    start: AttachRequest,
+) -> (mpsc::Sender<AttachRequest>, Streaming<AttachResponse>) {
+    let (tx, rx) = mpsc::channel(4);
+    tx.send(start).await.unwrap();
+
+    let responses = client
+        .attach(ReceiverStream::new(rx))
+        .await
+        .expect("attach failed")
+        .into_inner();
+
+    (tx, responses)
+}
+
+/// Runs a command in the sandbox without input and returns its output and exit code.
+async fn run_command(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    sandbox: &str,
+    command: &str,
+    args: &[&str],
+) -> (String, i32) {
+    let (tx, responses) =
+        open_session(client, attach_start(sandbox, command, args, DEFAULT_SIZE)).await;
+    let result = collect_session(responses).await;
+
+    // Closing the input ends the session, so keep it open until the session has exited.
+    drop(tx);
+
+    result
+}
+
 async fn start_running_sandbox(client: &mut SandboxManagementServiceClient<Channel>, name: &str) {
+    start_and_wait(client, start_request(name)).await;
+}
+
+/// Starts a sandbox with the request and waits until it runs.
+async fn start_and_wait(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    request: StartSandboxRequest,
+) {
+    let name = request.name.clone();
+
     client
-        .start_sandbox(start_request(name))
+        .start_sandbox(request)
         .await
         .expect("failed to create sandbox");
-    wait_for_status(client, name, SandboxStatus::Running).await;
+    wait_for_status(client, &name, SandboxStatus::Running).await;
 }
 
 #[tokio::test]
@@ -515,9 +576,14 @@ async fn attach_returns_not_found_for_unknown_sandbox() {
     let mut client = daemon.client().await;
 
     let (tx, rx) = mpsc::channel(4);
-    tx.send(attach_start("anvil-it-does-not-exist", "sh", &[], 80, 24))
-        .await
-        .unwrap();
+    tx.send(attach_start(
+        "anvil-it-does-not-exist",
+        "sh",
+        &[],
+        DEFAULT_SIZE,
+    ))
+    .await
+    .unwrap();
 
     let status = client
         .attach(ReceiverStream::new(rx))
@@ -538,23 +604,9 @@ async fn attach_runs_command_and_streams_output() {
     let mut client = daemon.client().await;
     start_running_sandbox(&mut client, NAME).await;
 
-    let (tx, rx) = mpsc::channel(4);
-    tx.send(attach_start(
-        NAME,
-        "sh",
-        &["-c", "read x; echo got:$x"],
-        80,
-        24,
-    ))
-    .await
-    .unwrap();
+    let start = attach_start(NAME, "sh", &["-c", "read x; echo got:$x"], DEFAULT_SIZE);
+    let (tx, responses) = open_session(&mut client, start).await;
     tx.send(attach_input(b"hi\n")).await.unwrap();
-
-    let responses = client
-        .attach(ReceiverStream::new(rx))
-        .await
-        .expect("attach failed")
-        .into_inner();
 
     let (output, code) = collect_session(responses).await;
     drop(tx);
@@ -575,22 +627,16 @@ async fn attach_applies_window_size_and_resize() {
     let mut client = daemon.client().await;
     start_running_sandbox(&mut client, NAME).await;
 
-    let (tx, rx) = mpsc::channel(4);
-    tx.send(attach_start(
+    let start = attach_start(
         NAME,
         "sh",
         &["-c", "stty size; read x; stty size"],
-        100,
-        40,
-    ))
-    .await
-    .unwrap();
-
-    let responses = client
-        .attach(ReceiverStream::new(rx))
-        .await
-        .expect("attach failed")
-        .into_inner();
+        AttachResize {
+            width: 100,
+            height: 40,
+        },
+    );
+    let (tx, responses) = open_session(&mut client, start).await;
 
     // Resize before releasing the `read` so the second `stty size` sees the new size.
     sleep(Duration::from_millis(500)).await;
@@ -612,6 +658,32 @@ async fn attach_applies_window_size_and_resize() {
     remove_sandbox(NAME).await;
 }
 
+/// Waits until no process with the name runs in the sandbox.
+async fn wait_for_process_exit(sandbox: &str, process: &str) {
+    let sb = Sandbox::get(sandbox)
+        .await
+        .expect("sandbox disappeared")
+        .connect()
+        .await
+        .expect("failed to connect to sandbox");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let check = format!("pgrep -x {process} || true");
+
+    while !process_output(&sb, &check).await.is_empty() {
+        assert!(Instant::now() < deadline, "{process} is still running");
+        sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Runs a shell command in the sandbox and returns its standard output.
+async fn process_output(sb: &Sandbox, command: &str) -> Vec<u8> {
+    sb.exec("sh", ["-c", command])
+        .await
+        .expect("failed to check for session process")
+        .stdout_bytes()
+        .to_vec()
+}
+
 #[tokio::test]
 async fn attach_disconnect_ends_session() {
     const NAME: &str = "anvil-it-attach-disconnect";
@@ -621,42 +693,14 @@ async fn attach_disconnect_ends_session() {
     let mut client = daemon.client().await;
     start_running_sandbox(&mut client, NAME).await;
 
-    let (tx, rx) = mpsc::channel(4);
-    tx.send(attach_start(NAME, "sleep", &["300"], 80, 24))
-        .await
-        .unwrap();
-
-    let responses = client
-        .attach(ReceiverStream::new(rx))
-        .await
-        .expect("attach failed")
-        .into_inner();
+    let start = attach_start(NAME, "sleep", &["300"], DEFAULT_SIZE);
+    let (tx, responses) = open_session(&mut client, start).await;
 
     sleep(Duration::from_millis(500)).await;
     drop(tx);
     drop(responses);
 
-    let sb = Sandbox::get(NAME)
-        .await
-        .expect("sandbox disappeared")
-        .connect()
-        .await
-        .expect("failed to connect to sandbox");
-    let deadline = Instant::now() + Duration::from_secs(10);
-
-    loop {
-        let output = sb
-            .exec("sh", ["-c", "pgrep -x sleep || true"])
-            .await
-            .expect("failed to check for session process");
-
-        if output.stdout_bytes().is_empty() {
-            break;
-        }
-
-        assert!(Instant::now() < deadline, "session process still running");
-        sleep(POLL_INTERVAL).await;
-    }
+    wait_for_process_exit(NAME, "sleep").await;
 
     daemon.stop().await;
     remove_sandbox(NAME).await;
@@ -689,46 +733,23 @@ async fn workspace_is_mounted_read_write() {
     const NAME: &str = "anvil-it-workspace";
     remove_sandbox(NAME).await;
 
-    let workspace = test_workspace(NAME);
-    let leaf = workspace
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
+    let request = start_request(NAME);
+    let workspace = PathBuf::from(&request.workspace);
+    let guest_path = guest_workspace(&workspace);
     std::fs::write(workspace.join("from-host.txt"), "hello from host").unwrap();
 
     let daemon = TestDaemon::start("workspace").await;
     let mut client = daemon.client().await;
-    client
-        .start_sandbox(StartSandboxRequest {
-            name: NAME.to_string(),
-            workspace: workspace.to_string_lossy().into_owned(),
-            ..Default::default()
-        })
-        .await
-        .expect("failed to create sandbox");
-    wait_for_status(&mut client, NAME, SandboxStatus::Running).await;
+    start_and_wait(&mut client, request).await;
 
     let script = format!(
-        "pwd; cat /workspaces/{leaf}/from-host.txt; echo; echo hello from guest > /workspaces/{leaf}/from-guest.txt"
+        "pwd; cat {guest_path}/from-host.txt; echo; echo hello from guest > {guest_path}/from-guest.txt"
     );
-    let (tx, rx) = mpsc::channel(4);
-    tx.send(attach_start(NAME, "sh", &["-c", &script], 80, 24))
-        .await
-        .unwrap();
-
-    let responses = client
-        .attach(ReceiverStream::new(rx))
-        .await
-        .expect("attach failed")
-        .into_inner();
-
-    let (output, code) = collect_session(responses).await;
-    drop(tx);
+    let (output, code) = run_command(&mut client, NAME, "sh", &["-c", &script]).await;
 
     assert_eq!(code, 0, "unexpected output: {output:?}");
     assert!(
-        output.contains(&format!("/workspaces/{leaf}")),
+        output.contains(&guest_path),
         "session didn't start in the workspace: {output:?}"
     );
     assert!(
@@ -771,29 +792,12 @@ async fn run_print_env(
     sandbox: &str,
     var: &str,
 ) -> (String, i32) {
-    let (tx, rx) = mpsc::channel(4);
-    tx.send(attach_start(sandbox, "printenv", &[var], 80, 24))
-        .await
-        .unwrap();
-
-    let responses = client
-        .attach(ReceiverStream::new(rx))
-        .await
-        .expect("attach failed")
-        .into_inner();
-
-    collect_session(responses).await
+    run_command(client, sandbox, "printenv", &[var]).await
 }
 
 /// Stops the sandbox and starts it again.
 async fn restart_sandbox(client: &mut SandboxManagementServiceClient<Channel>, name: &str) {
-    client
-        .stop_sandbox(StopSandboxRequest {
-            name: name.to_string(),
-        })
-        .await
-        .expect("failed to stop sandbox");
-    wait_for_status(client, name, SandboxStatus::Stopped).await;
+    stop_sandbox(client, name).await;
     start_running_sandbox(client, name).await;
 }
 

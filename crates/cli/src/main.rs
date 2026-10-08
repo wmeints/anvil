@@ -1,9 +1,12 @@
 use std::env;
+use std::path::{Path, PathBuf};
 
+use anvil_cli::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use anvil_cli::manage::OutputFormat;
 use anvil_cli::{client, manage, secret, session, ssh, validate};
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+use tonic::transport::Channel;
 
 /// Anvil - Run coding agents safely in a sandbox.
 #[derive(Parser, Debug)]
@@ -92,58 +95,82 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let working_dir = env::current_dir()?;
 
-    // Validating the spec doesn't need the daemon.
-    if let Commands::Validate = cli.command {
-        let valid = validate::validate_spec(&working_dir)?;
-        std::process::exit(if valid { 0 } else { 1 });
+    match cli.command {
+        // Validating the spec doesn't need the daemon.
+        Commands::Validate => validate_spec(&working_dir),
+        Commands::Secret(SecretCommands::Set(args)) => set_secret(args).await,
+        command => run_with_daemon(command, working_dir).await,
+    }
+}
+
+/// Validates the spec in the working directory and exits with code 1 when it is invalid.
+fn validate_spec(working_dir: &Path) -> Result<()> {
+    if !validate::validate_spec(working_dir)? {
+        std::process::exit(1);
     }
 
-    // Read the secret before connecting, so a failing read doesn't start the daemon.
-    if let Commands::Secret(SecretCommands::Set(args)) = cli.command {
-        let value = secret_value(&args)?;
-        let mut client_instance = client::connect().await?;
+    Ok(())
+}
 
-        return secret::set(args.name, value, args.allowed_hosts, &mut client_instance).await;
-    }
-
+/// Stores a secret, reading its value before connecting so a failing read doesn't start the
+/// daemon.
+async fn set_secret(args: SetSecretArgs) -> Result<()> {
+    let value = secret_value(&args)?;
     let mut client_instance = client::connect().await?;
 
-    match cli.command {
-        Commands::Start => manage::start_sandbox(&working_dir, &mut client_instance).await?,
-        Commands::Stop => manage::stop_sandbox(&working_dir, &mut client_instance).await?,
-        Commands::Ls { format } => {
-            manage::list_sandboxes(&mut client_instance, format).await?;
-        }
-        Commands::Rm => manage::remove_sandbox(&working_dir, &mut client_instance).await?,
-        Commands::Run(run_args) => {
-            let code = session::attach(
-                working_dir,
-                run_args.command,
-                run_args.args,
-                &mut client_instance,
-            )
-            .await?;
+    secret::set(args.name, value, args.allowed_hosts, &mut client_instance).await
+}
 
-            std::process::exit(code);
-        }
-        Commands::SshProxy { hostname } => {
-            ssh::proxy(hostname, &mut client_instance).await?;
+/// Runs a command that needs the daemon.
+async fn run_with_daemon(command: Commands, working_dir: PathBuf) -> Result<()> {
+    let mut client_instance = client::connect().await?;
+    let client_instance = &mut client_instance;
 
-            // Exit right away rather than wait for the stdin thread, which blocks on a read.
-            std::process::exit(0);
-        }
+    match command {
+        Commands::Start => manage::start_sandbox(&working_dir, client_instance).await,
+        Commands::Stop => manage::stop_sandbox(&working_dir, client_instance).await,
+        Commands::Ls { format } => manage::list_sandboxes(client_instance, format).await,
+        Commands::Rm => manage::remove_sandbox(&working_dir, client_instance).await,
+        Commands::Run(run_args) => run_command(working_dir, run_args, client_instance).await,
+        Commands::SshProxy { hostname } => ssh_proxy(hostname, client_instance).await,
         Commands::Secret(SecretCommands::Ls { format }) => {
-            secret::list(format, &mut client_instance).await?;
+            secret::list(format, client_instance).await
         }
         Commands::Secret(SecretCommands::Rm { name }) => {
-            secret::remove(name, &mut client_instance).await?;
+            secret::remove(name, client_instance).await
         }
         Commands::Validate | Commands::Secret(SecretCommands::Set(_)) => {
             unreachable!("handled before connecting to the daemon")
         }
     }
+}
 
-    Ok(())
+/// Runs a command in the sandbox attached to the terminal and exits with its exit code.
+async fn run_command(
+    working_dir: PathBuf,
+    run_args: RunArgs,
+    client_instance: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<()> {
+    let code = session::attach(
+        working_dir,
+        run_args.command,
+        run_args.args,
+        client_instance,
+    )
+    .await?;
+
+    std::process::exit(code);
+}
+
+/// Proxies an SSH connection to the sandbox with the host name, then exits.
+async fn ssh_proxy(
+    hostname: String,
+    client_instance: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<()> {
+    ssh::proxy(hostname, client_instance).await?;
+
+    // Exit right away rather than wait for the stdin thread, which blocks on a read.
+    std::process::exit(0);
 }
 
 /// Returns the secret value from the arguments, or from stdin with `--from-stdin`.

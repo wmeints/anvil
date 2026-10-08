@@ -46,23 +46,26 @@ pub async fn proxy(
 /// Sends stdin to the tunnel from a plain thread. A tokio stdin reader would keep the runtime
 /// from shutting down while it waits for input after the tunnel has closed.
 fn forward_stdin(tx: mpsc::Sender<SshTunnelRequest>) {
-    std::thread::spawn(move || {
-        let mut stdin = std::io::stdin();
-        let mut buffer = vec![0u8; CHUNK_SIZE];
+    std::thread::spawn(move || copy_stdin(&tx));
+}
 
-        loop {
-            let count = match stdin.read(&mut buffer) {
-                Ok(0) | Err(_) => return,
-                Ok(count) => count,
-            };
+/// Sends stdin to the tunnel until stdin closes or the tunnel goes away.
+fn copy_stdin(tx: &mpsc::Sender<SshTunnelRequest>) {
+    let mut stdin = std::io::stdin();
+    let mut buffer = vec![0u8; CHUNK_SIZE];
 
-            let request = SshTunnelRequest {
-                message: Some(ssh_tunnel_request::Message::Data(buffer[..count].to_vec())),
-            };
+    loop {
+        let count = match stdin.read(&mut buffer) {
+            Ok(0) | Err(_) => return,
+            Ok(count) => count,
+        };
 
-            if tx.blocking_send(request).is_err() {
-                return;
-            }
+        let request = SshTunnelRequest {
+            message: Some(ssh_tunnel_request::Message::Data(buffer[..count].to_vec())),
+        };
+
+        if tx.blocking_send(request).is_err() {
+            return;
         }
-    });
+    }
 }

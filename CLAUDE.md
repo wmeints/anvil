@@ -19,7 +19,8 @@ This project builds a sandbox for coding agents. The goal is to keep the agent s
 - `cargo test --workspace` - runs the unit tests.
 - `cargo test -p anvil-daemon --features vm-tests` - runs the integration
   tests that boot real microsandbox VMs.
-- `cargo clippy --workspace --all-targets -- -D warnings` - runs the linter.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` - runs
+  the linter, including the `vm-tests` integration tests.
 - `cargo fmt --all` - formats the code; `cargo fmt --all --check` verifies it.
 
 ## Coding guidelines
@@ -74,8 +75,8 @@ that fits from the start:
 
 A change is done when:
 
-1. `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
-   warnings` and `cargo test --workspace` pass.
+1. `cargo fmt --all --check`, `cargo clippy --workspace --all-targets
+   --all-features -- -D warnings` and `cargo test --workspace` pass.
 2. `cargo test -p anvil-daemon --features vm-tests` passes when
    `crates/daemon` changed.
 3. The [Architecture Docs](docs/architecture/README.md) describe the new

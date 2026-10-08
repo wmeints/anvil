@@ -24,7 +24,7 @@ run_check() {
 }
 
 run_check format cargo fmt --all --check
-run_check clippy cargo clippy --workspace --all-targets -- -D warnings
+run_check clippy cargo clippy --workspace --all-targets --all-features -- -D warnings
 run_check unit-tests cargo test --workspace
 run_check integration-tests cargo test -p anvil-daemon --features vm-tests
 
