@@ -309,9 +309,12 @@ Anvil runs everything in a sandbox as the `agent` user. A custom image must:
 - Install `sudo` and allow `agent` to use it without a password, if agents
   should be able to install system packages.
 
-The workspace is mounted at `/workspaces/<project>`, and the files keep the
-UID of your user on the host. With UID 1000 on both sides, `agent` can write
-to it.
+The workspace is mounted at `/workspaces/<project>`, and its files show up
+as owned by `agent`, whatever the UID of your user on the host is.
+
+Sandboxes created by an older version of Anvil run `ubuntu:26.04`, which has no
+`agent` user, so SSH can no longer log in to them. Recreate them with
+`anvil rm` and `anvil start`, or connect with `ssh root@<name>.anvil`.
 
 The simplest way to meet these requirements is to build on the base image:
 

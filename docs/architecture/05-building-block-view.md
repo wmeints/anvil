@@ -196,6 +196,7 @@ development build, can't pull the default image; set `image` in `.anvil.yml`
 to use them.
 
 Every sandbox image must provide an `agent` user with UID and GID `1000` and
-run as it. The generated SSH config logs in as `agent`, and `anvil run` runs
-commands as the image's user. See
+run as it. The generated SSH config logs in as `agent`, `anvil run` runs
+commands as the image's user, and the workspace is mounted with owner
+`1000:1000`. See
 [ADR 0006](decisions/0006-run-sandboxes-as-the-agent-user.md).

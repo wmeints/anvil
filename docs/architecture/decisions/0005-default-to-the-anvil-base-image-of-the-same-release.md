@@ -40,4 +40,5 @@ and `anvild` runs the image published by the same release.
 - The registry owner `wmeints` is fixed in the code. Forks that publish
   their own image have to change `DEFAULT_IMAGE`.
 - Existing sandboxes keep the image they were created with.
-- The generated SSH config still logs in as `root`.
+- Sandboxes run as the `agent` user, see
+  [ADR 0006](0006-run-sandboxes-as-the-agent-user.md).

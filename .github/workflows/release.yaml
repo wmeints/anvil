@@ -42,7 +42,8 @@ jobs:
       - name: Check tag matches version
         shell: bash
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "anvil-spec") | .version')
+          pkgid=$(cargo pkgid -p anvil-spec)
+          version=${pkgid##*[#@]}
           if [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "::error::Tag $GITHUB_REF_NAME doesn't match the workspace version v$version"
             exit 1

@@ -770,6 +770,39 @@ async fn workspace_is_mounted_read_write() {
     remove_sandbox(NAME).await;
 }
 
+#[tokio::test]
+async fn workspace_is_owned_by_agent_user() {
+    const NAME: &str = "anvil-it-workspace-owner";
+    remove_sandbox(NAME).await;
+
+    let request = start_request(NAME);
+    let workspace = PathBuf::from(&request.workspace);
+    let guest_path = guest_workspace(&workspace);
+    std::fs::write(workspace.join("from-host.txt"), "hello from host").unwrap();
+
+    let daemon = TestDaemon::start("workspace-owner").await;
+    let mut client = daemon.client().await;
+    start_and_wait(&mut client, request).await;
+
+    // The test image runs as root, so switch to UID/GID 1000 the way the agent user would run.
+    let script = format!(
+        "stat -c %u:%g {guest_path} {guest_path}/from-host.txt; \
+         setpriv --reuid=1000 --regid=1000 --clear-groups touch {guest_path}/from-agent.txt"
+    );
+    let (output, code) = run_command(&mut client, NAME, "sh", &["-c", &script]).await;
+
+    assert_eq!(code, 0, "unexpected output: {output:?}");
+    assert_eq!(
+        output.matches("1000:1000").count(),
+        2,
+        "unexpected output: {output:?}"
+    );
+    assert!(workspace.join("from-agent.txt").exists());
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
 fn test_secret(name: &str) -> Secret {
     Secret::new(
         name.to_string(),
