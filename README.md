@@ -252,10 +252,24 @@ their values. `anvil secret rm <name>` removes a secret, but a running
 sandbox keeps using it until it restarts. If a token leaked, revoke it where
 you created it as well.
 
+To let `git` push and pull over HTTPS with `GH_TOKEN`, configure a credential
+helper in the sandbox that hands git the placeholder as the password:
+
+```sh
+git config --global credential.https://github.com.helper \
+  '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
+```
+
+git sends the placeholder base64-encoded in a Basic `Authorization` header,
+and the host decodes it, replaces the placeholder and encodes it again. If
+`gh` is installed in the sandbox, `gh auth setup-git` configures an
+equivalent helper.
+
 Keep in mind that:
 
-- `git` over HTTPS can't use secrets, because it sends the token in a way
-  the placeholder can't be replaced. Use `gh` or SSH keys for git.
+- Don't use SSH keys for git: the sandbox's SSH server doesn't support agent
+  forwarding (`ssh -A`), and copying a private key into the sandbox puts the
+  real key where the agent can read it. Use git over HTTPS instead.
 - The values are stored unencrypted in files only your user can read. If
   your machine may be compromised, rotate the tokens where you created them
   and set the new values.
