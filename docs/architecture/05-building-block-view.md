@@ -160,8 +160,8 @@ C4Component
 - `anvil-spec` (`crates/spec`) - Parses `.anvil.yml` into a `SandboxSpec`
   with a `name`, an optional `image` and optional `resources` (`cpu`,
   `memory`), rejects unknown fields and reports the line and column of a
-  problem. It owns the defaults (`ubuntu:26.04`, 2 vCPUs, `4 GiB`) and
-  `parse_memory_mib`, which reads memory sizes in `Mi`/`MiB` or `Gi`/`GiB`.
+  problem. It owns the defaults (`ghcr.io/wmeints/anvil-base:v<version>`,
+  2 vCPUs, `4 GiB`) and `parse_memory_mib`, which reads memory sizes in `Mi`/`MiB` or `Gi`/`GiB`.
   The CLI and daemon both use them.
 - `anvil-utils` (`crates/utils`) - Well-known paths: the daemon socket
   (`$XDG_RUNTIME_DIR/anvild.sock`), the log directory
@@ -189,5 +189,14 @@ images. It builds on `ubuntu:26.04` and adds:
 
 The release workflow publishes the image as
 `ghcr.io/wmeints/anvil-base:<tag>` (see [Deployment view](07-deployment-view.md)),
-but anvil doesn't use it by default: the default image is `ubuntu:26.04`, and
-SSH logs in as `root`.
+and anvil uses it as the default image. The default tag is the workspace version
+with a `v` prefix, so each release of `anvil` and `anvild` runs the image from
+the same release. Builds of a version that has no release yet, such as a
+development build, can't pull the default image; set `image` in `.anvil.yml`
+to use them.
+
+Every sandbox image must provide an `agent` user with UID and GID `1000` and
+run as it. The generated SSH config logs in as `agent`, `anvil run` runs
+commands as the image's user, and the workspace is mounted with owner
+`1000:1000`. See
+[ADR 0006](decisions/0006-run-sandboxes-as-the-agent-user.md).

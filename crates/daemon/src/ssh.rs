@@ -156,7 +156,7 @@ fn render_config(hostnames: &[String], ssh_dir: &Path, cli: &Path) -> String {
     for hostname in hostnames {
         config.push_str(&format!(
             "\nHost {hostname}\n  \
-             User root\n  \
+             User agent\n  \
              ProxyCommand \"{cli}\" ssh-proxy %n\n  \
              IdentityFile \"{identity}\"\n  \
              IdentitiesOnly yes\n  \
@@ -271,6 +271,7 @@ mod tests {
         );
 
         assert!(config.find("Host api.anvil").unwrap() < config.find("Host web.anvil").unwrap());
+        assert!(config.contains("User agent\n"));
         assert!(config.contains("ProxyCommand \"/usr/bin/anvil\" ssh-proxy %n\n"));
         assert!(config.contains("IdentityFile \"/home/user/.local/share/anvil/ssh/id_ed25519\"\n"));
         assert!(

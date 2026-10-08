@@ -4,3 +4,5 @@
 - [ADR 0002 - Embed the microsandbox runtime in anvild](decisions/0002-embed-the-microsandbox-runtime-in-anvild.md)
 - [ADR 0003 - Render CLI tables with ratatui](decisions/0003-render-cli-tables-with-ratatui.md)
 - [ADR 0004 - Store secrets in a private file](decisions/0004-store-secrets-in-a-private-file.md)
+- [ADR 0005 - Default to the anvil-base image of the same release](decisions/0005-default-to-the-anvil-base-image-of-the-same-release.md)
+- [ADR 0006 - Run sandboxes as the agent user](decisions/0006-run-sandboxes-as-the-agent-user.md)

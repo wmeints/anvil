@@ -200,18 +200,18 @@ Add an `.anvil.yml` file to the project directory to configure the sandbox:
 
 ```yaml
 name: my-project
-image: ubuntu:26.04
+image: ghcr.io/my-org/my-sandbox:1.0
 resources:
   cpu: 2
   memory: 4 GiB
 ```
 
-| Field              | Description                                                      | Default        |
-| ------------------ | ---------------------------------------------------------------- | -------------- |
-| `name`             | Name of the sandbox.                                             | Required       |
-| `image`            | OCI image the sandbox runs.                                      | `ubuntu:26.04` |
-| `resources.cpu`    | Number of vCPUs.                                                 | `2`            |
-| `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`. | `4 GiB`        |
+| Field              | Description                                                      | Default                                 |
+| ------------------ | ---------------------------------------------------------------- | --------------------------------------- |
+| `name`             | Name of the sandbox.                                             | Required                                |
+| `image`            | OCI image the sandbox runs.                                      | `ghcr.io/wmeints/anvil-base:v<version>` |
+| `resources.cpu`    | Number of vCPUs.                                                 | `2`                                     |
+| `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`. | `4 GiB`                                 |
 
 Without `.anvil.yml`, Anvil names the sandbox after the full path of the
 working directory and uses the defaults.
@@ -292,9 +292,55 @@ sandbox from your editor.
 
 The [`Dockerfile`](Dockerfile) describes a base image for sandboxes with
 `git`, `curl`, `sudo`, [mise](https://mise.jdx.dev) and an unprivileged
-`agent` user. Releases publish it as `ghcr.io/wmeints/anvil-base:<tag>`. Use
-it, or an image built on top of it, through the `image` field in
-`.anvil.yml`.
+`agent` user. Releases publish it as `ghcr.io/wmeints/anvil-base:<tag>`, and
+sandboxes run the image that matches the installed anvil version unless the
+`image` field in `.anvil.yml` names another one, such as an image built on top
+of it.
+
+### Bringing your own image
+
+Anvil runs everything in a sandbox as the `agent` user. A custom image must:
+
+- Have a user named `agent` with UID `1000` and GID `1000` and a home
+  directory, such as `/home/agent`. Images based on Ubuntu ship an `ubuntu`
+  user with UID 1000; remove it first.
+- Set `USER agent`. `anvil run` runs commands as the image's user, while SSH
+  always logs in as `agent`.
+- Install `sudo` and allow `agent` to use it without a password, if agents
+  should be able to install system packages.
+
+The workspace is mounted at `/workspaces/<project>`, and its files show up
+as owned by `agent`, whatever the UID of your user on the host is.
+
+Sandboxes created by an older version of Anvil run `ubuntu:26.04`, which has no
+`agent` user, so SSH can no longer log in to them. Recreate them with
+`anvil rm` and `anvil start`, or connect with `ssh root@<name>.anvil`.
+
+The simplest way to meet these requirements is to build on the base image:
+
+```dockerfile
+FROM ghcr.io/wmeints/anvil-base:v0.1.0
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+USER agent
+```
+
+For another distribution, create the user yourself:
+
+```dockerfile
+FROM alpine:3.22
+
+RUN apk add --no-cache bash git sudo \
+    && addgroup -g 1000 agent \
+    && adduser -D -u 1000 -G agent -s /bin/bash agent \
+    && echo "agent ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/agent
+
+USER agent
+WORKDIR /home/agent
+```
 
 ## Development
 
@@ -318,6 +364,24 @@ instead.
 | `cargo test -p anvil-daemon --features vm-tests`        | Run the integration tests that boot real VMs. |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Run the linter.                               |
 | `cargo fmt --all`                                       | Format the code.                              |
+
+The default sandbox image is the `anvil-base` image of the same release, so it
+doesn't exist for a version that hasn't been released yet. To run a
+development build, push an image built from the [`Dockerfile`](Dockerfile) to a
+local registry and set `image` in `.anvil.yml` to it:
+
+```sh
+docker run -d -p 127.0.0.1:5000:5000 --name registry registry:2
+docker build -t localhost:5000/anvil-base:dev .
+docker push localhost:5000/anvil-base:dev
+```
+
+The local registry speaks plain HTTP, so allow it in
+`~/.microsandbox/config.json` before `anvild` starts:
+
+```json
+{ "registries": { "hosts": { "localhost:5000": { "insecure": true } } } }
+```
 
 The workspace contains four crates:
 
