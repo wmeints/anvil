@@ -96,8 +96,9 @@ the remaining gain of option B, protection at rest, is small.
   old values may already have been copied.
 - microsandbox only substitutes placeholders in HTTP headers. Tools that send
   the token in a header (`gh`, the GitHub and Anthropic APIs) work. `git`
-  over HTTPS doesn't, because it sends the token base64-encoded in Basic
-  auth, where the placeholder isn't visible.
+  over HTTPS works too: microsandbox decodes Basic auth credentials,
+  replaces the placeholder and encodes them again, so a credential helper
+  that returns the placeholder as the password is enough.
 - Tools that check a token's format before using it may reject the
   placeholder.
 - When microsandbox implements `SecretSource::Store`, we can revisit this
