@@ -11,9 +11,10 @@
   every process that runs as the user. When the host may be compromised,
   rotate the secrets at their issuers
   ([ADR 0004](decisions/0004-store-secrets-in-a-private-file.md)).
-- **Secrets only work in HTTP headers:** microsandbox substitutes secret
-  placeholders in headers, including decoded Basic auth credentials, but not
-  in URLs or request bodies. Tools that send a token elsewhere can't use
+- **Secrets only work in HTTP headers:** Anvil keeps microsandbox's default
+  substitution scope, which replaces secret placeholders in headers,
+  including decoded Basic auth credentials, but not in URLs or request
+  bodies. Tools that send a token elsewhere can't use
   secrets.
 - **No SSH agent forwarding:** microsandbox's SSH server rejects agent
   forwarding, so git over SSH needs a private key inside the sandbox. Git

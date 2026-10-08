@@ -267,7 +267,7 @@ equivalent helper.
 
 Keep in mind that:
 
-- SSH keys don't work for git: the sandbox's SSH server doesn't support agent
+- Don't use SSH keys for git: the sandbox's SSH server doesn't support agent
   forwarding (`ssh -A`), and copying a private key into the sandbox puts the
   real key where the agent can read it. Use git over HTTPS instead.
 - The values are stored unencrypted in files only your user can read. If
