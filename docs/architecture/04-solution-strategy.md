@@ -27,8 +27,8 @@
   VM so the down time is zero if the sandbox is running.
 
 - **Compatibility:** Sandboxes use OCI images to ensure developers can easily 
-  build sandboxes using standard images like `ubuntu:26.04` or their own custom
-  images.
+  build sandboxes on the `anvil-base` image or their own custom images. Each
+  image provides an unprivileged `agent` user with UID and GID `1000`.
 
   We'll use container images as the basis because it's so well-known in the
   community. We'll extend this with a specific configuration format to allow

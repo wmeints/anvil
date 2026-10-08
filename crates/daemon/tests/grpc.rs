@@ -188,10 +188,15 @@ fn guest_workspace(workspace: &Path) -> String {
     format!("/workspaces/{leaf}")
 }
 
+/// Image the tests boot, independent of the default image.
+const TEST_IMAGE: &str = "ubuntu:26.04";
+
 fn start_request(name: &str) -> StartSandboxRequest {
     StartSandboxRequest {
         name: name.to_string(),
         workspace: test_workspace(name).to_string_lossy().into_owned(),
+        // The default image is only published on release, so it doesn't exist for unreleased versions.
+        image: TEST_IMAGE.to_string(),
         ..Default::default()
     }
 }

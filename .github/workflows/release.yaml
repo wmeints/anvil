@@ -38,6 +38,16 @@ jobs:
       # Installs the Rust toolchain pinned in mise.toml.
       - uses: jdx/mise-action@v2
 
+      # The binaries default to the anvil-base image tagged with their version, so the tag must match it.
+      - name: Check tag matches version
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "anvil-spec") | .version')
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the workspace version v$version"
+            exit 1
+          fi
+
       - name: Build
         run: cargo build --release --locked --bin anvil --bin anvild
 

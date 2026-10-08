@@ -16,6 +16,18 @@
   including decoded Basic auth credentials, but not in URLs or request
   bodies. Tools that send a token elsewhere can't use
   secrets.
+- **Unreleased builds have no default image:** the default image is the
+  `anvil-base` image tagged with the workspace version, which only exists
+  after that version is released. Development builds need an `image` in
+  `.anvil.yml`
+  ([ADR 0005](decisions/0005-default-to-the-anvil-base-image-of-the-same-release.md)).
+- **Workspace access as `agent` is untested:** the integration tests boot
+  `ubuntu:26.04` as `root`, because `anvil-base` only exists after a release.
+  That `agent` can write to the mounted workspace was checked by hand on
+  Linux with a host user of UID 1000. The workspace keeps the host UID, so a
+  host user with another UID, such as `501` on macOS, may leave `agent`
+  without write access
+  ([ADR 0006](decisions/0006-run-sandboxes-as-the-agent-user.md)).
 - **No SSH agent forwarding:** microsandbox's SSH server rejects agent
   forwarding, so git over SSH needs a private key inside the sandbox. Git
   uses HTTPS with a secret instead.

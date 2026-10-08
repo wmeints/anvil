@@ -98,9 +98,11 @@ impl AnvilServer {
             .memory(memory_mib)
             .label(ssh::HOSTNAME_LABEL, &hostname)
             // Mounted read/write; Mirror propagates guest chmod changes to the host files.
+            // Mount has the ownership in the guest set to the 1000/1000 (agent) user.
             .volume(&guest_path, |m| {
                 m.bind(&request.workspace)
                     .host_permissions(HostPermissions::Mirror)
+                    .owner(1000, 1000)
             })
             .workdir(&guest_path)
             .detached(true);
