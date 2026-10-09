@@ -63,7 +63,7 @@ The commands in this step use bash or zsh syntax. If you use fish, run
 Set the release to install and pick the target for your machine:
 
 ```sh
-VERSION=v0.2.0
+VERSION=v0.2.1
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)  TARGET=x86_64-unknown-linux-gnu ;;
   Linux-aarch64) TARGET=aarch64-unknown-linux-gnu ;;
@@ -331,7 +331,7 @@ Sandboxes created by an older version of Anvil run `ubuntu:26.04`, which has no
 The simplest way to meet these requirements is to build on the base image:
 
 ```dockerfile
-FROM ghcr.io/wmeints/anvil-base:v0.2.0
+FROM ghcr.io/wmeints/anvil-base:v0.2.1
 
 USER root
 RUN apt-get update \
