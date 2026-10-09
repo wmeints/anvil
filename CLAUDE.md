@@ -51,9 +51,6 @@ Follow the implementation ladder to prevent over-engineering:
 5. Can this be done with one line? Write the one-liner.
 6. Only then, implement the minimum amount of logic required.
 
-Follow the [Engineering guidelines](docs/engineering/README.md), such as the
-rules for creating and wrapping errors.
-
 Clippy runs with `-D warnings`, so every warning fails the build. Write code
 that fits from the start:
 

@@ -36,6 +36,14 @@ Search open and closed issues for the same problem:
 gh issue list --state all --search "<keywords>" --limit 20
 ```
 
+Read a candidate, including its comments, with one command:
+
+```bash
+gh issue view <N> --json title,body,labels,comments
+```
+
+Plain `gh issue view <N> --comments` prints only the comments.
+
 If a matching issue exists, show it to the user and ask whether to comment on it
 instead of filing a new one.
 

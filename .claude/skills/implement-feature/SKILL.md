@@ -12,6 +12,13 @@ spec, test-first.
 
 ### 1. Understand the problem
 
+- When the work comes from a GitHub issue, read it with one command:
+
+  ```sh
+  gh issue view <N> --json title,body,labels,comments
+  ```
+
+  Plain `gh issue view <N> --comments` prints only the comments.
 - Read the architecture docs in `docs/architecture/` to understand how the
   project is structured, then read the code the feature touches. If the project
   has no `docs/architecture/` directory, rely on `CLAUDE.md` instead.
@@ -20,7 +27,12 @@ spec, test-first.
 
 ### 2. Write a spec and confirm it
 
-Present a short spec to the user and wait for approval before writing code:
+When the issue has the `design-ready` label, its body is the agreed spec: don't
+write a new one or ask for approval again. Ask only about gaps or conflicts with
+the code, then continue with step 3.
+
+Otherwise, present a short spec to the user and wait for approval before writing
+code:
 
 - **Goal**: the problem it solves and for whom.
 - **Behavior**: the commands, flags, API messages, or output that change, with
@@ -44,7 +56,7 @@ Ask about anything the spec can't answer from the request or the code.
 ### 4. Implement
 
 - Write the minimum code that makes the tests pass.
-- Follow the engineering guidelines in `docs/engineering/`.
+- Follow the coding guidelines in `CLAUDE.md`.
 - Follow the configured linter rules.
 - Add new dependencies only when the spec names them.
 
@@ -53,7 +65,14 @@ Ask about anything the spec can't answer from the request or the code.
 - Update the architecture docs that describe the changed behavior, such as the
   building block view or runtime view.
 - Add a decision record to `docs/architecture/decisions/` for new dependencies
-  or architectural choices.
+  or architectural choices, and list it in `docs/architecture/09-decisions.md`.
+  Number it after the newest record on `origin/main` and on your branch, so it
+  doesn't collide with one merged in the meantime:
+
+  ```sh
+  git fetch origin
+  git ls-tree --name-only origin/main docs/architecture/decisions/
+  ```
 - Update `README.md` when the usage of the project changes.
 
 ### 6. Verify
@@ -61,3 +80,4 @@ Ask about anything the spec can't answer from the request or the code.
 - Run the format, lint, and test commands from `CLAUDE.md`, and the `vm-tests`
   integration tests when `crates/daemon` changed. Fix any failures.
 - Report what you built, how it maps to the spec, and anything you left out.
+- When the work comes from an issue, end the commit message with `Closes #<N>`.

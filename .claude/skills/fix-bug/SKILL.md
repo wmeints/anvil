@@ -12,6 +12,15 @@ without the fix.
 
 ### 1. Reproduce the bug
 
+- When the bug comes from a GitHub issue, read it with one command:
+
+  ```sh
+  gh issue view <N> --json title,body,labels,comments
+  ```
+
+  Plain `gh issue view <N> --comments` prints only the comments. When the issue
+  has the `design-ready` label, its body is the agreed description of the
+  expected behavior.
 - Restate the observed and the expected behavior in one sentence each.
 - Reproduce the bug with the smallest command or input you can find. Build the
   project first with the build task described in `CLAUDE.md`.
@@ -43,9 +52,19 @@ without the fix.
 
 ### 4. Fix the root cause
 
-- Make the smallest change that fixes the cause. Follow the engineering
-  guidelines in `docs/engineering`.
+- Make the smallest change that fixes the cause. Follow the coding guidelines in
+  `CLAUDE.md`.
 - Look for the same mistake elsewhere in the code and fix it there as well.
+- When the fix adds a dependency or makes an architectural choice, add a
+  decision record to `docs/architecture/decisions/` and list it in
+  `docs/architecture/09-decisions.md`. Number it after the newest record on
+  `origin/main` and on your branch, so it doesn't collide with one merged in the
+  meantime:
+
+  ```sh
+  git fetch origin
+  git ls-tree --name-only origin/main docs/architecture/decisions/
+  ```
 
 ### 5. Verify
 
@@ -58,4 +77,4 @@ without the fix.
 
 Tell the user the root cause, the fix, the test that covers it, and any related
 spots you changed. Suggest a commit message of the form `fix(<scope>):
-<description>`.
+<description>`, ending with `Closes #<N>` when the bug comes from an issue.
