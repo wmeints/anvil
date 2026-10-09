@@ -4,9 +4,9 @@ Fill every section from the diff evidence. Use the exact section names below; do
 
 ## Why
 
-<Why this PR is created: the problem or motivation it addresses, and the outcome it delivers. Ground it in the actual change, not a restatement of the title.>
-
 <A visual of the change, chosen with the `show-me` guidance: a `diff`, `mermaid`, or `text` code block showing the call tree, file tree, control flow, or component interaction the change affects. Follow it with one sentence on what the reader should notice.>
+
+<Why this PR is created: the problem or motivation it addresses, and the outcome it delivers. Ground it in the actual change, not a restatement of the title.>
 
 ## Review focus
 

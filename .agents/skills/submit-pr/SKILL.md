@@ -33,8 +33,9 @@ Before opening the PR, verify the change:
    changes behavior, the files in `docs/architecture/` must describe the new
    behavior. When it adds a dependency or makes an architectural choice, a new
    decision record must exist in `docs/architecture/decisions/`, numbered
-   after the last one and listed in `docs/architecture/09-decisions.md`. If
-   either is missing, stop and offer to write it before opening the PR.
+   after the last one and listed in `docs/architecture/09-decisions.md`. When
+   it changes how the project is used, `README.md` must describe it. If any of
+   these is missing, stop and offer to write it before opening the PR.
 3. Ask the `reviewer` agent to review the branch. Fix confirmed findings with
    the user's approval, or list the ones you leave open under **Review focus**.
 
@@ -108,7 +109,7 @@ Build the body from the diff evidence using the template in `template.md` (read 
 Guidance:
 
 - **Why** must be distinct from a title restatement — explain the motivation and the delivered outcome.
-- **Why** opens with a visual that shows the change at a glance, so the reader grasps it before reading the diff. Read `.claude/skills/show-me/SKILL.md` and follow its guidance to pick the smallest view that makes the point: a `diff` of the call tree, file tree, or control flow for changes to existing shape, a Mermaid diagram for interaction or data flow between components, or pseudocode for new logic. Use one visual, two at most, each next to the sentence it supports. Keep the visual inside fenced code blocks that GitHub renders (`diff`, `mermaid`, `text`); skip the HTML-file option, because a PR body cannot embed it.
+- **Why** opens with a visual that shows the change at a glance, so the reader grasps it before reading the diff. Read `.agents/skills/show-me/SKILL.md` and follow its guidance to pick the smallest view that makes the point: a `diff` of the call tree, file tree, or control flow for changes to existing shape, a Mermaid diagram for interaction or data flow between components, or pseudocode for new logic. Use one visual, two at most, each next to the sentence it supports. Keep the visual inside fenced code blocks that GitHub renders (`diff`, `mermaid`, `text`); skip the HTML-file option, because a PR body cannot embed it.
 - **Review focus** is for a human, not a diff summary. If there is genuinely nothing a reviewer must look at, say so, but prefer pointing at the riskiest or most subtle code.
 - **Risks** must cover all three axes (performance, security, complexity). When an axis is genuinely untouched, write `none` and briefly justify it — never leave an axis blank.
 - The final **Risk level** line states the label chosen in step 3 and why.
