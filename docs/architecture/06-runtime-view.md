@@ -92,7 +92,10 @@ process. The sandbox keeps running after the session ends.
 ## Stopping a sandbox
 
 `anvil stop` stops the sandbox for the working directory. The sandbox and its
-disk stay, so it can be started again later.
+disk stay, so it can be started again later. `anvil stop <name>` stops the
+sandbox with that name, as listed by `anvil ls`, from any directory: the CLI
+uses the name as is and doesn't read `.anvil.yml`. `anvil rm [name]` follows
+the same flow with `RemoveSandbox`.
 
 ```mermaid
 sequenceDiagram
@@ -101,14 +104,16 @@ sequenceDiagram
     participant D as anvild
     participant MS as microsandbox
 
-    Dev->>CLI: anvil stop
-    CLI->>CLI: Resolve spec
+    Dev->>CLI: anvil stop [name]
+    opt No name given
+        CLI->>CLI: Resolve spec
+    end
     CLI->>D: StopSandbox(name)
     D->>MS: Sandbox::get(name)
     alt Sandbox doesn't exist
         MS-->>D: SandboxNotFound
         D-->>CLI: NOT_FOUND
-        CLI-->>Dev: Error
+        CLI-->>Dev: Error: sandbox name doesn't exist
     else Sandbox exists
         MS-->>D: Sandbox handle
         D->>MS: stop()
@@ -179,6 +184,16 @@ sequenceDiagram
 
 `anvil run` and SSH connections start a sandbox the same way when it isn't
 running, so `anvil start` is optional.
+
+`anvil start <name>` starts the existing sandbox with that name, as listed by
+`anvil ls`, from any directory. It doesn't read `.anvil.yml`, and it never
+creates a sandbox: creating one needs the image, resources and workspace from
+a spec. When `GetSandbox` returns `NOT_FOUND`, the CLI fails with
+`sandbox <name> doesn't exist; run anvil start in its project directory to
+create it` without sending `StartSandbox`. Otherwise it handles the status like
+`anvil start`, and sends `StartSandbox(name)` with an empty workspace for a
+stopped or crashed sandbox; the daemon then falls back to the sandbox name when
+the sandbox still needs a host name.
 
 ## Setting a secret
 

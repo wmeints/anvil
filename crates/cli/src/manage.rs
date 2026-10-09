@@ -1,5 +1,5 @@
 use anvil_spec::SandboxSpec;
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use clap::ValueEnum;
 use serde::Serialize;
 use std::ops::ControlFlow;
@@ -18,16 +18,18 @@ use crate::table;
 
 pub(crate) const SPEC_FILE_NAME: &str = ".anvil.yml";
 
-/// Starts the sandbox for the working directory, creating it when needed. Does nothing when
-/// it's already running, and waits for it when it's starting.
+/// Starts the named sandbox, or the sandbox for the working directory without a name. Does
+/// nothing when it's already running, and waits for it when it's starting. Only the sandbox for
+/// the working directory is created when it doesn't exist, because creating one needs its spec.
 pub async fn start_sandbox(
+    name: Option<String>,
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
-    let spec = resolve_spec(working_dir)?;
-    let name = spec.name.clone();
-
-    ensure_running(spec, working_dir, client).await?;
+    let name = match name {
+        Some(name) => start_named_sandbox(name, client).await?,
+        None => start_working_dir_sandbox(working_dir, client).await?,
+    };
 
     let hostname = client
         .get_sandbox(GetSandboxRequest { name })
@@ -42,6 +44,34 @@ pub async fn start_sandbox(
     Ok(())
 }
 
+/// Starts the existing sandbox with the name and returns the name.
+async fn start_named_sandbox(
+    name: String,
+    client: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<String> {
+    // The daemon falls back to the sandbox name for the host name when the workspace is empty.
+    if !start_if_exists(&name, Path::new(""), client).await? {
+        bail!(
+            "sandbox {name} doesn't exist; run anvil start in its project directory to create it"
+        );
+    }
+
+    Ok(name)
+}
+
+/// Starts the sandbox for the working directory, creating it when needed, and returns its name.
+async fn start_working_dir_sandbox(
+    working_dir: &Path,
+    client: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<String> {
+    let spec = resolve_spec(working_dir)?;
+    let name = spec.name.clone();
+
+    ensure_running(spec, working_dir, client).await?;
+
+    Ok(name)
+}
+
 const STARTING_TIMEOUT: Duration = Duration::from_secs(120);
 const STARTING_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -51,24 +81,37 @@ pub(crate) async fn ensure_running(
     workspace: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
-    let name = spec.name.clone();
+    if start_if_exists(&spec.name, workspace, client).await? {
+        return Ok(());
+    }
+
+    eprintln!("Creating sandbox {}...", spec.name);
+    client
+        .start_sandbox(build_start_request(spec, workspace))
+        .await?;
+
+    Ok(())
+}
+
+/// Starts the sandbox when it exists, waiting while it's starting. Returns `false` when the
+/// sandbox doesn't exist.
+async fn start_if_exists(
+    name: &str,
+    workspace: &Path,
+    client: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<bool> {
     let deadline = Instant::now() + STARTING_TIMEOUT;
 
     loop {
-        let Some(status) = sandbox_status(client, &name).await? else {
-            eprintln!("Creating sandbox {name}...");
-            client
-                .start_sandbox(build_start_request(spec, workspace))
-                .await?;
-
-            return Ok(());
+        let Some(status) = sandbox_status(client, name).await? else {
+            return Ok(false);
         };
 
-        if start_existing_sandbox(&name, status, workspace, client)
+        if start_existing_sandbox(name, status, workspace, client)
             .await?
             .is_break()
         {
-            return Ok(());
+            return Ok(true);
         }
 
         if Instant::now() >= deadline {
@@ -147,28 +190,54 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> StartSandboxReque
     }
 }
 
-/// Stops the sandbox for the working directory.
+/// Stops the named sandbox, or the sandbox for the working directory without a name.
 pub async fn stop_sandbox(
+    name: Option<String>,
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
-    let name = resolve_spec(working_dir)?.name;
+    let name = sandbox_name(name, working_dir)?;
 
-    client.stop_sandbox(StopSandboxRequest { name }).await?;
+    client
+        .stop_sandbox(StopSandboxRequest { name: name.clone() })
+        .await
+        .map_err(|status| describe_status(&name, status))?;
 
     Ok(())
 }
 
-/// Removes the sandbox for the working directory.
+/// Removes the named sandbox, or the sandbox for the working directory without a name.
 pub async fn remove_sandbox(
+    name: Option<String>,
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
-    let name = resolve_spec(working_dir)?.name;
+    let name = sandbox_name(name, working_dir)?;
 
-    client.remove_sandbox(RemoveSandboxRequest { name }).await?;
+    client
+        .remove_sandbox(RemoveSandboxRequest { name: name.clone() })
+        .await
+        .map_err(|status| describe_status(&name, status))?;
 
     Ok(())
+}
+
+/// Returns the explicit sandbox name, or the name of the sandbox for the working directory.
+/// The spec file is only read without an explicit name.
+fn sandbox_name(name: Option<String>, working_dir: &Path) -> Result<String> {
+    match name {
+        Some(name) => Ok(name),
+        None => Ok(resolve_spec(working_dir)?.name),
+    }
+}
+
+/// Turns a `NotFound` status into an error that names the missing sandbox.
+fn describe_status(name: &str, status: tonic::Status) -> anyhow::Error {
+    if status.code() == Code::NotFound {
+        return anyhow!("sandbox {name} doesn't exist");
+    }
+
+    status.into()
 }
 
 /// Output format for the list of sandboxes.
@@ -394,6 +463,43 @@ mod tests {
         fs::write(dir.path().join(SPEC_FILE_NAME), "image: ubuntu:24.04\n").unwrap();
 
         assert!(resolve_spec(dir.path()).is_err());
+    }
+
+    #[test]
+    fn explicit_name_skips_spec_file() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(SPEC_FILE_NAME), "image: ubuntu:24.04\n").unwrap();
+
+        let name = sandbox_name(Some("other".to_string()), dir.path()).unwrap();
+
+        assert_eq!(name, "other");
+    }
+
+    #[test]
+    fn without_name_uses_working_directory() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(SPEC_FILE_NAME), "name: dev\n").unwrap();
+
+        let name = sandbox_name(None, dir.path()).unwrap();
+
+        assert_eq!(name, "dev");
+    }
+
+    #[test]
+    fn not_found_status_names_missing_sandbox() {
+        let error = describe_status("dev", tonic::Status::not_found("couldn't find it"));
+
+        assert_eq!(error.to_string(), "sandbox dev doesn't exist");
+    }
+
+    #[test]
+    fn other_status_is_kept() {
+        let error = describe_status("dev", tonic::Status::internal("failed to stop sandbox"));
+
+        assert!(
+            error.to_string().contains("failed to stop sandbox"),
+            "{error}"
+        );
     }
 
     #[test]
