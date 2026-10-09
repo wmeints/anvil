@@ -165,8 +165,8 @@ puts both binaries in `~/.cargo/bin`. Make sure that directory is on your
 `PATH`, as in step 2:
 
 ```sh
-cargo install --locked --path crates/cli
-cargo install --locked --path crates/daemon
+cargo install-cli     # cargo install --locked --path crates/cli
+cargo install-daemon  # cargo install --locked --path crates/daemon
 ```
 
 ## Usage
@@ -358,13 +358,13 @@ Ubuntu 22.04, is too old; install a current release from the
 [protobuf releases](https://github.com/protocolbuffers/protobuf/releases)
 instead.
 
-| Command                                                 | Description                                   |
-| ------------------------------------------------------- | --------------------------------------------- |
-| `cargo build`                                           | Build the `anvil` and `anvild` binaries.      |
-| `cargo test --workspace`                                | Run the unit tests.                           |
-| `cargo test -p anvil-daemon --features vm-tests`        | Run the integration tests that boot real VMs. |
-| `cargo clippy --workspace --all-targets -- -D warnings` | Run the linter.                               |
-| `cargo fmt --all`                                       | Format the code.                              |
+| Command                   | Description                                   |
+| ------------------------- | --------------------------------------------- |
+| `cargo build`             | Build the `anvil` and `anvild` binaries.      |
+| `cargo unit-tests`        | Run the unit tests.                           |
+| `cargo integration-tests` | Run the integration tests that boot real VMs. |
+| `cargo lint`              | Run the linter.                               |
+| `cargo fmt --all`         | Format the code.                              |
 
 The default sandbox image is the `anvil-base` image of the same release, so it
 doesn't exist for a version that hasn't been released yet. To run a

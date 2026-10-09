@@ -23,6 +23,10 @@ This project builds a sandbox for coding agents. The goal is to keep the agent s
   the linter, including the `vm-tests` integration tests.
 - `cargo fmt --all` - formats the code; `cargo fmt --all --check` verifies it.
 
+`.cargo/config.toml` defines shortcuts for these: `cargo lint`,
+`cargo unit-tests`, `cargo integration-tests`, and `cargo install-cli` /
+`cargo install-daemon` to install the binaries into `~/.cargo/bin`.
+
 ## Coding guidelines
 
 Prefer deep modules with narrow interfaces for structuring the code. Each 
