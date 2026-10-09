@@ -197,6 +197,8 @@ fn start_request(name: &str) -> StartSandboxRequest {
         workspace: test_workspace(name).to_string_lossy().into_owned(),
         // The default image is only published on release, so it doesn't exist for unreleased versions.
         image: TEST_IMAGE.to_string(),
+        // The test image has no /sbin/init.
+        init: Some(false),
         ..Default::default()
     }
 }
@@ -424,6 +426,35 @@ async fn start_sandbox_uses_requested_image_and_resources() {
     );
     assert_eq!(spec.resources.cpus, 1);
     assert_eq!(spec.resources.memory_mib, 1024);
+    assert!(spec.init.is_none(), "unexpected init: {:?}", spec.init);
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
+async fn start_sandbox_with_init_explains_missing_init() {
+    const NAME: &str = "anvil-it-missing-init";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("missing-init").await;
+    let mut client = daemon.client().await;
+
+    let status = client
+        .start_sandbox(StartSandboxRequest {
+            init: None,
+            ..start_request(NAME)
+        })
+        .await
+        .expect_err("an image without /sbin/init should fail to boot with init");
+
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    assert!(
+        status.message().contains("init: false"),
+        "{}",
+        status.message()
+    );
+    assert!(Sandbox::get(NAME).await.is_err(), "failed sandbox was kept");
 
     daemon.stop().await;
     remove_sandbox(NAME).await;

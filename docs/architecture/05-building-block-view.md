@@ -144,8 +144,10 @@ C4Component
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing
   about gRPC. It creates sandboxes from the requested image (or the default
   image) with the requested vCPUs and memory, mounts the workspace
-  read/write at `/workspaces/<leaf>` and adds the stored secrets. Sandboxes
-  that run the default image hand PID 1 to the image's `/sbin/init`. Invalid
+  read/write at `/workspaces/<leaf>` and adds the stored secrets. With
+  `init` on, it hands PID 1 to the image's `/sbin/init`. When that fails
+  because the image has no init, it removes the half-created sandbox and
+  returns `FAILED_PRECONDITION` with a hint to set `init: false`. Invalid
   values are rejected before it creates anything. It starts, stops, gets,
   lists and removes sandboxes, gives each sandbox a unique SSH host name,
   regenerates the SSH config, and connects to a sandbox by name or host name.
@@ -182,10 +184,10 @@ C4Component
 ## Shared crates
 
 - `anvil-spec` (`crates/spec`) - Parses `.anvil.yml` into a `SandboxSpec`
-  with a `name`, an optional `image` and optional `resources` (`cpu`,
-  `memory`), rejects unknown fields and reports the line and column of a
+  with a `name`, an optional `image`, an optional `init` and optional
+  `resources` (`cpu`, `memory`), rejects unknown fields and reports the line and column of a
   problem. It owns the defaults (`ghcr.io/wmeints/anvil-base:v<version>`,
-  2 vCPUs, `4 GiB`) and `parse_memory_mib`, which reads memory sizes in `Mi`/`MiB` or `Gi`/`GiB`.
+  `init: true`, 2 vCPUs, `4 GiB`) and `parse_memory_mib`, which reads memory sizes in `Mi`/`MiB` or `Gi`/`GiB`.
   The CLI and daemon both use them.
 - `anvil-utils` (`crates/utils`) - Well-known paths: the daemon socket
   (`$XDG_RUNTIME_DIR/anvild.sock`), the log directory
@@ -193,7 +195,7 @@ C4Component
   (`$XDG_DATA_HOME/anvil/ssh`) and the secrets file
   (`$XDG_DATA_HOME/anvil/secrets.yml`).
 
-The image and resources apply when a sandbox is created. Changing them in
+The image, init and resources apply when a sandbox is created. Changing them in
 `.anvil.yml` doesn't change an existing sandbox; remove it with `anvil rm`
 and start it again.
 
@@ -212,8 +214,8 @@ images. It builds on `ubuntu:26.04` and adds:
   removed.
 - `/sbin/init` - a script that disables guest IPv6 with the settings in
   `/etc/sysctl.d/99-disable-ipv6.conf` and then hands PID 1 to `tini`,
-  which reaps zombie processes. `anvild` runs it as PID 1 in sandboxes that
-  use the default image. See
+  which reaps zombie processes. `anvild` runs it as PID 1 unless the spec
+  sets `init: false`. See
   [ADR 0007](decisions/0007-disable-guest-ipv6-in-the-base-image.md).
 
 The release workflow publishes the image as

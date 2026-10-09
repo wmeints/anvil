@@ -40,7 +40,7 @@ sequenceDiagram
     loop Until the sandbox runs (max 120s)
         CLI->>D: GetSandbox(name)
         alt NOT_FOUND
-            CLI->>D: StartSandbox(name, image, resources, workspace)
+            CLI->>D: StartSandbox(name, image, init, resources, workspace)
             Note over D,MS: Creates the sandbox, see Starting a sandbox
         else Stopped or Crashed
             CLI->>D: StartSandbox(name, workspace)
@@ -143,11 +143,11 @@ sequenceDiagram
     participant SSH as SSH config
 
     Dev->>CLI: anvil start
-    CLI->>CLI: Resolve spec, fill in default image and resources
+    CLI->>CLI: Resolve spec, fill in default image, init and resources
     CLI->>D: GetSandbox(name)
     Note over CLI,D: Running: skip StartSandbox. Starting: poll until running.<br/>Stopping or Paused: error.
     alt NOT_FOUND
-        CLI->>D: StartSandbox(name, image, resources, workspace)
+        CLI->>D: StartSandbox(name, image, init, resources, workspace)
     else Stopped or Crashed
         CLI->>D: StartSandbox(name, workspace)
     end
@@ -171,7 +171,12 @@ sequenceDiagram
         end
         D->>MS: List sandboxes for taken host names
         D->>D: Pick unique project.anvil host name
-        D->>MS: Create detached sandbox (image, cpus, memory, label,<br/>workspace mounted at /workspaces/project)
+        D->>MS: Create detached sandbox (image, init, cpus, memory, label,<br/>workspace mounted at /workspaces/project)
+        alt init on and image has no /sbin/init
+            D->>MS: Remove the half-created sandbox
+            D-->>CLI: FAILED_PRECONDITION (set init: false)
+            CLI-->>Dev: Error
+        end
     end
 
     D->>MS: List sandboxes
