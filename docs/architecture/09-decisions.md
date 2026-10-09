@@ -9,3 +9,4 @@
 - [ADR 0007 - Disable guest IPv6 in the base image](decisions/0007-disable-guest-ipv6-in-the-base-image.md)
 - [ADR 0008 - Format Markdown with dprint](decisions/0008-format-markdown-with-dprint.md)
 - [ADR 0009 - Lint GitHub workflows with actionlint](decisions/0009-lint-github-workflows-with-actionlint.md)
+- [ADR 0010 - Edit VS Code settings with jsonc-parser](decisions/0010-edit-vs-code-settings-with-jsonc-parser.md)

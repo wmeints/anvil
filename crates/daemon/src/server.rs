@@ -176,7 +176,7 @@ impl SandboxManagementService for AnvilServer {
         Ok(Response::new(ListSandboxesResponse { sandboxes }))
     }
 
-    /// Returns the name and status of a single sandbox.
+    /// Returns the name, status, host name and workspace path of a single sandbox.
     async fn get_sandbox(
         &self,
         request: Request<GetSandboxRequest>,
@@ -187,6 +187,7 @@ impl SandboxManagementService for AnvilServer {
             name: sandbox.name,
             status: map_sandbox_status(sandbox.status),
             hostname: sandbox.hostname.unwrap_or_default(),
+            workspace_path: sandbox.workspace_path.unwrap_or_default(),
         }))
     }
 

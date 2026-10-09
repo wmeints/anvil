@@ -19,6 +19,7 @@ socket paths are limited to 108 bytes and the scratchpad path is too long:
 | `MSB_HOME`        | microsandbox's runtime, database, images and sandboxes |
 | `XDG_DATA_HOME`   | SSH keys, the generated SSH config and `secrets.yml`   |
 | `XDG_STATE_HOME`  | the daemon log                                         |
+| `XDG_CONFIG_HOME` | the VS Code-family settings anvild syncs on Linux      |
 | `HOME`            | the `Include` line anvild adds to `~/.ssh/config`      |
 
 ## Steps

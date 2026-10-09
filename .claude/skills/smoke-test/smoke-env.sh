@@ -15,7 +15,7 @@ up() {
   # scratchpad path is too long for the sockets anvild and microsandbox create.
   local root
   root=$(mktemp -d /tmp/anvil-smoke.XXXX) || exit 1
-  mkdir -p "$root"/{run,msb,data,state,home,work}
+  mkdir -p "$root"/{run,msb,data,state,config,home,work}
   chmod 700 "$root/run"
 
   cat >"$root/env" <<EOF
@@ -24,6 +24,7 @@ export XDG_RUNTIME_DIR="$root/run"
 export MSB_HOME="$root/msb"
 export XDG_DATA_HOME="$root/data"
 export XDG_STATE_HOME="$root/state"
+export XDG_CONFIG_HOME="$root/config"
 export HOME="$root/home"
 export SMOKE_WORK="$root/work"
 export ANVIL="$repo/target/debug/anvil"

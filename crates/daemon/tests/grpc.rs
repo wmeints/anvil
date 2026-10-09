@@ -286,7 +286,7 @@ async fn get_sandbox_returns_not_found_for_unknown_sandbox() {
 }
 
 #[tokio::test]
-async fn get_sandbox_returns_name_and_status() {
+async fn get_sandbox_returns_name_status_and_workspace_path() {
     const NAME: &str = "anvil-it-get";
     remove_sandbox(NAME).await;
 
@@ -299,6 +299,10 @@ async fn get_sandbox_returns_name_and_status() {
 
     assert_eq!(sandbox.name, NAME);
     assert_eq!(sandbox.status(), SandboxStatus::Running);
+    assert_eq!(
+        sandbox.workspace_path,
+        guest_workspace(&workspace_path(NAME))
+    );
 
     stop_sandbox(&mut client, NAME).await;
 
