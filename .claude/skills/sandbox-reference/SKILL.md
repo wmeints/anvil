@@ -104,6 +104,14 @@ build on it when `Cargo.lock` has a newer version.
   `direct-tcpip` port forwarding. It doesn't support agent forwarding (see
   `docs/architecture/11-risks-and-technical-debt.md`).
 
+**Terminals**
+
+- A TTY exec without a `TERM` env gets the host process's `TERM` (or `xterm`
+  when it's unset or `dumb`), so `anvild` passes on the terminal it was started
+  from. `session.rs` sets `TERM` explicitly.
+- The SSH server sets `TERM` in the guest from the client's PTY request
+  (`ssh.rs`), so the host side can't choose it for SSH sessions.
+
 **Host state**
 
 - State lives in `$MSB_HOME`, or `~/.microsandbox` when it's unset: `bin/msb`,

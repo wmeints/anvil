@@ -9,6 +9,10 @@ use tokio::sync::mpsc;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::{Status, Streaming};
 
+/// The terminal type of sessions. Without it, microsandbox passes on the daemon's own `TERM`,
+/// which the guest may have no terminfo entry for, such as `xterm-ghostty`.
+const SESSION_TERM: &str = "xterm-256color";
+
 /// The command to run in a session and the size of its terminal as `(width, height)`.
 #[derive(Debug, Clone)]
 pub struct SessionCommand {
@@ -53,7 +57,12 @@ impl Session {
     /// Starts the command with a terminal in the sandbox.
     async fn open(sb: &Sandbox, command: String, args: Vec<String>) -> Result<Self, Status> {
         let mut handle = sb
-            .exec_stream_with(command, |e| e.args(args).stdin_pipe().tty(true))
+            .exec_stream_with(command, |e| {
+                e.args(args)
+                    .env("TERM", SESSION_TERM)
+                    .stdin_pipe()
+                    .tty(true)
+            })
             .await
             .map_err(|_| Status::internal("failed to start session"))?;
 

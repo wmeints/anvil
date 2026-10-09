@@ -37,6 +37,10 @@ sysctl -q -p /etc/sysctl.d/99-disable-ipv6.conf
 exec /usr/bin/tini -- sleep infinity
 EOF
 
+# SSH clients send their own TERM, which the guest may have no terminfo entry for, such as
+# `xterm-ghostty`. Interactive shells fall back to xterm-256color for those.
+RUN echo 'infocmp "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color' >> /etc/bash.bashrc
+
 # Replace the default ubuntu user (uid/gid 1000) with the agent user.
 RUN userdel --remove ubuntu \
     && groupadd --gid 1000 agent \
