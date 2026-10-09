@@ -4,7 +4,8 @@ Fill every section from the diff evidence. Use the exact section names below; do
 not rename or omit a section. Keep each section concise and specific — reference
 concrete files, symbols, and behaviors from the diff, never generic filler.
 Replace each `<...>` placeholder with real content; never leave a placeholder or
-a section blank.
+a section blank. Write each paragraph and list item on a single line: this file
+is wrapped at 80 columns, but the PR body must not be.
 
 ## Why
 

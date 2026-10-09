@@ -159,6 +159,10 @@ Guidance:
   an axis is genuinely untouched, write `none` and briefly justify it — never
   leave an axis blank.
 - The final **Risk level** line states the label chosen in step 3 and why.
+- Don't hard-wrap the body: write each paragraph and list item on a single line.
+  GitHub renders the line breaks inside a paragraph as hard breaks, so text
+  wrapped at 80 columns shows up broken. `template.md` is wrapped by dprint;
+  don't copy its line breaks. Code blocks keep their own line breaks.
 
 ### 5. Create the risk label if it does not exist
 

@@ -101,6 +101,10 @@ Fill in the template from `template.md` for the issue type. Rules:
 - **Verification**: the exact commands that prove the change works, taken from
   the project's build and test setup, including integration tests when the
   change touches code they cover.
+- **No hard wrapping**: write each paragraph, list item and checkbox on a single
+  line. GitHub renders the line breaks inside a paragraph as hard breaks, so
+  text wrapped at 80 columns shows up broken. `template.md` is wrapped by
+  dprint; don't copy its line breaks.
 - Replace every `<...>` placeholder and remove optional sections that don't
   apply. Never leave a placeholder behind.
 

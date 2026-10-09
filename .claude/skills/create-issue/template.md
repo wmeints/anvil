@@ -2,7 +2,8 @@
 
 Use the template that matches the issue type. Keep the section names. Replace
 every `<...>` placeholder with real content, and remove a section marked
-_optional_ when it doesn't apply.
+_optional_ when it doesn't apply. Write each paragraph and list item on a single
+line: this file is wrapped at 80 columns, but the issue body must not be.
 
 ## Bug
 
