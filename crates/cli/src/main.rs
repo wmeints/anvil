@@ -17,10 +17,16 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Start a new sandbox
-    Start,
+    /// Start a sandbox
+    Start {
+        /// Name of the sandbox as listed by `anvil ls`. Defaults to the sandbox for the working directory
+        name: Option<String>,
+    },
     /// Stop a running sandbox
-    Stop,
+    Stop {
+        /// Name of the sandbox as listed by `anvil ls`. Defaults to the sandbox for the working directory
+        name: Option<String>,
+    },
     /// List all sandboxes
     Ls {
         /// Output format
@@ -28,7 +34,10 @@ enum Commands {
         format: OutputFormat,
     },
     /// Remove a sandbox
-    Rm,
+    Rm {
+        /// Name of the sandbox as listed by `anvil ls`. Defaults to the sandbox for the working directory
+        name: Option<String>,
+    },
     /// Run a command inside the sandbox
     Run(RunArgs),
     /// Validate the .anvil.yml file in the working directory
@@ -127,10 +136,12 @@ async fn run_with_daemon(command: Commands, working_dir: PathBuf) -> Result<()> 
     let client_instance = &mut client_instance;
 
     match command {
-        Commands::Start => manage::start_sandbox(&working_dir, client_instance).await,
-        Commands::Stop => manage::stop_sandbox(&working_dir, client_instance).await,
+        Commands::Start { name } => {
+            manage::start_sandbox(name, &working_dir, client_instance).await
+        }
+        Commands::Stop { name } => manage::stop_sandbox(name, &working_dir, client_instance).await,
         Commands::Ls { format } => manage::list_sandboxes(client_instance, format).await,
-        Commands::Rm => manage::remove_sandbox(&working_dir, client_instance).await,
+        Commands::Rm { name } => manage::remove_sandbox(name, &working_dir, client_instance).await,
         Commands::Run(run_args) => run_command(working_dir, run_args, client_instance).await,
         Commands::SshProxy { hostname } => ssh_proxy(hostname, client_instance).await,
         Commands::Secret(SecretCommands::Ls { format }) => {
@@ -198,6 +209,36 @@ mod tests {
     #[test]
     fn cli_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn start_stop_and_rm_take_an_optional_name() {
+        let parse = |args: &[&str]| Cli::try_parse_from(["anvil"].iter().chain(args)).unwrap();
+
+        assert!(matches!(
+            parse(&["start"]).command,
+            Commands::Start { name: None }
+        ));
+        assert!(matches!(
+            parse(&["stop"]).command,
+            Commands::Stop { name: None }
+        ));
+        assert!(matches!(
+            parse(&["rm"]).command,
+            Commands::Rm { name: None }
+        ));
+        assert!(matches!(
+            parse(&["start", "dev"]).command,
+            Commands::Start { name: Some(name) } if name == "dev"
+        ));
+        assert!(matches!(
+            parse(&["stop", "dev"]).command,
+            Commands::Stop { name: Some(name) } if name == "dev"
+        ));
+        assert!(matches!(
+            parse(&["rm", "dev"]).command,
+            Commands::Rm { name: Some(name) } if name == "dev"
+        ));
     }
 
     #[test]
