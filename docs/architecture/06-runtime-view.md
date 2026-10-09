@@ -122,7 +122,11 @@ sequenceDiagram
 
 `anvil start` creates the sandbox when it doesn't exist yet, or starts the
 existing one. The image and resources from the spec only apply when the
-sandbox is created.
+sandbox is created. Like `anvil run`, the CLI first checks the status of the
+sandbox: it leaves a running sandbox alone, waits for a starting one (max
+120s), and fails for a stopping or paused one. The daemon's `StartSandbox` is
+idempotent as well: it returns without starting a sandbox that is already
+running or starting.
 
 ```mermaid
 sequenceDiagram
@@ -134,6 +138,8 @@ sequenceDiagram
 
     Dev->>CLI: anvil start
     CLI->>CLI: Resolve spec, fill in default image and resources
+    CLI->>D: GetSandbox(name)
+    Note over CLI,D: Running: skip StartSandbox. Starting: poll until running.<br/>Stopping or Paused: error. Otherwise continue.
     CLI->>D: StartSandbox(name, image, resources, workspace)
     D->>MS: Sandbox::get(name)
 
@@ -143,7 +149,9 @@ sequenceDiagram
             D->>D: Pick unique project.anvil host name
             D->>MS: Set anvil.hostname label
         end
-        D->>MS: start_detached()
+        opt Sandbox isn't running or starting
+            D->>MS: start_detached()
+        end
     else Sandbox doesn't exist
         D->>D: Validate workspace and resources
         alt Invalid

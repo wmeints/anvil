@@ -319,7 +319,8 @@ async fn get_sandbox(name: &str) -> Result<SandboxHandle, SandboxError> {
     })
 }
 
-/// Starts an existing sandbox, first giving it a host name when it has none.
+/// Starts an existing sandbox, first giving it a host name when it has none. Does nothing when
+/// the sandbox is already running or starting.
 async fn start_existing_sandbox(
     sb: &SandboxHandle,
     request: StartSandbox<'_>,
@@ -327,6 +328,13 @@ async fn start_existing_sandbox(
     // Sandboxes created before SSH support have no host name yet.
     if ssh::hostname_of(sb).is_none() {
         assign_hostname(sb, request).await?;
+    }
+
+    if matches!(
+        sb.status_snapshot(),
+        SandboxStatus::Running | SandboxStatus::Starting
+    ) {
+        return Ok(());
     }
 
     sb.start_detached()

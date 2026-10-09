@@ -344,6 +344,31 @@ async fn sandbox_lifecycle() {
 }
 
 #[tokio::test]
+async fn start_sandbox_is_a_no_op_for_running_sandbox() {
+    const NAME: &str = "anvil-it-start-twice";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("start-twice").await;
+    let mut client = daemon.client().await;
+
+    let request = start_request(NAME);
+    start_and_wait(&mut client, request.clone()).await;
+
+    client
+        .start_sandbox(request)
+        .await
+        .expect("failed to start running sandbox");
+
+    assert_eq!(
+        get_sandbox(&mut client, NAME).await.status(),
+        SandboxStatus::Running
+    );
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
 async fn start_sandbox_uses_requested_image_and_resources() {
     const NAME: &str = "anvil-it-resources";
     remove_sandbox(NAME).await;
