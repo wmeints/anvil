@@ -220,18 +220,23 @@ pub async fn stop_sandbox(
     Ok(())
 }
 
-/// Removes the named sandbox, or the sandbox for the working directory without a name.
+/// Removes the named sandbox, or the sandbox for the working directory without a name. A
+/// running sandbox is only removed with `force`, which stops it first.
 pub async fn remove_sandbox(
     name: Option<String>,
+    force: bool,
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
     let name = sandbox_name(name, working_dir)?;
 
     client
-        .remove_sandbox(RemoveSandboxRequest { name: name.clone() })
+        .remove_sandbox(RemoveSandboxRequest {
+            name: name.clone(),
+            force,
+        })
         .await
-        .map_err(|status| describe_status(&name, status))?;
+        .map_err(|status| describe_remove_status(&name, status))?;
 
     Ok(())
 }
@@ -252,6 +257,18 @@ fn describe_status(name: &str, status: tonic::Status) -> anyhow::Error {
     }
 
     status.into()
+}
+
+/// Turns a `FailedPrecondition` status of a remove into an error that explains how to remove
+/// the running sandbox, and other statuses like [`describe_status`].
+fn describe_remove_status(name: &str, status: tonic::Status) -> anyhow::Error {
+    if status.code() == Code::FailedPrecondition {
+        return anyhow!(
+            "sandbox {name} is running. Stop it with `anvil stop`, or remove it with `anvil rm --force`."
+        );
+    }
+
+    describe_status(name, status)
 }
 
 /// Output format for the list of sandboxes.
@@ -538,6 +555,26 @@ mod tests {
     #[test]
     fn not_found_status_names_missing_sandbox() {
         let error = describe_status("dev", tonic::Status::not_found("couldn't find it"));
+
+        assert_eq!(error.to_string(), "sandbox dev doesn't exist");
+    }
+
+    #[test]
+    fn failed_precondition_on_remove_explains_force() {
+        let error = describe_remove_status(
+            "dev",
+            tonic::Status::failed_precondition("sandbox dev is running"),
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "sandbox dev is running. Stop it with `anvil stop`, or remove it with `anvil rm --force`."
+        );
+    }
+
+    #[test]
+    fn not_found_on_remove_names_missing_sandbox() {
+        let error = describe_remove_status("dev", tonic::Status::not_found("couldn't find it"));
 
         assert_eq!(error.to_string(), "sandbox dev doesn't exist");
     }

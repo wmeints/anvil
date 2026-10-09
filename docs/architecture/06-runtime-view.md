@@ -98,8 +98,12 @@ the guest may have no terminfo entry for, so programs like `clear` fail.
 `anvil stop` stops the sandbox for the working directory. The sandbox and its
 disk stay, so it can be started again later. `anvil stop <name>` stops the
 sandbox with that name, as listed by `anvil ls`, from any directory: the CLI
-uses the name as is and doesn't read `.anvil.yml`. `anvil rm [name]` follows the
-same flow with `RemoveSandbox`.
+uses the name as is and doesn't read `.anvil.yml`.
+
+`anvild` asks the guest to shut down and gives it 30 seconds (`STOP_TIMEOUT` in
+`crates/daemon/src/sandboxes.rs`). When the sandbox hasn't stopped by then,
+`anvild` kills it, so a guest that ignores the shutdown can't make `anvil stop`
+hang. A killed sandbox can lose writes the guest hadn't flushed to its disk yet.
 
 ```mermaid
 sequenceDiagram
@@ -120,10 +124,63 @@ sequenceDiagram
         CLI-->>Dev: Error: sandbox name doesn't exist
     else Sandbox exists
         MS-->>D: Sandbox handle
-        D->>MS: stop()
+        D->>MS: stop_with_timeout(30s)
+        opt Not stopped within 30s
+            MS-->>D: StopTimeout
+            D->>MS: kill()
+        end
         MS-->>D: Stopped
         D-->>CLI: StopSandboxResponse
         CLI-->>Dev: Exit 0
+    end
+```
+
+## Removing a sandbox
+
+`anvil rm [name]` resolves the name like `anvil stop` and sends `RemoveSandbox`.
+microsandbox refuses to remove a sandbox that is starting, running, draining or
+paused, so `anvild` turns that refusal into `FAILED_PRECONDITION` and the CLI
+explains how to remove the sandbox. With `anvil rm --force`, the request carries
+`force: true` and `anvild` first stops a live sandbox the same way as `anvil
+stop`, killing it after 30 seconds. When that stop fails, `anvild` returns
+`INTERNAL` and leaves the sandbox in place. A stopped or crashed sandbox is
+removed with or without `--force`. After a removal, `anvild` syncs the SSH
+config and the editors' Remote-SSH settings, so they drop the sandbox's host.
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer
+    participant CLI as anvil
+    participant D as anvild
+    participant MS as microsandbox
+
+    Dev->>CLI: anvil rm [--force] [name]
+    opt No name given
+        CLI->>CLI: Resolve spec
+    end
+    CLI->>D: RemoveSandbox(name, force)
+    D->>MS: Sandbox::get(name)
+    alt Sandbox doesn't exist
+        MS-->>D: SandboxNotFound
+        D-->>CLI: NOT_FOUND
+        CLI-->>Dev: Error: sandbox name doesn't exist
+    else Sandbox exists
+        MS-->>D: Sandbox handle
+        opt force and the sandbox is live
+            D->>MS: stop_with_timeout(30s), then kill() on StopTimeout
+            MS-->>D: Stopped
+        end
+        D->>MS: remove()
+        alt Sandbox is still live
+            MS-->>D: SandboxStillRunning
+            D-->>CLI: FAILED_PRECONDITION
+            CLI-->>Dev: Error: sandbox name is running. Stop it with anvil stop, or remove it with anvil rm --force.
+        else Sandbox is stopped
+            MS-->>D: Removed
+            D->>D: Sync SSH config and editor settings
+            D-->>CLI: RemoveSandboxResponse
+            CLI-->>Dev: Exit 0
+        end
     end
 ```
 

@@ -11,7 +11,11 @@ use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
+use std::time::Duration;
 use thiserror::Error;
+
+/// How long a sandbox gets to shut down gracefully before it is killed.
+pub const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Errors of sandbox management. Each variant carries the message the client sees.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
@@ -133,22 +137,30 @@ impl SandboxManager {
         Ok(())
     }
 
-    /// Stops a running sandbox.
+    /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`].
     pub async fn stop(&self, name: &str) -> Result<(), SandboxError> {
-        get_sandbox(name)
-            .await?
-            .stop()
+        stop_or_kill(&get_sandbox(name).await?, STOP_TIMEOUT)
             .await
             .map_err(|_| SandboxError::internal("failed to stop sandbox"))
     }
 
-    /// Removes a sandbox, then syncs the SSH config and the editor settings.
-    pub async fn remove(&self, name: &str) -> Result<(), SandboxError> {
-        get_sandbox(name)
-            .await?
-            .remove()
-            .await
-            .map_err(|_| SandboxError::internal("failed to remove sandbox"))?;
+    /// Removes a sandbox, then syncs the SSH config and the editor settings. A running sandbox
+    /// is only removed with `force`, which stops it first like [`SandboxManager::stop`].
+    pub async fn remove(&self, name: &str, force: bool) -> Result<(), SandboxError> {
+        let sb = get_sandbox(name).await?;
+
+        if force && is_live(sb.status_snapshot()) {
+            stop_or_kill(&sb, STOP_TIMEOUT)
+                .await
+                .map_err(|_| SandboxError::internal("failed to stop sandbox before removing it"))?;
+        }
+
+        sb.remove().await.map_err(|err| match err {
+            MicrosandboxError::SandboxStillRunning(_) => SandboxError::failed_precondition(
+                format!("sandbox {name} is running; stop it first or remove it with force"),
+            ),
+            _ => SandboxError::internal("failed to remove sandbox"),
+        })?;
 
         sync_ssh_config().await;
 
@@ -330,6 +342,31 @@ async fn get_sandbox(name: &str) -> Result<SandboxHandle, SandboxError> {
         }
         _ => SandboxError::internal("failed to get sandbox"),
     })
+}
+
+/// Stops the sandbox gracefully, and kills it when it hasn't stopped within `timeout`.
+pub async fn stop_or_kill(sb: &SandboxHandle, timeout: Duration) -> Result<(), MicrosandboxError> {
+    match sb.stop_with_timeout(timeout).await {
+        Err(MicrosandboxError::StopTimeout { .. }) => {
+            tracing::warn!(
+                "sandbox {} didn't stop within {timeout:?}; killing it",
+                sb.name()
+            );
+            sb.kill().await
+        }
+        result => result,
+    }
+}
+
+/// Whether microsandbox refuses to remove a sandbox with the status because it's still running.
+fn is_live(status: SandboxStatus) -> bool {
+    matches!(
+        status,
+        SandboxStatus::Starting
+            | SandboxStatus::Running
+            | SandboxStatus::Draining
+            | SandboxStatus::Paused
+    )
 }
 
 /// Starts an existing sandbox, first giving it a host name when it has none. Does nothing when

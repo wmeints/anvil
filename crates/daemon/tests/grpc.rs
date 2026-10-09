@@ -14,7 +14,7 @@ use anvil_daemon::api::{
     SandboxStatus, StartSandboxRequest, StopSandboxRequest, attach_request, attach_response,
 };
 use anvil_daemon::secrets::{self, Secret, SecretStore};
-use anvil_daemon::server;
+use anvil_daemon::{sandboxes, server};
 use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
 use microsandbox::sandbox::{RootfsSource, SandboxSpec};
@@ -498,6 +498,7 @@ async fn remove_sandbox_returns_not_found_for_unknown_sandbox() {
     let status = client
         .remove_sandbox(RemoveSandboxRequest {
             name: "anvil-it-does-not-exist".to_string(),
+            force: false,
         })
         .await
         .expect_err("removing an unknown sandbox should fail");
@@ -532,11 +533,118 @@ async fn remove_sandbox_removes_stopped_sandbox() {
     client
         .remove_sandbox(RemoveSandboxRequest {
             name: NAME.to_string(),
+            force: false,
         })
         .await
         .expect("failed to remove sandbox");
 
     assert_eq!(sandbox_status(&mut client, NAME).await, None);
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
+async fn remove_sandbox_refuses_running_sandbox() {
+    const NAME: &str = "anvil-it-remove-running";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("remove-running").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+
+    let status = client
+        .remove_sandbox(RemoveSandboxRequest {
+            name: NAME.to_string(),
+            force: false,
+        })
+        .await
+        .expect_err("removing a running sandbox without force should fail");
+
+    assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
+    assert!(status.message().contains("running"), "{status:?}");
+    assert_eq!(
+        sandbox_status(&mut client, NAME).await,
+        Some(SandboxStatus::Running)
+    );
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
+async fn remove_sandbox_with_force_stops_and_removes_running_sandbox() {
+    const NAME: &str = "anvil-it-remove-force";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("remove-force").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+
+    client
+        .remove_sandbox(RemoveSandboxRequest {
+            name: NAME.to_string(),
+            force: true,
+        })
+        .await
+        .expect("failed to force-remove running sandbox");
+
+    let status = client
+        .get_sandbox(GetSandboxRequest {
+            name: NAME.to_string(),
+        })
+        .await
+        .expect_err("the removed sandbox should be gone");
+    assert_eq!(status.code(), Code::NotFound);
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
+async fn remove_sandbox_with_force_removes_stopped_sandbox() {
+    const NAME: &str = "anvil-it-remove-force-stopped";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("remove-force-stopped").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+    stop_sandbox(&mut client, NAME).await;
+
+    client
+        .remove_sandbox(RemoveSandboxRequest {
+            name: NAME.to_string(),
+            force: true,
+        })
+        .await
+        .expect("failed to force-remove stopped sandbox");
+
+    assert_eq!(sandbox_status(&mut client, NAME).await, None);
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
+async fn stop_or_kill_kills_sandbox_that_misses_the_timeout() {
+    const NAME: &str = "anvil-it-stop-or-kill";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("stop-or-kill").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+
+    // A zero budget makes the graceful stop time out before it asks the guest to shut down,
+    // so only the kill can stop the sandbox.
+    let sb = Sandbox::get(NAME).await.expect("failed to get sandbox");
+    sandboxes::stop_or_kill(&sb, Duration::ZERO)
+        .await
+        .expect("failed to stop or kill sandbox");
+
+    assert_eq!(
+        sandbox_status(&mut client, NAME).await,
+        Some(SandboxStatus::Stopped)
+    );
 
     daemon.stop().await;
     remove_sandbox(NAME).await;

@@ -174,17 +174,17 @@ Run the commands from your project directory. Anvil derives the sandbox from
 that directory. Pass a name from `anvil ls` to `start`, `stop` or `rm` to manage
 another sandbox from any directory.
 
-| Command                             | Description                                                                                         |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `anvil start [name]`                | Start the sandbox for the current directory, or the existing sandbox with the name from `anvil ls`. |
-| `anvil run <cmd> [args...]`         | Start the sandbox when needed and run a command in it with a terminal attached.                     |
-| `anvil stop [name]`                 | Stop the sandbox, or the one with the name from `anvil ls`. Files on its disk are kept.             |
-| `anvil ls [--format json]`          | List all sandboxes as a table, or as JSON with `--format json`.                                     |
-| `anvil rm [name]`                   | Remove the sandbox, or the one with the name from `anvil ls`.                                       |
-| `anvil validate`                    | Check the `.anvil.yml` file in the current directory.                                               |
-| `anvil secret set <name> [<value>]` | Set a secret for all sandboxes. See [Secrets](#secrets).                                            |
-| `anvil secret ls [--format json]`   | List the secrets and their allowed hosts, without their values.                                     |
-| `anvil secret rm <name>`            | Remove a secret from all sandboxes.                                                                 |
+| Command                             | Description                                                                                                                          |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `anvil start [name]`                | Start the sandbox for the current directory, or the existing sandbox with the name from `anvil ls`.                                  |
+| `anvil run <cmd> [args...]`         | Start the sandbox when needed and run a command in it with a terminal attached.                                                      |
+| `anvil stop [name]`                 | Stop the sandbox, or the one with the name from `anvil ls`. Files on its disk are kept. Killed when it doesn't shut down within 30s. |
+| `anvil ls [--format json]`          | List all sandboxes as a table, or as JSON with `--format json`.                                                                      |
+| `anvil rm [--force] [name]`         | Remove the sandbox, or the one with the name from `anvil ls`. Refuses a running sandbox; `--force` stops it first.                   |
+| `anvil validate`                    | Check the `.anvil.yml` file in the current directory.                                                                                |
+| `anvil secret set <name> [<value>]` | Set a secret for all sandboxes. See [Secrets](#secrets).                                                                             |
+| `anvil secret ls [--format json]`   | List the secrets and their allowed hosts, without their values.                                                                      |
+| `anvil secret rm <name>`            | Remove a secret from all sandboxes.                                                                                                  |
 
 For example, to open a shell in the sandbox:
 
