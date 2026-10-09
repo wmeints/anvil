@@ -2,11 +2,12 @@
 
 Use the template that matches the issue type. Keep the section names. Replace
 every `<...>` placeholder with real content, and remove a section marked
-*optional* when it doesn't apply.
+_optional_ when it doesn't apply. Write each paragraph and list item on a single
+line: this file is wrapped at 80 columns, but the issue body must not be.
 
 ## Bug
 
-~~~markdown
+````markdown
 ## Summary
 
 <One sentence: what is wrong, and where.>
@@ -25,8 +26,8 @@ Version: `<git rev-parse --short HEAD>`
 
 ## Context
 
-- **Affected code:** <paths and symbols, such as `src/orders/service.py`
-  and `OrderService.place_order`.>
+- **Affected code:** <paths and symbols, such as `src/orders/service.py` and
+  `OrderService.place_order`.>
 - **Suspected cause:** <hypothesis and the evidence for it, or "unknown".>
 - **Constraints:** <architecture rules that apply, with a link to the doc.>
 
@@ -48,22 +49,22 @@ Version: `<git rev-parse --short HEAD>`
 <the reproduction command, now showing the expected behavior>
 ```
 
-## Notes *(optional)*
+## Notes _(optional)_
 
 <Decisions left to the implementer, links, related issues.>
-~~~
+````
 
 ## Feature
 
-~~~markdown
+````markdown
 ## Goal
 
 <The problem this solves and for whom, in two or three sentences.>
 
 ## Behavior
 
-<The commands, flags, API messages or output that change, with an example
-of each.>
+<The commands, flags, API messages or output that change, with an example of
+each.>
 
 ```sh
 <example invocation and output>
@@ -85,10 +86,10 @@ of each.>
 - [ ] <each error case from the Errors section.>
 - [ ] Unit tests in `<test file>` cover the public interface.
 - [ ] <integration tests in `<test file>`, when the change crosses a process,
-  network or storage boundary.>
+      network or storage boundary.>
 - [ ] The architecture docs describe the new behavior.
 - [ ] <A decision record in `docs/architecture/decisions/`, when this adds a
-  dependency or makes an architectural choice.>
+      dependency or makes an architectural choice.>
 - [ ] <`README.md` shows the new usage, when user-facing behavior changes.>
 
 ## Out of scope
@@ -103,7 +104,7 @@ of each.>
 <a command that demonstrates the feature>
 ```
 
-## Notes *(optional)*
+## Notes _(optional)_
 
 <Decisions left to the implementer, alternatives considered, links.>
-~~~
+````

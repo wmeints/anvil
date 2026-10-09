@@ -6,20 +6,19 @@ Accepted
 
 ## Context
 
-`anvild` needs the microsandbox runtime (`msb` and `libkrunfw`) in the
-version that matches the `microsandbox` crate it's built with. Until now,
-users installed it themselves with the microsandbox installer before running
-anvil ([ADR 0001](0001-release-through-github-releases-and-ghcr.md)). A
-missing or mismatched runtime only showed up when the first sandbox failed to
-start.
+`anvild` needs the microsandbox runtime (`msb` and `libkrunfw`) in the version
+that matches the `microsandbox` crate it's built with. Until now, users
+installed it themselves with the microsandbox installer before running anvil
+([ADR 0001](0001-release-through-github-releases-and-ghcr.md)). A missing or
+mismatched runtime only showed up when the first sandbox failed to start.
 
 The `microsandbox` crate offers `setup::ensure_runtime`, which resolves an
 installed runtime and installs one when it's absent. It can install from a
 release download at run time, or from an archive embedded through the
 `embed-binaries` feature.
 
-The CLI spawns `anvild` and waits at most 5 seconds for its socket, so
-anything `anvild` does before it listens must be quick.
+The CLI spawns `anvild` and waits at most 5 seconds for its socket, so anything
+`anvild` does before it listens must be quick.
 
 ## Decision
 
@@ -27,19 +26,18 @@ anything `anvild` does before it listens must be quick.
 before it listens on its socket, it calls `setup::ensure_runtime` with
 `InstallSource::EmbeddedArchive`:
 
-- A missing runtime is extracted from the embedded archive into the
-  microsandbox home (`~/.microsandbox` or `$MSB_HOME`).
+- A missing runtime is extracted from the embedded archive into the microsandbox
+  home (`~/.microsandbox` or `$MSB_HOME`).
 - `anvild` reads the installed `msb` version with
-  `setup::resolve_runtime_version`, without running the binary. A runtime
-  in the microsandbox home with another version, or without version
-  information, is replaced by the embedded one through `install_runtime`
-  with `force: true`.
-- A runtime the user configured explicitly (`MSB_PATH`, `paths.msb`) is
-  never replaced; when its version differs, `anvild` refuses to start.
+  `setup::resolve_runtime_version`, without running the binary. A runtime in the
+  microsandbox home with another version, or without version information, is
+  replaced by the embedded one through `install_runtime` with `force: true`.
+- A runtime the user configured explicitly (`MSB_PATH`, `paths.msb`) is never
+  replaced; when its version differs, `anvild` refuses to start.
 - A partial or invalid runtime stops `anvild` with an error.
 
-We don't download the runtime at run time: that needs network access on
-first start and would exceed the CLI's 5 second wait.
+We don't download the runtime at run time: that needs network access on first
+start and would exceed the CLI's 5 second wait.
 
 ## Consequences
 
@@ -49,10 +47,10 @@ first start and would exceed the CLI's 5 second wait.
   `microsandbox` build script, for the compile target, and makes `anvild`
   correspondingly larger. Offline builds can supply the archive through
   `MSB_EMBED_RUNTIME_BUNDLE_PATH` or `MSB_EMBED_ARTIFACTS_DIR`.
-- Extracting the runtime takes well under a second, so the CLI's start
-  timeout stays at 5 seconds.
-- Upgrading anvil to a new `microsandbox` version also upgrades the runtime
-  in the microsandbox home on the next daemon start. Other microsandbox
-  tools that share that home get the runtime version anvil needs.
+- Extracting the runtime takes well under a second, so the CLI's start timeout
+  stays at 5 seconds.
+- Upgrading anvil to a new `microsandbox` version also upgrades the runtime in
+  the microsandbox home on the next daemon start. Other microsandbox tools that
+  share that home get the runtime version anvil needs.
 - Sandboxes that run during an upgrade keep their old `msb` process; only
   sandboxes started afterwards use the new runtime.

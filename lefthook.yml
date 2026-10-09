@@ -6,6 +6,12 @@ pre-commit:
     format:
       glob: "*.rs"
       run: cargo fmt --all --check
+    markdown:
+      glob: "*.md"
+      run: dprint check
+    workflows:
+      glob: ".github/workflows/*.{yaml,yml}"
+      run: actionlint
     clippy:
       run: cargo clippy --workspace --all-targets --all-features -- -D warnings
     unit-tests:

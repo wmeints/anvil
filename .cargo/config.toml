@@ -10,3 +10,13 @@ integration-tests = "test -p anvil-daemon --features vm-tests"
 install-cli = "install --locked --path crates/cli"
 # Install the `anvild` daemon into `~/.cargo/bin`.
 install-daemon = "install --locked --path crates/daemon"
+
+[env]
+# Keep microsandbox's runtime, database and images for builds and tests out of
+# the user's `~/.microsandbox`, so a newer `msb` migrating that database can't
+# break the `vm-tests`. One fixed value for every cargo command: the
+# `microsandbox` build script installs the runtime into `MSB_HOME` and reruns
+# when it changes, so a per-command value would rebuild it on each switch. The
+# path is short because unix socket paths can't exceed 108 bytes. An `MSB_HOME`
+# set in the environment takes precedence.
+MSB_HOME = "/tmp/anvil-msb"
