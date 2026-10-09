@@ -2,18 +2,18 @@
 
 Every command except `validate` starts by connecting to the daemon over
 `$XDG_RUNTIME_DIR/anvild.sock`. When nobody listens on the socket, the CLI
-removes a stale socket file, spawns `anvild` and polls the socket for at most
-5 seconds. The diagrams below show this step once, in
+removes a stale socket file, spawns `anvild` and polls the socket for at most 5
+seconds. The diagrams below show this step once, in
 [Running a session](#running-a-session), and leave it out of the others.
 
-Before `anvild` listens, it exits when the socket already exists, and then
-makes sure the microsandbox runtime matches the runtime embedded in its
-binary. It extracts the embedded runtime when the runtime is missing or has
-another version. When `MSB_PATH` or `paths.msb` selects a runtime with
-another version, `anvild` exits instead, and the CLI reports a timeout.
+Before `anvild` listens, it exits when the socket already exists, and then makes
+sure the microsandbox runtime matches the runtime embedded in its binary. It
+extracts the embedded runtime when the runtime is missing or has another
+version. When `MSB_PATH` or `paths.msb` selects a runtime with another version,
+`anvild` exits instead, and the CLI reports a timeout.
 
-The CLI resolves the sandbox name from `.anvil.yml` in the working directory,
-or derives it from the full working directory path when there's no spec file.
+The CLI resolves the sandbox name from `.anvil.yml` in the working directory, or
+derives it from the full working directory path when there's no spec file.
 
 ## Running a session
 
@@ -86,16 +86,16 @@ sequenceDiagram
     CLI-->>Dev: Exit with the process exit code
 ```
 
-When the CLI disconnects before the process exits, the daemon kills the
-process. The sandbox keeps running after the session ends.
+When the CLI disconnects before the process exits, the daemon kills the process.
+The sandbox keeps running after the session ends.
 
 ## Stopping a sandbox
 
 `anvil stop` stops the sandbox for the working directory. The sandbox and its
 disk stay, so it can be started again later. `anvil stop <name>` stops the
 sandbox with that name, as listed by `anvil ls`, from any directory: the CLI
-uses the name as is and doesn't read `.anvil.yml`. `anvil rm [name]` follows
-the same flow with `RemoveSandbox`.
+uses the name as is and doesn't read `.anvil.yml`. `anvil rm [name]` follows the
+same flow with `RemoveSandbox`.
 
 ```mermaid
 sequenceDiagram
@@ -126,13 +126,12 @@ sequenceDiagram
 ## Starting a sandbox
 
 `anvil start` creates the sandbox when it doesn't exist yet, or starts the
-existing one. The image and resources from the spec only apply when the
-sandbox is created. Like `anvil run`, the CLI first checks the status of the
-sandbox: it leaves a running sandbox alone, waits for a starting one (max
-120s), and fails for a stopping or paused one. The daemon's `StartSandbox` is
-idempotent as well: it returns without starting a sandbox that is already
-running or starting, and treats a start that loses a race with another start
-as a success.
+existing one. The image and resources from the spec only apply when the sandbox
+is created. Like `anvil run`, the CLI first checks the status of the sandbox: it
+leaves a running sandbox alone, waits for a starting one (max 120s), and fails
+for a stopping or paused one. The daemon's `StartSandbox` is idempotent as well:
+it returns without starting a sandbox that is already running or starting, and
+treats a start that loses a race with another start as a success.
 
 ```mermaid
 sequenceDiagram
@@ -192,13 +191,13 @@ running, so `anvil start` is optional.
 
 `anvil start <name>` starts the existing sandbox with that name, as listed by
 `anvil ls`, from any directory. It doesn't read `.anvil.yml`, and it never
-creates a sandbox: creating one needs the image, resources and workspace from
-a spec. When `GetSandbox` returns `NOT_FOUND`, the CLI fails with
-`sandbox <name> doesn't exist; run anvil start in its project directory to
-create it` without sending `StartSandbox`. Otherwise it handles the status like
-`anvil start`, and sends `StartSandbox(name)` with an empty workspace for a
-stopped or crashed sandbox; the daemon then falls back to the sandbox name when
-the sandbox still needs a host name.
+creates a sandbox: creating one needs the image, resources and workspace from a
+spec. When `GetSandbox` returns `NOT_FOUND`, the CLI fails with `sandbox <name>
+doesn't exist; run anvil start in its project directory to create it` without
+sending `StartSandbox`. Otherwise it handles the status like `anvil start`, and
+sends `StartSandbox(name)` with an empty workspace for a stopped or crashed
+sandbox; the daemon then falls back to the sandbox name when the sandbox still
+needs a host name.
 
 ## Setting a secret
 
@@ -234,27 +233,26 @@ sequenceDiagram
 When `anvild` creates a sandbox, it adds all secrets from `secrets.yml`.
 microsandbox enables TLS interception for the sandbox and sets each secret's
 environment variable to a placeholder such as `$MSB_GH_TOKEN`. Its TLS proxy
-replaces the placeholder with the real value in HTTP headers of requests to
-the allowed hosts, and blocks requests that carry the placeholder to other
-hosts. A running sandbox gets a new or changed secret the next time it
-starts.
+replaces the placeholder with the real value in HTTP headers of requests to the
+allowed hosts, and blocks requests that carry the placeholder to other hosts. A
+running sandbox gets a new or changed secret the next time it starts.
 
 `anvil secret rm <name>` works the same way with `RemoveSecret`. `anvild`
-returns `NOT_FOUND` when the secret isn't in `secrets.yml`. Otherwise it
-removes the secret from each sandbox with
-`modify().remove_secret(name).next_start()`, and then from `secrets.yml`.
-When a sandbox fails, it keeps the secret in `secrets.yml` and returns the
-failed sandboxes, so running `anvil secret rm` again retries them. microsandbox can't change the
-secrets of a running sandbox, so a running sandbox keeps the placeholder,
-and its proxy keeps putting in the real value, until it restarts.
+returns `NOT_FOUND` when the secret isn't in `secrets.yml`. Otherwise it removes
+the secret from each sandbox with `modify().remove_secret(name).next_start()`,
+and then from `secrets.yml`. When a sandbox fails, it keeps the secret in
+`secrets.yml` and returns the failed sandboxes, so running `anvil secret rm`
+again retries them. microsandbox can't change the secrets of a running sandbox,
+so a running sandbox keeps the placeholder, and its proxy keeps putting in the
+real value, until it restarts.
 
 ## Connecting via SSH
 
 `ssh <leaf>.anvil`, `scp` and IDEs reach a sandbox through the SSH config the
-daemon generates. It sets `anvil ssh-proxy <host>` as `ProxyCommand`, so the
-SSH protocol runs over the `SshTunnel` gRPC stream instead of a network port.
-The daemon serves each connection with microsandbox's SSH server over an
-in-memory pipe.
+daemon generates. It sets `anvil ssh-proxy <host>` as `ProxyCommand`, so the SSH
+protocol runs over the `SshTunnel` gRPC stream instead of a network port. The
+daemon serves each connection with microsandbox's SSH server over an in-memory
+pipe.
 
 ```mermaid
 sequenceDiagram
@@ -300,6 +298,6 @@ sequenceDiagram
     CLI-->>SSHC: Exit 0
 ```
 
-The client authenticates with the client key the daemon created, and checks
-the sandbox against the host key pinned for `*.anvil` in the `known_hosts`
-file. The sandbox keeps running after the connection closes.
+The client authenticates with the client key the daemon created, and checks the
+sandbox against the host key pinned for `*.anvil` in the `known_hosts` file. The
+sandbox keeps running after the connection closes.

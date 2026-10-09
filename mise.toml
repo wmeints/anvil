@@ -1,5 +1,6 @@
 [tools]
 buf = "latest"
+dprint = "0.61.1"
 lefthook = "latest"
 rust = { version = "1.99.0", components = "rustfmt,clippy,rust-src,rust-analyzer" }
 

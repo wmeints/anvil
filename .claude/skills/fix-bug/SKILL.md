@@ -15,6 +15,9 @@ without the fix.
 - Restate the observed and the expected behavior in one sentence each.
 - Reproduce the bug with the smallest command or input you can find. Build the
   project first with the build task described in `CLAUDE.md`.
+- When the project has a `smoke-test` skill, use it to reproduce bugs in the
+  running application, so the reproduction doesn't touch the user's own
+  environment.
 - If you can't reproduce it, stop and ask the user for the missing details. Do
   not fix a bug you haven't seen.
 
@@ -22,8 +25,8 @@ without the fix.
 
 - Trace the failure from the symptom back to the code that makes the wrong
   decision. Read the code; don't guess from names.
-- Ask "why" until the answer is a line of code or a wrong assumption, not a
-  side effect of one.
+- Ask "why" until the answer is a line of code or a wrong assumption, not a side
+  effect of one.
 - Check the architecture docs in `docs/architecture` for the structure of the
   project and any known pitfalls.
 - Write down the root cause in one or two sentences. If several causes are
@@ -53,6 +56,6 @@ without the fix.
 
 ### 6. Report
 
-Tell the user the root cause, the fix, the test that covers it, and any
-related spots you changed. Suggest a commit message of the form
-`fix(<scope>): <description>`.
+Tell the user the root cause, the fix, the test that covers it, and any related
+spots you changed. Suggest a commit message of the form `fix(<scope>):
+<description>`.

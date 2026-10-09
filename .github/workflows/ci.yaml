@@ -36,6 +36,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Check markdown formatting
+        run: dprint check
+
       - name: Build
         run: cargo build --workspace --all-targets
 

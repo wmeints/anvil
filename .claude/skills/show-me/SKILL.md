@@ -4,7 +4,9 @@ description: Help the user understand the current topic visually with concise di
 disable-model-invocation: true
 ---
 
-Help the user understand the current topic of conversation visually. Skip the preamble and keep prose brief. Pick the smallest view that makes the key point clear.
+Help the user understand the current topic of conversation visually. Skip the
+preamble and keep prose brief. Pick the smallest view that makes the key point
+clear.
 
 - Show logic or an algorithm as pseudocode:
 
@@ -26,7 +28,8 @@ submitForm
   navigateToSession
 ```
 
-- Show UI structure as a component tree, including state and module boundaries that matter:
+- Show UI structure as a component tree, including state and module boundaries
+  that matter:
 
 ```tsx
 <SessionPage> (apps/example/src/routes/session.tsx)
@@ -56,7 +59,8 @@ sequenceDiagram
     Daemon-->>UI: stream result
 ```
 
-- Use `diff` when the point is what changes and the surrounding shape already exists. Match the diff shape to the topic.
+- Use `diff` when the point is what changes and the surrounding shape already
+  exists. Match the diff shape to the topic.
 
 For a component change:
 
@@ -106,7 +110,8 @@ For a state or control-flow change:
 +  invalidate cache
 ```
 
-- Show the whole block when most of it is new, when omitted context would hide ownership or order, or when the user needs a copyable target shape:
+- Show the whole block when most of it is new, when omitted context would hide
+  ownership or order, or when the user needs a copyable target shape:
 
 ```ts
 function expandSkill(command: string): string {
@@ -115,7 +120,11 @@ function expandSkill(command: string): string {
 }
 ```
 
-- For a visual UI, layout, state comparison, or concept too dense for Mermaid, write one focused HTML file — a diagram, an infographic, or a short slide deck, whichever fits the point. Match the product's colors, type, spacing, and components; use real labels and data; support desktop and mobile. Then open it for the user:
+- For a visual UI, layout, state comparison, or concept too dense for Mermaid,
+  write one focused HTML file — a diagram, an infographic, or a short slide
+  deck, whichever fits the point. Match the product's colors, type, spacing, and
+  components; use real labels and data; support desktop and mobile. Then open it
+  for the user:
 
 ```
 Bash(open path/to/show-me-{description}.html)
@@ -123,6 +132,9 @@ Bash(open path/to/show-me-{description}.html)
 
 ### guidance
 
-Place each visual next to the short text it supports. Keep only the calls, files, props, states, and boundaries needed to answer the user's current question or the options to resolve the current discussion point.
+Place each visual next to the short text it supports. Keep only the calls,
+files, props, states, and boundaries needed to answer the user's current
+question or the options to resolve the current discussion point.
 
-You may use one of these, you may use several, it is unlikely you will use all of them. Use your judgement and don't overwhelm the user.
+You may use one of these, you may use several, it is unlikely you will use all
+of them. Use your judgement and don't overwhelm the user.

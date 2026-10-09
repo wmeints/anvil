@@ -5,8 +5,8 @@ description: "Implement a new feature or change in behavior, starting from an ag
 
 # Implement feature
 
-Agree on what to build before building it, then build the minimum that meets
-the spec, test-first.
+Agree on what to build before building it, then build the minimum that meets the
+spec, test-first.
 
 ## Steps
 

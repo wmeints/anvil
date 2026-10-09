@@ -1,9 +1,9 @@
 # Anvil
 
 Anvil runs coding agents safely inside a microVM-based sandbox on your own
-machine. Each project gets its own lightweight VM, built from an OCI image,
-with only the project directory shared from the host. You don't need a cloud
-account, a commercial license or root permissions.
+machine. Each project gets its own lightweight VM, built from an OCI image, with
+only the project directory shared from the host. You don't need a cloud account,
+a commercial license or root permissions.
 
 Anvil supports two ways of working:
 
@@ -14,8 +14,8 @@ Anvil supports two ways of working:
   sandbox over SSH.
 
 > [!NOTE]
-> Anvil is early in development. Egress control is planned but not
-> available yet.
+> Anvil is early in development. Egress control is planned but not available
+> yet.
 
 ## How it works
 
@@ -23,14 +23,13 @@ Anvil consists of two executables:
 
 - `anvil` - the CLI you use to manage sandboxes and run commands in them.
 - `anvild` - a daemon that manages the sandboxes through
-  [microsandbox](https://docs.microsandbox.dev). The CLI starts it
-  automatically when it isn't running.
+  [microsandbox](https://docs.microsandbox.dev). The CLI starts it automatically
+  when it isn't running.
 
-The CLI and daemon talk gRPC over a unix socket
-(`$XDG_RUNTIME_DIR/anvild.sock`, or `anvild.sock` in the temp directory when
-`XDG_RUNTIME_DIR` isn't set). The daemon mounts the working directory
-read/write in the sandbox at `/workspaces/<leaf>`, where `<leaf>` is the name
-of the directory.
+The CLI and daemon talk gRPC over a unix socket (`$XDG_RUNTIME_DIR/anvild.sock`,
+or `anvild.sock` in the temp directory when `XDG_RUNTIME_DIR` isn't set). The
+daemon mounts the working directory read/write in the sandbox at
+`/workspaces/<leaf>`, where `<leaf>` is the name of the directory.
 
 ## Requirements
 
@@ -42,23 +41,23 @@ it in `~/.microsandbox` on first start.
 
 ## Installation
 
-Each [GitHub release](https://github.com/wmeints/anvil/releases) has an
-archive per platform with the `anvil` and `anvild` binaries:
+Each [GitHub release](https://github.com/wmeints/anvil/releases) has an archive
+per platform with the `anvil` and `anvild` binaries:
 
-| Platform              | Target                       |
-| --------------------- | ---------------------------- |
-| Linux x86_64          | `x86_64-unknown-linux-gnu`   |
-| Linux ARM64           | `aarch64-unknown-linux-gnu`  |
-| macOS (Apple Silicon) | `aarch64-apple-darwin`       |
+| Platform              | Target                      |
+| --------------------- | --------------------------- |
+| Linux x86_64          | `x86_64-unknown-linux-gnu`  |
+| Linux ARM64           | `aarch64-unknown-linux-gnu` |
+| macOS (Apple Silicon) | `aarch64-apple-darwin`      |
 
-The steps below install both binaries in `~/.local/bin`, which doesn't need
-root permissions. Keep `anvil` and `anvild` in the same directory, because
-the CLI starts the daemon from its own directory.
+The steps below install both binaries in `~/.local/bin`, which doesn't need root
+permissions. Keep `anvil` and `anvild` in the same directory, because the CLI
+starts the daemon from its own directory.
 
 ### 1. Download and install the binaries
 
-The commands in this step use bash or zsh syntax. If you use fish, run
-`bash` first and run them in that shell.
+The commands in this step use bash or zsh syntax. If you use fish, run `bash`
+first and run them in that shell.
 
 Set the release to install and pick the target for your machine:
 
@@ -101,8 +100,8 @@ Check whether the directory is on your `PATH` already:
 command -v anvil
 ```
 
-When this prints nothing, add the directory to the startup file of your
-shell and open a new terminal:
+When this prints nothing, add the directory to the startup file of your shell
+and open a new terminal:
 
 - **zsh**, the default shell on macOS:
 
@@ -144,8 +143,8 @@ xattr -d com.apple.quarantine ~/.local/bin/anvil ~/.local/bin/anvild
 
 ### Upgrading and uninstalling
 
-To upgrade, repeat step 1 with the new `VERSION`, then stop the running
-daemon so the CLI starts the new one on the next command:
+To upgrade, repeat step 1 with the new `VERSION`, then stop the running daemon
+so the CLI starts the new one on the next command:
 
 ```sh
 pkill -TERM -x anvild
@@ -160,9 +159,9 @@ rm ~/.local/bin/anvil ~/.local/bin/anvild
 
 ### Building from source
 
-With the [development toolchain](#development) installed, `cargo install`
-puts both binaries in `~/.cargo/bin`. Make sure that directory is on your
-`PATH`, as in step 2:
+With the [development toolchain](#development) installed, `cargo install` puts
+both binaries in `~/.cargo/bin`. Make sure that directory is on your `PATH`, as
+in step 2:
 
 ```sh
 cargo install-cli     # cargo install --locked --path crates/cli
@@ -172,20 +171,20 @@ cargo install-daemon  # cargo install --locked --path crates/daemon
 ## Usage
 
 Run the commands from your project directory. Anvil derives the sandbox from
-that directory. Pass a name from `anvil ls` to `start`, `stop` or `rm` to
-manage another sandbox from any directory.
+that directory. Pass a name from `anvil ls` to `start`, `stop` or `rm` to manage
+another sandbox from any directory.
 
-| Command                     | Description                                          |
-| --------------------------- | ---------------------------------------------------- |
-| `anvil start [name]`        | Start the sandbox for the current directory, or the existing sandbox with the name from `anvil ls`. |
-| `anvil run <cmd> [args...]` | Start the sandbox when needed and run a command in it with a terminal attached. |
-| `anvil stop [name]`         | Stop the sandbox, or the one with the name from `anvil ls`. Files on its disk are kept. |
-| `anvil ls [--format json]`  | List all sandboxes as a table, or as JSON with `--format json`. |
-| `anvil rm [name]`           | Remove the sandbox, or the one with the name from `anvil ls`. |
-| `anvil validate`            | Check the `.anvil.yml` file in the current directory. |
-| `anvil secret set <name> [<value>]` | Set a secret for all sandboxes. See [Secrets](#secrets). |
-| `anvil secret ls [--format json]` | List the secrets and their allowed hosts, without their values. |
-| `anvil secret rm <name>` | Remove a secret from all sandboxes. |
+| Command                             | Description                                                                                         |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `anvil start [name]`                | Start the sandbox for the current directory, or the existing sandbox with the name from `anvil ls`. |
+| `anvil run <cmd> [args...]`         | Start the sandbox when needed and run a command in it with a terminal attached.                     |
+| `anvil stop [name]`                 | Stop the sandbox, or the one with the name from `anvil ls`. Files on its disk are kept.             |
+| `anvil ls [--format json]`          | List all sandboxes as a table, or as JSON with `--format json`.                                     |
+| `anvil rm [name]`                   | Remove the sandbox, or the one with the name from `anvil ls`.                                       |
+| `anvil validate`                    | Check the `.anvil.yml` file in the current directory.                                               |
+| `anvil secret set <name> [<value>]` | Set a secret for all sandboxes. See [Secrets](#secrets).                                            |
+| `anvil secret ls [--format json]`   | List the secrets and their allowed hosts, without their values.                                     |
+| `anvil secret rm <name>`            | Remove a secret from all sandboxes.                                                                 |
 
 For example, to open a shell in the sandbox:
 
@@ -208,16 +207,16 @@ resources:
   memory: 4 GiB
 ```
 
-| Field              | Description                                                      | Default                                 |
-| ------------------ | ---------------------------------------------------------------- | --------------------------------------- |
-| `name`             | Name of the sandbox.                                             | Required                                |
-| `image`            | OCI image the sandbox runs.                                      | `ghcr.io/wmeints/anvil-base:v<version>` |
-| `init`             | Run the image's `/sbin/init` as PID 1. See below.                | `true`                                  |
-| `resources.cpu`    | Number of vCPUs.                                                 | `2`                                     |
+| Field              | Description                                                     | Default                                 |
+| ------------------ | --------------------------------------------------------------- | --------------------------------------- |
+| `name`             | Name of the sandbox.                                            | Required                                |
+| `image`            | OCI image the sandbox runs.                                     | `ghcr.io/wmeints/anvil-base:v<version>` |
+| `init`             | Run the image's `/sbin/init` as PID 1. See below.               | `true`                                  |
+| `resources.cpu`    | Number of vCPUs.                                                | `2`                                     |
 | `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`. | `4 GiB`                                 |
 
-Without `.anvil.yml`, Anvil names the sandbox after the full path of the
-working directory and uses the defaults.
+Without `.anvil.yml`, Anvil names the sandbox after the full path of the working
+directory and uses the defaults.
 
 The image, init and resources apply when the sandbox is created. To change them
 for an existing sandbox, run `anvil rm` and start it again.
@@ -233,27 +232,27 @@ anvil secret set MY_TOKEN --from-stdin --allow-host api.example.com
 ```
 
 In the sandbox, the environment variable holds a placeholder such as
-`$MSB_GH_TOKEN`. When a request to one of the secret's allowed hosts carries
-the placeholder in an HTTP header, the host replaces it with the real value.
+`$MSB_GH_TOKEN`. When a request to one of the secret's allowed hosts carries the
+placeholder in an HTTP header, the host replaces it with the real value.
 Requests that carry it to other hosts are blocked. Use `--from-stdin` rather
 than the value as an argument, so the value stays out of your shell history.
 
-These names have default allowed hosts. Other names need `--allow-host`,
-which you can repeat:
+These names have default allowed hosts. Other names need `--allow-host`, which
+you can repeat:
 
-| Name | Allowed hosts |
-| --- | --- |
-| `GH_TOKEN`, `GITHUB_TOKEN` | `github.com`, `api.github.com`, `uploads.github.com` |
-| `COPILOT_GITHUB_TOKEN` | `github.com`, `api.github.com`, `*.githubcopilot.com` |
-| `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` | `api.anthropic.com` |
+| Name                                           | Allowed hosts                                         |
+| ---------------------------------------------- | ----------------------------------------------------- |
+| `GH_TOKEN`, `GITHUB_TOKEN`                     | `github.com`, `api.github.com`, `uploads.github.com`  |
+| `COPILOT_GITHUB_TOKEN`                         | `github.com`, `api.github.com`, `*.githubcopilot.com` |
+| `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` | `api.anthropic.com`                                   |
 
-Secrets apply to all sandboxes. A running sandbox gets a new or changed
-secret after `anvil stop` and `anvil start`.
+Secrets apply to all sandboxes. A running sandbox gets a new or changed secret
+after `anvil stop` and `anvil start`.
 
-`anvil secret ls` shows the names and allowed hosts of the secrets, never
-their values. `anvil secret rm <name>` removes a secret, but a running
-sandbox keeps using it until it restarts. If a token leaked, revoke it where
-you created it as well.
+`anvil secret ls` shows the names and allowed hosts of the secrets, never their
+values. `anvil secret rm <name>` removes a secret, but a running sandbox keeps
+using it until it restarts. If a token leaked, revoke it where you created it as
+well.
 
 To let `git` push and pull over HTTPS with `GH_TOKEN`, configure a credential
 helper in the sandbox that hands git the placeholder as the password:
@@ -263,70 +262,68 @@ git config --global credential.https://github.com.helper \
   '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
 ```
 
-git sends the placeholder base64-encoded in a Basic `Authorization` header,
-and the host decodes it, replaces the placeholder and encodes it again. If
-`gh` is installed in the sandbox, `gh auth setup-git` configures an
-equivalent helper.
+git sends the placeholder base64-encoded in a Basic `Authorization` header, and
+the host decodes it, replaces the placeholder and encodes it again. If `gh` is
+installed in the sandbox, `gh auth setup-git` configures an equivalent helper.
 
 Keep in mind that:
 
 - Don't use SSH keys for git: the sandbox's SSH server doesn't support agent
   forwarding (`ssh -A`), and copying a private key into the sandbox puts the
   real key where the agent can read it. Use git over HTTPS instead.
-- The values are stored unencrypted in files only your user can read. If
-  your machine may be compromised, rotate the tokens where you created them
-  and set the new values.
+- The values are stored unencrypted in files only your user can read. If your
+  machine may be compromised, rotate the tokens where you created them and set
+  the new values.
 
 ### Connecting over SSH
 
 `anvild` generates SSH keys and an SSH config, and includes that config in
-`~/.ssh/config`. Each sandbox gets a host name after its project directory,
-such as `my-project.anvil`. When two projects share a directory name, the
-second gets `my-project-2.anvil`:
+`~/.ssh/config`. Each sandbox gets a host name after its project directory, such
+as `my-project.anvil`. When two projects share a directory name, the second gets
+`my-project-2.anvil`:
 
 ```sh
 ssh my-project.anvil
 ```
 
-Point your IDE's remote SSH support at the same host name to work in the
-sandbox from your editor.
+Point your IDE's remote SSH support at the same host name to work in the sandbox
+from your editor.
 
 ### Base image
 
-The [`Dockerfile`](Dockerfile) describes a base image for sandboxes with
-`git`, `curl`, `sudo`, [mise](https://mise.jdx.dev) and an unprivileged
-`agent` user. Releases publish it as `ghcr.io/wmeints/anvil-base:<tag>`, and
-sandboxes run the image that matches the installed anvil version unless the
-`image` field in `.anvil.yml` names another one, such as an image built on top
-of it.
+The [`Dockerfile`](Dockerfile) describes a base image for sandboxes with `git`,
+`curl`, `sudo`, [mise](https://mise.jdx.dev) and an unprivileged `agent` user.
+Releases publish it as `ghcr.io/wmeints/anvil-base:<tag>`, and sandboxes run the
+image that matches the installed anvil version unless the `image` field in
+`.anvil.yml` names another one, such as an image built on top of it.
 
 ### Bringing your own image
 
 Anvil runs everything in a sandbox as the `agent` user. A custom image must:
 
-- Have a user named `agent` with UID `1000` and GID `1000` and a home
-  directory, such as `/home/agent`. Images based on Ubuntu ship an `ubuntu`
-  user with UID 1000; remove it first.
+- Have a user named `agent` with UID `1000` and GID `1000` and a home directory,
+  such as `/home/agent`. Images based on Ubuntu ship an `ubuntu` user with UID
+  1000; remove it first.
 - Set `USER agent`. `anvil run` runs commands as the image's user, while SSH
   always logs in as `agent`.
 - Install `sudo` and allow `agent` to use it without a password, if agents
   should be able to install system packages.
-- Provide an executable `/sbin/init`, or set `init: false` in `.anvil.yml`.
-  With `init` on, which is the default, Anvil runs `/sbin/init` as PID 1, and
-  `anvil start` fails with a hint when the image has none. The base image's
-  init disables guest IPv6 and then runs [tini](https://github.com/krallin/tini)
-  to reap zombie processes. It works around a microsandbox bug that resets
-  IPv6 connections on hosts without IPv6 internet access
+- Provide an executable `/sbin/init`, or set `init: false` in `.anvil.yml`. With
+  `init` on, which is the default, Anvil runs `/sbin/init` as PID 1, and `anvil
+  start` fails with a hint when the image has none. The base image's init
+  disables guest IPv6 and then runs [tini](https://github.com/krallin/tini) to
+  reap zombie processes. It works around a microsandbox bug that resets IPv6
+  connections on hosts without IPv6 internet access
   ([microsandbox#1226](https://github.com/superradcompany/microsandbox/issues/1226)).
   Images built on the base image inherit it; with `init: false`, such hosts
   can't download from servers that have an IPv6 address.
 
-The workspace is mounted at `/workspaces/<project>`, and its files show up
-as owned by `agent`, whatever the UID of your user on the host is.
+The workspace is mounted at `/workspaces/<project>`, and its files show up as
+owned by `agent`, whatever the UID of your user on the host is.
 
 Sandboxes created by an older version of Anvil run `ubuntu:26.04`, which has no
-`agent` user, so SSH can no longer log in to them. Recreate them with
-`anvil rm` and `anvil start`, or connect with `ssh root@<name>.anvil`.
+`agent` user, so SSH can no longer log in to them. Recreate them with `anvil rm`
+and `anvil start`, or connect with `ssh root@<name>.anvil`.
 
 The simplest way to meet these requirements is to build on the base image:
 
@@ -365,8 +362,8 @@ mise install
 ```
 
 Building also needs `protoc` 3.15 or newer, which supports proto3 optional
-fields. The `protobuf-compiler` package on older distributions, such as
-Ubuntu 22.04, is too old; install a current release from the
+fields. The `protobuf-compiler` package on older distributions, such as Ubuntu
+22.04, is too old; install a current release from the
 [protobuf releases](https://github.com/protocolbuffers/protobuf/releases)
 instead.
 
@@ -379,9 +376,9 @@ instead.
 | `cargo fmt --all`         | Format the code.                              |
 
 The default sandbox image is the `anvil-base` image of the same release, so it
-doesn't exist for a version that hasn't been released yet. To run a
-development build, push an image built from the [`Dockerfile`](Dockerfile) to a
-local registry and set `image` in `.anvil.yml` to it:
+doesn't exist for a version that hasn't been released yet. To run a development
+build, push an image built from the [`Dockerfile`](Dockerfile) to a local
+registry and set `image` in `.anvil.yml` to it:
 
 ```sh
 docker run -d -p 127.0.0.1:5000:5000 --name registry registry:2
@@ -398,12 +395,12 @@ The local registry speaks plain HTTP, so allow it in
 
 The workspace contains four crates:
 
-| Crate          | Folder           | Purpose                                         |
-| -------------- | ---------------- | ----------------------------------------------- |
-| `anvil-cli`    | `crates/cli`     | The `anvil` CLI.                                |
-| `anvil-daemon` | `crates/daemon`  | The `anvild` daemon.                            |
-| `anvil-spec`   | `crates/spec`    | Parses and validates `.anvil.yml`.              |
-| `anvil-utils`  | `crates/utils`   | Shared paths for the socket, logs and SSH files. |
+| Crate          | Folder          | Purpose                                          |
+| -------------- | --------------- | ------------------------------------------------ |
+| `anvil-cli`    | `crates/cli`    | The `anvil` CLI.                                 |
+| `anvil-daemon` | `crates/daemon` | The `anvild` daemon.                             |
+| `anvil-spec`   | `crates/spec`   | Parses and validates `.anvil.yml`.               |
+| `anvil-utils`  | `crates/utils`  | Shared paths for the socket, logs and SSH files. |
 
 The gRPC contract lives in [`proto/daemon.v1.proto`](proto/daemon.v1.proto).
 
