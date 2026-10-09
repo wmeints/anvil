@@ -91,8 +91,9 @@ A change is done when:
   failing test, then fix.
 - Use the `implement-feature` skill for new behavior: agree on a spec first,
   then test, implement and document.
-- Ask the `reviewer` agent to review a change before committing it. The
-  `submit-pr` skill runs the checks and the reviewer before opening a PR.
+- Use the `submit-pr` skill to open a PR. It runs the checks and asks the
+  `reviewer` agent to review the branch, so don't run the reviewer before
+  each commit.
 
 ## Automated checks
 
@@ -100,13 +101,10 @@ These checks enforce the rules above, so don't try to bypass them:
 
 - `mise install` provides the Rust toolchain, `buf` and `lefthook`.
 - Claude Code hooks in `.claude/settings.json` run `cargo fmt` on Rust files
-  after each edit, block edits to `target/` and lock files, block skipping
-  git hooks, force-pushing and suppressing lints (`#[allow]`, `#[expect]`,
-  `clippy.toml`, `-A` flags) in `.claude/hooks/guard.py`, block changes to
-  `.claude/settings*.json` and `.claude/hooks/` so only the user can change
-  the guards, and run clippy and the unit tests before a turn
-  ends while Rust files have uncommitted changes. The guard is a speed bump
-  against mistakes, not a security boundary.
+  after each edit (`.claude/hooks/format-rust.sh`), and run the format check,
+  clippy, the unit tests and the `vm-tests` integration tests before a turn
+  ends while Rust, proto or `Cargo.toml` files have uncommitted changes
+  (`.claude/hooks/stop-checks.sh`).
 - Lefthook runs the format check, clippy and the unit tests before each
   commit and the `vm-tests` integration tests before each push.
 - GitHub Actions (`.github/workflows/ci.yaml`) runs the format check, build,
