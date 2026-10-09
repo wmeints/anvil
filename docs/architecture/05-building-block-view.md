@@ -213,14 +213,15 @@ C4Component
   for a sandbox without one). The daemon owns the entries whose `host` ends in
   `.anvil`: it adds missing ones, rewrites the ones whose value differs and
   removes stale and duplicate ones; other entries, keys, comments and trailing
-  commas stay as they are. The file is `zed/settings.json` under
-  `$XDG_CONFIG_HOME` (default `~/.config`) on Linux and under `~/.config` on
-  macOS, the same as Zed's own config directory; `ANVIL_EDITOR_CONFIG_ROOT`
-  overrides both. When the `zed` directory doesn't exist, Zed is skipped; a
-  missing `settings.json` is created. The file is left unchanged with a warning
-  when it can't be parsed, when `ssh_connections` isn't an array, appears more
-  than once or has an entry that isn't an object, or when it can't be read or
-  written.
+  commas stay as they are
+  ([ADR 0011](decisions/0011-own-the-anvil-entries-in-zeds-ssh-connections.md)).
+  The file is `zed/settings.json` under `$XDG_CONFIG_HOME` (default `~/.config`)
+  on Linux and under `~/.config` on macOS, the same as Zed's own config
+  directory; `ANVIL_EDITOR_CONFIG_ROOT` overrides both. When the `zed` directory
+  doesn't exist, Zed is skipped; a missing `settings.json` is created. The file
+  is left unchanged with a warning when it can't be parsed, when
+  `ssh_connections` isn't an array, appears more than once or has an entry that
+  isn't an object, or when it can't be read or written.
 
 ## Shared crates
 
