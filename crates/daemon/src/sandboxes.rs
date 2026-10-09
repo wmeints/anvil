@@ -337,11 +337,15 @@ async fn start_existing_sandbox(
         return Ok(());
     }
 
-    sb.start_detached()
-        .await
-        .map_err(|_| SandboxError::internal("failed to start sandbox"))?;
-
-    tracing::info!("started sandbox {}", request.name);
+    match sb.start_detached().await {
+        Ok(_) => tracing::info!("started sandbox {}", request.name),
+        // Another request started the sandbox after its status was read.
+        Err(MicrosandboxError::SandboxStillRunning(_)) => {}
+        Err(err) => {
+            tracing::warn!("failed to start sandbox {}: {err}", request.name);
+            return Err(SandboxError::internal("failed to start sandbox"));
+        }
+    }
 
     Ok(())
 }

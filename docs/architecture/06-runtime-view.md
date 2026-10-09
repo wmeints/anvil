@@ -126,7 +126,8 @@ sandbox is created. Like `anvil run`, the CLI first checks the status of the
 sandbox: it leaves a running sandbox alone, waits for a starting one (max
 120s), and fails for a stopping or paused one. The daemon's `StartSandbox` is
 idempotent as well: it returns without starting a sandbox that is already
-running or starting.
+running or starting, and treats a start that loses a race with another start
+as a success.
 
 ```mermaid
 sequenceDiagram
@@ -139,8 +140,12 @@ sequenceDiagram
     Dev->>CLI: anvil start
     CLI->>CLI: Resolve spec, fill in default image and resources
     CLI->>D: GetSandbox(name)
-    Note over CLI,D: Running: skip StartSandbox. Starting: poll until running.<br/>Stopping or Paused: error. Otherwise continue.
-    CLI->>D: StartSandbox(name, image, resources, workspace)
+    Note over CLI,D: Running: skip StartSandbox. Starting: poll until running.<br/>Stopping or Paused: error.
+    alt NOT_FOUND
+        CLI->>D: StartSandbox(name, image, resources, workspace)
+    else Stopped or Crashed
+        CLI->>D: StartSandbox(name, workspace)
+    end
     D->>MS: Sandbox::get(name)
 
     alt Sandbox exists
@@ -151,6 +156,7 @@ sequenceDiagram
         end
         opt Sandbox isn't running or starting
             D->>MS: start_detached()
+            Note over D,MS: SandboxStillRunning: another start won, return OK
         end
     else Sandbox doesn't exist
         D->>D: Validate workspace and resources

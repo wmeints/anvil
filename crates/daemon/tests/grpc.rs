@@ -369,6 +369,32 @@ async fn start_sandbox_is_a_no_op_for_running_sandbox() {
 }
 
 #[tokio::test]
+async fn concurrent_starts_of_stopped_sandbox_both_succeed() {
+    const NAME: &str = "anvil-it-start-race";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("start-race").await;
+    let mut client = daemon.client().await;
+
+    let request = start_request(NAME);
+    start_and_wait(&mut client, request.clone()).await;
+    stop_sandbox(&mut client, NAME).await;
+
+    let mut other_client = client.clone();
+    let (first, second) = tokio::join!(
+        client.start_sandbox(request.clone()),
+        other_client.start_sandbox(request),
+    );
+
+    first.expect("first start failed");
+    second.expect("second start failed");
+    wait_for_status(&mut client, NAME, SandboxStatus::Running).await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
 async fn start_sandbox_uses_requested_image_and_resources() {
     const NAME: &str = "anvil-it-resources";
     remove_sandbox(NAME).await;
