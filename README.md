@@ -300,6 +300,16 @@ Open in VS Code: code --folder-uri vscode-remote://ssh-remote+my-project.anvil/w
 Run the printed `code` command, or pick the host in Remote-SSH and open
 `/workspaces/my-project`.
 
+For Zed, `anvild` adds each sandbox with its workspace to the `ssh_connections`
+in Zed's settings, and `anvil start` prints a command that opens it:
+
+```sh
+Open in Zed: zed ssh://my-project.anvil/workspaces/my-project
+```
+
+Run the printed `zed` command, or pick the sandbox in Zed's Remote Projects
+dialog.
+
 ### Base image
 
 The [`Dockerfile`](Dockerfile) describes a base image for sandboxes with `git`,

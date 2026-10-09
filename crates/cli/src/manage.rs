@@ -41,8 +41,8 @@ pub async fn start_sandbox(
     Ok(())
 }
 
-/// Returns the commands that connect to the sandbox over SSH and open its workspace in VS Code,
-/// one per line. The VS Code command needs both the host name and the workspace path.
+/// Returns the commands that connect to the sandbox over SSH and open its workspace in VS Code
+/// and Zed, one per line. The editor commands need both the host name and the workspace path.
 fn connect_instructions(sandbox: &GetSandboxResponse) -> String {
     let (hostname, workspace_path) = (&sandbox.hostname, &sandbox.workspace_path);
 
@@ -51,7 +51,8 @@ fn connect_instructions(sandbox: &GetSandboxResponse) -> String {
         (false, true) => format!("Connect with: ssh {hostname}\n"),
         (false, false) => format!(
             "Connect with: ssh {hostname}\n\
-             Open in VS Code: code --folder-uri vscode-remote://ssh-remote+{hostname}{workspace_path}\n"
+             Open in VS Code: code --folder-uri vscode-remote://ssh-remote+{hostname}{workspace_path}\n\
+             Open in Zed: zed ssh://{hostname}{workspace_path}\n"
         ),
     }
 }
@@ -397,17 +398,18 @@ mod tests {
     }
 
     #[test]
-    fn connect_instructions_include_vs_code_command() {
+    fn connect_instructions_include_editor_commands() {
         assert_eq!(
             connect_instructions(&sandbox("project.anvil", "/workspaces/project")),
             "Connect with: ssh project.anvil\n\
              Open in VS Code: code --folder-uri \
-             vscode-remote://ssh-remote+project.anvil/workspaces/project\n"
+             vscode-remote://ssh-remote+project.anvil/workspaces/project\n\
+             Open in Zed: zed ssh://project.anvil/workspaces/project\n"
         );
     }
 
     #[test]
-    fn connect_instructions_skip_vs_code_without_workspace_path() {
+    fn connect_instructions_skip_editors_without_workspace_path() {
         assert_eq!(
             connect_instructions(&sandbox("project.anvil", "")),
             "Connect with: ssh project.anvil\n"

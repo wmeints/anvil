@@ -13,14 +13,14 @@ has their own `anvild` running, sandboxes in `~/.microsandbox`, and an anvil
 puts everything under a short `/tmp/anvil-smoke.XXXX` directory, because unix
 socket paths are limited to 108 bytes and the scratchpad path is too long:
 
-| Variable          | Isolates                                               |
-| ----------------- | ------------------------------------------------------ |
-| `XDG_RUNTIME_DIR` | the daemon socket, so the CLI starts its own `anvild`  |
-| `MSB_HOME`        | microsandbox's runtime, database, images and sandboxes |
-| `XDG_DATA_HOME`   | SSH keys, the generated SSH config and `secrets.yml`   |
-| `XDG_STATE_HOME`  | the daemon log                                         |
-| `XDG_CONFIG_HOME` | the VS Code-family settings anvild syncs on Linux      |
-| `HOME`            | the `Include` line anvild adds to `~/.ssh/config`      |
+| Variable          | Isolates                                                  |
+| ----------------- | --------------------------------------------------------- |
+| `XDG_RUNTIME_DIR` | the daemon socket, so the CLI starts its own `anvild`     |
+| `MSB_HOME`        | microsandbox's runtime, database, images and sandboxes    |
+| `XDG_DATA_HOME`   | SSH keys, the generated SSH config and `secrets.yml`      |
+| `XDG_STATE_HOME`  | the daemon log                                            |
+| `XDG_CONFIG_HOME` | the VS Code-family and Zed settings anvild syncs on Linux |
+| `HOME`            | the `Include` line anvild adds to `~/.ssh/config`         |
 
 ## Steps
 
