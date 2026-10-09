@@ -89,6 +89,10 @@ sequenceDiagram
 When the CLI disconnects before the process exits, the daemon kills the process.
 The sandbox keeps running after the session ends.
 
+The daemon runs every session with `TERM=xterm-256color`. Without it,
+microsandbox passes on the daemon's own `TERM`, such as `xterm-ghostty`, which
+the guest may have no terminfo entry for, so programs like `clear` fail.
+
 ## Stopping a sandbox
 
 `anvil stop` stops the sandbox for the working directory. The sandbox and its
@@ -297,6 +301,11 @@ sequenceDiagram
     D-->>CLI: End response stream
     CLI-->>SSHC: Exit 0
 ```
+
+The SSH client sends its own `TERM` when it requests a PTY, and microsandbox
+sets it in the guest, so the daemon can't choose it. The `anvil-base` image
+handles this in `/etc/bash.bashrc` instead: interactive shells switch to
+`xterm-256color` when the guest has no terminfo entry for the client's `TERM`.
 
 The client authenticates with the client key the daemon created, and checks the
 sandbox against the host key pinned for `*.anvil` in the `known_hosts` file. The

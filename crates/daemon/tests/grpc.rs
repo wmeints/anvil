@@ -706,6 +706,26 @@ async fn attach_runs_command_and_streams_output() {
 }
 
 #[tokio::test]
+async fn attach_uses_generic_terminal_type() {
+    const NAME: &str = "anvil-it-attach-term";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("attach-term").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+
+    // Without an explicit TERM, the session would get the daemon's own, which the guest may
+    // not have a terminfo entry for (for example `xterm-ghostty`).
+    let (output, code) = run_print_env(&mut client, NAME, "TERM").await;
+
+    assert_eq!(output.trim(), "xterm-256color");
+    assert_eq!(code, 0);
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
 async fn attach_applies_window_size_and_resize() {
     const NAME: &str = "anvil-it-attach-resize";
     remove_sandbox(NAME).await;
