@@ -3,7 +3,7 @@
 
 use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
-use microsandbox::sandbox::{HostPermissions, SandboxHandle, SandboxStatus};
+use microsandbox::sandbox::{HostPermissions, SandboxBuilder, SandboxHandle, SandboxStatus};
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::HashSet;
 use std::fmt;
@@ -280,8 +280,9 @@ impl SandboxManager {
         let _secrets_guard = self.secrets_lock.lock().await;
         let secrets = self.load_secrets()?;
 
+        let image = sandbox_image(request.image);
         let builder = Sandbox::builder(request.name)
-            .image(sandbox_image(request.image))
+            .image(image)
             .cpus(resources.cpus)
             .memory(resources.memory_mib)
             .label(ssh::HOSTNAME_LABEL, &hostname)
@@ -295,7 +296,7 @@ impl SandboxManager {
             .workdir(&guest_path)
             .detached(true);
 
-        secrets::add_to_builder(builder, &secrets)
+        secrets::add_to_builder(with_handoff_init(builder, image), &secrets)
             .create()
             .await
             .map_err(|err| {
@@ -490,6 +491,22 @@ fn sandbox_image(image: &str) -> &str {
     }
 }
 
+/// Returns the init that becomes PID 1 in a sandbox running the image, if any.
+///
+/// The default image ships `/sbin/init`, which disables guest IPv6 and hands PID 1 to tini.
+/// Other images may lack an init, and microsandbox refuses to boot those with one.
+fn handoff_init(image: &str) -> Option<&'static str> {
+    (image == anvil_spec::DEFAULT_IMAGE).then_some("/sbin/init")
+}
+
+/// Hands PID 1 to the image's init, if [`handoff_init`] returns one.
+fn with_handoff_init(builder: SandboxBuilder, image: &str) -> SandboxBuilder {
+    match handoff_init(image) {
+        Some(init) => builder.init(init),
+        None => builder,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,6 +529,12 @@ mod tests {
     fn sandbox_image_falls_back_to_default() {
         assert_eq!(sandbox_image("alpine:3.22"), "alpine:3.22");
         assert_eq!(sandbox_image(""), anvil_spec::DEFAULT_IMAGE);
+    }
+
+    #[test]
+    fn handoff_init_only_for_default_image() {
+        assert_eq!(handoff_init(anvil_spec::DEFAULT_IMAGE), Some("/sbin/init"));
+        assert_eq!(handoff_init("alpine:3.22"), None);
     }
 
     #[test]

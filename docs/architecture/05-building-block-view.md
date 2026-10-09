@@ -144,7 +144,8 @@ C4Component
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing
   about gRPC. It creates sandboxes from the requested image (or the default
   image) with the requested vCPUs and memory, mounts the workspace
-  read/write at `/workspaces/<leaf>` and adds the stored secrets. Invalid
+  read/write at `/workspaces/<leaf>` and adds the stored secrets. Sandboxes
+  that run the default image hand PID 1 to the image's `/sbin/init`. Invalid
   values are rejected before it creates anything. It starts, stops, gets,
   lists and removes sandboxes, gives each sandbox a unique SSH host name,
   regenerates the SSH config, and connects to a sandbox by name or host name.
@@ -201,7 +202,7 @@ and start it again.
 The `Dockerfile` in the repository root describes a base image for sandbox
 images. It builds on `ubuntu:26.04` and adds:
 
-- Base tooling - `ca-certificates`, `curl`, `git`, `gpg` and `sudo`.
+- Base tooling - `ca-certificates`, `curl`, `git`, `gpg`, `sudo` and `tini`.
 - `mise` - installed from the mise apt repository. It's activated in
   `.bashrc` for interactive shells, and its shims are on `PATH` for
   everything else.
@@ -209,6 +210,11 @@ images. It builds on `ubuntu:26.04` and adds:
   passwordless `sudo`. The image runs as this user and starts `/bin/bash` by
   default. The `ubuntu` user that the base image ships with UID 1000 is
   removed.
+- `/sbin/init` - a script that disables guest IPv6 with the settings in
+  `/etc/sysctl.d/99-disable-ipv6.conf` and then hands PID 1 to `tini`,
+  which reaps zombie processes. `anvild` runs it as PID 1 in sandboxes that
+  use the default image. See
+  [ADR 0007](decisions/0007-disable-guest-ipv6-in-the-base-image.md).
 
 The release workflow publishes the image as
 `ghcr.io/wmeints/anvil-base:<tag>` (see [Deployment view](07-deployment-view.md)),

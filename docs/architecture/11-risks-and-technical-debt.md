@@ -21,6 +21,13 @@
   after that version is released. Development builds need an `image` in
   `.anvil.yml`
   ([ADR 0005](decisions/0005-default-to-the-anvil-base-image-of-the-same-release.md)).
+- **No IPv6 in the default image:** `anvil-base` disables guest IPv6 to work
+  around a microsandbox bug that resets IPv6 connections on hosts without
+  IPv6 egress. Custom images keep guest IPv6 and the bug, so downloads from
+  hosts with IPv6 addresses fail there on such hosts. Remove the workaround
+  once microsandbox fixes
+  [issue 1226](https://github.com/superradcompany/microsandbox/issues/1226)
+  ([ADR 0007](decisions/0007-disable-guest-ipv6-in-the-base-image.md)).
 - **Workspace ownership is only tested with host UID 1000:** the integration
   tests check that the workspace shows up as `1000:1000` and that UID 1000
   can write to it, but they run on hosts where the user has UID 1000.
