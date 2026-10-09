@@ -85,8 +85,8 @@ A change is done when:
 1. `cargo fmt --all --check`, `dprint check`, `cargo clippy --workspace
    --all-targets --all-features -- -D warnings` and `cargo test --workspace`
    pass.
-2. `cargo test -p anvil-daemon --features vm-tests` passes when `crates/daemon`
-   changed.
+2. `cargo test -p anvil-daemon --features vm-tests` passes when `crates/daemon`,
+   `proto/`, a `Cargo.toml`, `Cargo.lock` or `.cargo/config.toml` changed.
 3. The [Architecture Docs](docs/architecture/README.md) describe the new
    behavior, and a decision record exists in `docs/architecture/decisions/` for
    new dependencies or architectural choices.
@@ -121,11 +121,13 @@ These checks enforce the rules above, so don't try to bypass them:
   can't break the tests. Don't point the tests at `~/.microsandbox`; if the
   isolated home is broken, remove `/tmp/anvil-msb` and run the tests again.
 - Claude Code hooks in `.claude/settings.json` run `cargo fmt` on Rust files
-  after each edit (`.claude/hooks/format-rust.sh`), run `dprint fmt` on Markdown
-  files after each edit (`.claude/hooks/format-markdown.sh`), and run the format
-  check, clippy, the unit tests and the `vm-tests` integration tests before a
-  turn ends while Rust, proto, `Cargo.toml` or `.cargo/config.toml` files have
-  uncommitted changes (`.claude/hooks/stop-checks.sh`).
+  after each edit (`.claude/hooks/format-rust.sh`) and `dprint fmt` on Markdown
+  files after each edit (`.claude/hooks/format-markdown.sh`). Before a turn ends
+  with uncommitted Rust, proto or Cargo changes, `.claude/hooks/stop-checks.sh`
+  runs the format check, clippy and the unit tests, plus the `vm-tests` when the
+  files from step 2 of the definition of done changed. A failure blocks the turn
+  once; when it still fails on the retry, the hook reports it to the user and
+  lets the turn end instead of looping.
 - Lefthook runs the format checks for Rust and Markdown, `actionlint` on the
   GitHub workflows, clippy and the unit tests before each commit.
 - GitHub Actions (`.github/workflows/ci.yaml`) runs the format checks,

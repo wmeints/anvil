@@ -78,6 +78,7 @@ Ask about anything the spec can't answer from the request or the code.
 ### 6. Verify
 
 - Run the format, lint, and test commands from `CLAUDE.md`, and the `vm-tests`
-  integration tests when `crates/daemon` changed. Fix any failures.
+  integration tests when the files from step 2 of the definition of done
+  changed. Fix any failures.
 - Report what you built, how it maps to the spec, and anything you left out.
 - When the work comes from an issue, end the commit message with `Closes #<N>`.
