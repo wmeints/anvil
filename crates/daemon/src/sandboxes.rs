@@ -1,9 +1,11 @@
 //! Sandbox management on top of microsandbox: the sandbox lifecycle, the secrets of
-//! sandboxes, SSH host names, the generated SSH config and the editors' Remote-SSH settings.
+//! sandboxes, SSH host names, the generated SSH config, the editors' Remote-SSH settings and
+//! Zed's remote projects.
 
 use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
 use crate::vscode;
+use crate::zed;
 use microsandbox::sandbox::{HostPermissions, SandboxBuilder, SandboxHandle, SandboxStatus};
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::HashSet;
@@ -459,23 +461,25 @@ async fn taken_hostnames() -> Result<HashSet<String>, SandboxError> {
         .collect())
 }
 
-/// Regenerates the SSH config and the editors' Remote-SSH settings from the current sandboxes,
-/// logging a warning when that fails. SSH access is a convenience, so a failure here doesn't
-/// fail the request.
+/// Regenerates the SSH config, the editors' Remote-SSH settings and Zed's remote projects from
+/// the current sandboxes, logging a warning when that fails. SSH access is a convenience, so a
+/// failure here doesn't fail the request.
 pub async fn sync_ssh_config() {
-    let hostnames: Vec<String> = match list_all_sandboxes().await {
-        Ok(sandboxes) => sandboxes.iter().filter_map(ssh::hostname_of).collect(),
+    let sandboxes = match list_all_sandboxes().await {
+        Ok(sandboxes) => sandboxes,
         Err(err) => {
             tracing::warn!("failed to update SSH config: {err}");
             return;
         }
     };
+    let hostnames: Vec<String> = sandboxes.iter().filter_map(ssh::hostname_of).collect();
 
     if let Err(err) = ssh::sync_config(&hostnames) {
         tracing::warn!("failed to update SSH config: {err:#}");
     }
 
     sync_editor_settings(&hostnames);
+    sync_zed_settings(&sandboxes);
 }
 
 /// Syncs the host names into the editors' Remote-SSH settings, logging a warning per editor
@@ -492,6 +496,32 @@ fn sync_editor_settings(hostnames: &[String]) {
             anyhow::Error::from(err)
         );
     }
+}
+
+/// Syncs the sandboxes with a host name into Zed's remote projects, logging a warning when
+/// that fails.
+fn sync_zed_settings(sandboxes: &[SandboxHandle]) {
+    let Some(config_root) = zed::config_root() else {
+        tracing::warn!("failed to update Zed settings: HOME is not set");
+        return;
+    };
+    let projects: Vec<zed::RemoteProject> = sandboxes.iter().filter_map(remote_project).collect();
+
+    if let Err(err) = zed::sync_settings(&config_root, &projects) {
+        tracing::warn!(
+            "failed to update Zed settings: {:#}",
+            anyhow::Error::from(err)
+        );
+    }
+}
+
+/// Returns the sandbox as a Zed remote project, or `None` when it has no host name.
+fn remote_project(handle: &SandboxHandle) -> Option<zed::RemoteProject> {
+    Some(zed::RemoteProject {
+        host: ssh::hostname_of(handle)?,
+        nickname: handle.name().to_string(),
+        workspace_path: workspace_path_of(handle),
+    })
 }
 
 /// Returns the guest path for a workspace: `/workspaces/<leaf-name>` of the absolute host path.

@@ -100,6 +100,7 @@ C4Component
         Component(tunnel, "tunnel", "Rust", "SSH tunnels")
         Component(ssh, "ssh", "russh", "SSH access")
         Component(vscode, "vscode", "jsonc-parser", "Editor settings")
+        Component(zed, "zed", "jsonc-parser", "Zed remote projects")
         Component(runtime, "runtime", "Rust", "Runtime installation")
         Component(secrets, "secrets", "serde_yaml", "Secrets")
     }
@@ -107,6 +108,7 @@ C4Component
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
     System_Ext(sshconfig, "~/.ssh/config", "OpenSSH config")
     System_Ext(editors, "settings.json", "VS Code-family user settings")
+    System_Ext(zedsettings, "zed/settings.json", "Zed user settings")
 
     Rel(main, runtime, "Ensures runtime")
     Rel(main, ssh, "Ensures keys")
@@ -120,6 +122,7 @@ C4Component
     Rel(sandboxes, secrets, "Loads, stores and applies secrets")
     Rel(sandboxes, ssh, "Host names, SSH config")
     Rel(sandboxes, vscode, "Syncs Remote-SSH platforms")
+    Rel(sandboxes, zed, "Syncs remote projects")
     Rel(sandboxes, microsandbox, "Manages sandboxes")
     Rel(session, microsandbox, "Runs processes with a TTY")
     Rel(tunnel, ssh, "Finds SSH keys")
@@ -127,6 +130,7 @@ C4Component
     Rel(ssh, utils, "Finds SSH directory")
     Rel(ssh, sshconfig, "Adds Include")
     Rel(vscode, editors, "Maps hosts to linux")
+    Rel(zed, zedsettings, "Writes ssh_connections")
     Rel(runtime, microsandbox, "Installs msb and libkrunfw")
 ```
 
@@ -150,18 +154,18 @@ C4Component
   it removes the half-created sandbox and returns `FAILED_PRECONDITION` with a
   hint to set `init: false`. Invalid values are rejected before it creates
   anything. It starts, stops, gets, lists and removes sandboxes, gives each
-  sandbox a unique SSH host name, regenerates the SSH config and the editor
-  settings after every start and remove and when the daemon starts, and connects
-  to a sandbox by name or host name. `GetSandbox` returns the sandbox's working
-  directory, which is the workspace mount path, as `workspace_path`; it's empty
-  for a sandbox without one. A failed sync only logs a warning. `SetSecret`
-  stores a secret and adds it to the existing sandboxes anvil created.
-  `ListSecrets` returns the names and allowed hosts, sorted by name, never the
-  values. `RemoveSecret` removes a secret from the existing sandboxes anvil
-  created and then from the store, keeps it in the store when a sandbox fails so
-  the removal can be retried, and returns `NOT_FOUND` for an unknown name. A
-  lock around the secret store makes sure a sandbox that is being created can't
-  miss a secret that is being set.
+  sandbox a unique SSH host name, regenerates the SSH config, the editor
+  settings and Zed's remote projects after every start and remove and when the
+  daemon starts, and connects to a sandbox by name or host name. `GetSandbox`
+  returns the sandbox's working directory, which is the workspace mount path, as
+  `workspace_path`; it's empty for a sandbox without one. A failed sync only
+  logs a warning. `SetSecret` stores a secret and adds it to the existing
+  sandboxes anvil created. `ListSecrets` returns the names and allowed hosts,
+  sorted by name, never the values. `RemoveSecret` removes a secret from the
+  existing sandboxes anvil created and then from the store, keeps it in the
+  store when a sandbox fails so the removal can be retried, and returns
+  `NOT_FOUND` for an unknown name. A lock around the secret store makes sure a
+  sandbox that is being created can't miss a secret that is being set.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and
@@ -200,7 +204,24 @@ C4Component
   `remote.SSH.remotePlatform` isn't an object or appears more than once, or when
   it's a symlink to a missing file. Writes go to a temporary file that is
   renamed onto the file a symlink points to, so a symlinked settings file stays
-  a symlink.
+  a symlink. The reading, writing and parse options live in `settings_file`,
+  which `zed` shares.
+- `zed` - Keeps the `ssh_connections` array in Zed's user `settings.json` in
+  sync with the sandboxes, so they show up in Zed's Remote Projects. Each
+  sandbox with a host name gets an entry with `host`, the sandbox name as
+  `nickname`, and one project whose `paths` hold the workspace path (no projects
+  for a sandbox without one). The daemon owns the entries whose `host` ends in
+  `.anvil`: it adds missing ones, rewrites the ones whose value differs and
+  removes stale and duplicate ones; other entries, keys, comments and trailing
+  commas stay as they are
+  ([ADR 0011](decisions/0011-own-the-anvil-entries-in-zeds-ssh-connections.md)).
+  The file is `zed/settings.json` under `$XDG_CONFIG_HOME` (default `~/.config`)
+  on Linux and under `~/.config` on macOS, the same as Zed's own config
+  directory; `ANVIL_EDITOR_CONFIG_ROOT` overrides both. When the `zed` directory
+  doesn't exist, Zed is skipped; a missing `settings.json` is created. The file
+  is left unchanged with a warning when it can't be parsed, when
+  `ssh_connections` isn't an array, appears more than once or has an entry that
+  isn't an object, or when it can't be read or written.
 
 ## Shared crates
 

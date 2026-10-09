@@ -5,12 +5,10 @@
 //! host name in the user settings of every installed VS Code-family editor, and leaves the rest
 //! of the file, comments and formatting included, as the user wrote it.
 
-use jsonc_parser::ParseOptions;
+use crate::settings_file::{self, PARSE_OPTIONS};
 use jsonc_parser::cst::{CstObject, CstObjectProp, CstRootNode};
-use std::fs;
-use std::io::{self, ErrorKind};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
 use thiserror::Error;
 
 /// Errors of syncing one editor's settings file. The other editors are still synced.
@@ -63,44 +61,16 @@ const SETTINGS_FILE: &str = "settings.json";
 /// Configuration directories of the supported editors, relative to the config root.
 const EDITORS: [&str; 4] = ["Code", "Code - Insiders", "Cursor", "VSCodium"];
 
-/// Environment variable that overrides the editors' config root, so the `vm-tests` can keep the
-/// daemon they run away from the developer's own editor settings on every platform.
-const CONFIG_ROOT_ENV: &str = "ANVIL_EDITOR_CONFIG_ROOT";
-
-/// Parse options that accept what VS Code accepts in `settings.json`: JSON with comments and
-/// trailing commas. Anything else is left unchanged rather than rewritten.
-const PARSE_OPTIONS: ParseOptions = ParseOptions {
-    allow_comments: true,
-    allow_trailing_commas: true,
-    allow_loose_object_property_names: false,
-    allow_missing_commas: false,
-    allow_single_quoted_strings: false,
-    allow_hexadecimal_numbers: false,
-    allow_unary_plus_numbers: false,
-    allow_bare_decimal_point_numbers: false,
-    allow_non_finite_numbers: false,
-    allow_extended_string_escapes: false,
-};
-
-/// Serializes syncs, so concurrent requests can't interleave their reads and writes of a file.
-static SYNC_LOCK: Mutex<()> = Mutex::new(());
-
 /// Returns the directory the editors keep their configuration in: `$ANVIL_EDITOR_CONFIG_ROOT`
 /// when it's set, or the platform's config directory otherwise.
 pub fn config_root() -> Option<PathBuf> {
-    std::env::var_os(CONFIG_ROOT_ENV)
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
-        .or_else(platform_config_root)
+    settings_file::config_root_or(platform_config_root)
 }
 
 /// Returns `$XDG_CONFIG_HOME`, or `~/.config` when it isn't set.
 #[cfg(not(target_os = "macos"))]
 fn platform_config_root() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|dir| !dir.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    settings_file::xdg_config_home()
 }
 
 /// Returns `~/Library/Application Support`.
@@ -113,8 +83,7 @@ fn platform_config_root() -> Option<PathBuf> {
 /// `config_root`, and removes the stale `*.anvil` hosts. Returns the errors of the editors
 /// whose settings couldn't be synced; their files are left unchanged.
 pub fn sync_settings(config_root: &Path, hostnames: &[String]) -> Vec<SettingsError> {
-    // A sync that panicked can't leave a half-written file behind, so a poisoned lock is fine.
-    let _guard = SYNC_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let _guard = settings_file::lock();
 
     EDITORS
         .iter()
@@ -126,24 +95,19 @@ pub fn sync_settings(config_root: &Path, hostnames: &[String]) -> Vec<SettingsEr
 
 /// Syncs the host names into one settings file, writing it only when it changes.
 fn sync_file(path: &Path, hostnames: &[String]) -> Result<(), SettingsError> {
-    let text = read_settings(path)?;
+    let text = settings_file::read(path).map_err(|source| SettingsError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
 
     match update_platforms(path, &text, hostnames)? {
-        Some(updated) => write_settings(path, &updated),
+        Some(updated) => {
+            settings_file::write(path, &updated).map_err(|source| SettingsError::Write {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
         None => Ok(()),
-    }
-}
-
-/// Reads a settings file, treating a missing file as empty. A symlink to a missing file is an
-/// error, so the sync doesn't replace the link with a regular file.
-fn read_settings(path: &Path) -> Result<String, SettingsError> {
-    match fs::read_to_string(path) {
-        Ok(text) => Ok(text),
-        Err(err) if err.kind() == ErrorKind::NotFound && !path.is_symlink() => Ok(String::new()),
-        Err(source) => Err(SettingsError::Read {
-            path: path.to_path_buf(),
-            source,
-        }),
     }
 }
 
@@ -186,7 +150,7 @@ fn platforms_object(
         })?,
     };
 
-    if platform_key_count(&settings) > 1 {
+    if settings_file::key_count(&settings, PLATFORM_KEY) > 1 {
         return Err(SettingsError::DuplicatePlatformKey {
             path: path.to_path_buf(),
         });
@@ -203,15 +167,6 @@ fn platforms_object(
                 })
         }
     }
-}
-
-/// Returns how often `remote.SSH.remotePlatform` appears in the settings.
-fn platform_key_count(settings: &CstObject) -> usize {
-    settings
-        .properties()
-        .iter()
-        .filter(|prop| prop.decoded_name().as_deref() == Some(PLATFORM_KEY))
-        .count()
 }
 
 /// Removes the anvil hosts that aren't in `hostnames`, keeping every other host.
@@ -250,45 +205,10 @@ fn maps_to_linux(prop: &CstObjectProp) -> bool {
         .is_some_and(|value| value == PLATFORM)
 }
 
-/// Writes a temporary file next to the settings file and renames it, so the editor never reads
-/// a half-written file. A symlinked settings file (dotfiles) stays a symlink, because the
-/// rename replaces the file it points to.
-fn write_settings(path: &Path, content: &str) -> Result<(), SettingsError> {
-    let write_error = |source| SettingsError::Write {
-        path: path.to_path_buf(),
-        source,
-    };
-
-    let target = match fs::canonicalize(path) {
-        Ok(target) => target,
-        Err(err) if err.kind() == ErrorKind::NotFound => path.to_path_buf(),
-        Err(err) => return Err(write_error(err)),
-    };
-    let temp = target.with_file_name(format!(".{SETTINGS_FILE}.anvil-tmp"));
-
-    let result = fs::write(&temp, content)
-        .and_then(|()| keep_permissions(&target, &temp))
-        .and_then(|()| fs::rename(&temp, &target));
-
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-
-    result.map_err(write_error)
-}
-
-/// Gives `temp` the permissions of `target`, when `target` exists.
-fn keep_permissions(target: &Path, temp: &Path) -> io::Result<()> {
-    match fs::metadata(target) {
-        Ok(metadata) => fs::set_permissions(temp, metadata.permissions()),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::TempDir;
 
     fn hosts(names: &[&str]) -> Vec<String> {

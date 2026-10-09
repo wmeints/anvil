@@ -16,6 +16,8 @@ pub mod sandboxes;
 pub mod secrets;
 pub mod server;
 mod session;
+mod settings_file;
 pub mod ssh;
 mod tunnel;
 pub mod vscode;
+pub mod zed;

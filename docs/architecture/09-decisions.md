@@ -10,3 +10,4 @@
 - [ADR 0008 - Format Markdown with dprint](decisions/0008-format-markdown-with-dprint.md)
 - [ADR 0009 - Lint GitHub workflows with actionlint](decisions/0009-lint-github-workflows-with-actionlint.md)
 - [ADR 0010 - Edit VS Code settings with jsonc-parser](decisions/0010-edit-vs-code-settings-with-jsonc-parser.md)
+- [ADR 0011 - Own the anvil entries in Zed's ssh_connections](decisions/0011-own-the-anvil-entries-in-zeds-ssh-connections.md)
