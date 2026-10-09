@@ -75,6 +75,6 @@ jobs:
         with:
           key: vm-tests
 
-      # The microsandbox build script installs the msb runtime into ~/.microsandbox.
+      # The microsandbox build script installs the msb runtime into MSB_HOME (/tmp/anvil-msb, see .cargo/config.toml).
       - name: Integration tests
         run: cargo test -p anvil-daemon --features vm-tests

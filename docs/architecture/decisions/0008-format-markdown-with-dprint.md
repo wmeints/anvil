@@ -18,8 +18,9 @@ formatter, the same way `rustfmt` decides the layout of the Rust code.
 blocks may be wider than 80 columns. Links that don't fit stay on one line.
 
 `mise.toml` pins `dprint` and `dprint.json` pins the plugin version. The Claude
-Code hook formats a Markdown file after each edit, lefthook checks staged
-Markdown files before a commit, and CI checks them on every pull request.
+Code hook formats a Markdown file after each edit, lefthook checks every
+Markdown file before a commit that touches Markdown, and CI checks them on every
+pull request.
 
 We chose `dprint` over Prettier because it's a single binary that `mise`
 installs, so contributors and CI don't need Node.js.
