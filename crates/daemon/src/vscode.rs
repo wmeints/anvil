@@ -16,7 +16,7 @@ use thiserror::Error;
 /// Errors of syncing one editor's settings file. The other editors are still synced.
 #[derive(Error, Debug)]
 pub enum SettingsError {
-    /// The settings file couldn't be read.
+    /// The settings file couldn't be read, or is a symlink to a file that doesn't exist.
     #[error("failed to read {}", path.display())]
     Read {
         /// The settings file.
@@ -38,6 +38,13 @@ pub enum SettingsError {
         /// The settings file.
         path: PathBuf,
     },
+    /// `remote.SSH.remotePlatform` appears more than once. VS Code reads the last one, so editing
+    /// any of them could leave the one it reads unchanged.
+    #[error("{PLATFORM_KEY} appears more than once in {}", path.display())]
+    DuplicatePlatformKey {
+        /// The settings file.
+        path: PathBuf,
+    },
     /// The settings file couldn't be written.
     #[error("failed to write {}", path.display())]
     Write {
@@ -56,23 +63,49 @@ const SETTINGS_FILE: &str = "settings.json";
 /// Configuration directories of the supported editors, relative to the config root.
 const EDITORS: [&str; 4] = ["Code", "Code - Insiders", "Cursor", "VSCodium"];
 
+/// Environment variable that overrides the editors' config root, so the `vm-tests` can keep the
+/// daemon they run away from the developer's own editor settings on every platform.
+const CONFIG_ROOT_ENV: &str = "ANVIL_EDITOR_CONFIG_ROOT";
+
+/// Parse options that accept what VS Code accepts in `settings.json`: JSON with comments and
+/// trailing commas. Anything else is left unchanged rather than rewritten.
+const PARSE_OPTIONS: ParseOptions = ParseOptions {
+    allow_comments: true,
+    allow_trailing_commas: true,
+    allow_loose_object_property_names: false,
+    allow_missing_commas: false,
+    allow_single_quoted_strings: false,
+    allow_hexadecimal_numbers: false,
+    allow_unary_plus_numbers: false,
+    allow_bare_decimal_point_numbers: false,
+    allow_non_finite_numbers: false,
+    allow_extended_string_escapes: false,
+};
+
 /// Serializes syncs, so concurrent requests can't interleave their reads and writes of a file.
 static SYNC_LOCK: Mutex<()> = Mutex::new(());
 
-/// Returns the directory the editors keep their configuration in: `$XDG_CONFIG_HOME`, or
-/// `~/.config` when it isn't set.
-#[cfg(not(target_os = "macos"))]
+/// Returns the directory the editors keep their configuration in: `$ANVIL_EDITOR_CONFIG_ROOT`
+/// when it's set, or the platform's config directory otherwise.
 pub fn config_root() -> Option<PathBuf> {
+    std::env::var_os(CONFIG_ROOT_ENV)
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(platform_config_root)
+}
+
+/// Returns `$XDG_CONFIG_HOME`, or `~/.config` when it isn't set.
+#[cfg(not(target_os = "macos"))]
+fn platform_config_root() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
 }
 
-/// Returns the directory the editors keep their configuration in:
-/// `~/Library/Application Support`.
+/// Returns `~/Library/Application Support`.
 #[cfg(target_os = "macos")]
-pub fn config_root() -> Option<PathBuf> {
+fn platform_config_root() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support"))
 }
 
@@ -101,11 +134,12 @@ fn sync_file(path: &Path, hostnames: &[String]) -> Result<(), SettingsError> {
     }
 }
 
-/// Reads a settings file, treating a missing file as empty.
+/// Reads a settings file, treating a missing file as empty. A symlink to a missing file is an
+/// error, so the sync doesn't replace the link with a regular file.
 fn read_settings(path: &Path) -> Result<String, SettingsError> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(text),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(String::new()),
+        Err(err) if err.kind() == ErrorKind::NotFound && !path.is_symlink() => Ok(String::new()),
         Err(source) => Err(SettingsError::Read {
             path: path.to_path_buf(),
             source,
@@ -120,11 +154,10 @@ fn update_platforms(
     text: &str,
     hostnames: &[String],
 ) -> Result<Option<String>, SettingsError> {
-    let root =
-        CstRootNode::parse(text, &ParseOptions::default()).map_err(|err| SettingsError::Parse {
-            path: path.to_path_buf(),
-            message: err.to_string(),
-        })?;
+    let root = CstRootNode::parse(text, &PARSE_OPTIONS).map_err(|err| SettingsError::Parse {
+        path: path.to_path_buf(),
+        message: err.to_string(),
+    })?;
 
     let Some(platforms) = platforms_object(&root, path, hostnames)? else {
         return Ok(None);
@@ -153,6 +186,12 @@ fn platforms_object(
         })?,
     };
 
+    if platform_key_count(&settings) > 1 {
+        return Err(SettingsError::DuplicatePlatformKey {
+            path: path.to_path_buf(),
+        });
+    }
+
     match settings.get(PLATFORM_KEY) {
         None if hostnames.is_empty() => Ok(None),
         None => Ok(Some(settings.object_value_or_set(PLATFORM_KEY))),
@@ -164,6 +203,15 @@ fn platforms_object(
                 })
         }
     }
+}
+
+/// Returns how often `remote.SSH.remotePlatform` appears in the settings.
+fn platform_key_count(settings: &CstObject) -> usize {
+    settings
+        .properties()
+        .iter()
+        .filter(|prop| prop.decoded_name().as_deref() == Some(PLATFORM_KEY))
+        .count()
 }
 
 /// Removes the anvil hosts that aren't in `hostnames`, keeping every other host.
@@ -398,6 +446,62 @@ mod tests {
                 .unwrap()
                 .contains("\"project.anvil\": \"linux\"")
         );
+    }
+
+    #[test]
+    fn leaves_file_vs_code_rejects_unchanged() {
+        let (root, settings) = vscode_root();
+        for invalid in [
+            "{ \"a\": 1 \"b\": 2 }\n",
+            "{ 'a': 1 }\n",
+            "{ a: 1 }\n",
+            "{ \"a\": 0xFF }\n",
+        ] {
+            fs::write(&settings, invalid).unwrap();
+
+            let errors = sync_settings(root.path(), &hosts(&["project.anvil"]));
+
+            assert!(
+                matches!(errors.as_slice(), [SettingsError::Parse { .. }]),
+                "{invalid}: {errors:?}"
+            );
+            assert_eq!(fs::read_to_string(&settings).unwrap(), invalid);
+        }
+    }
+
+    #[test]
+    fn leaves_file_with_duplicate_platform_key_unchanged() {
+        let (root, settings) = vscode_root();
+        let content = "{\n  \"remote.SSH.remotePlatform\": {},\n  \
+                       \"remote.SSH.remotePlatform\": {}\n}\n";
+        fs::write(&settings, content).unwrap();
+
+        let errors = sync_settings(root.path(), &hosts(&["project.anvil"]));
+
+        assert!(
+            matches!(
+                errors.as_slice(),
+                [SettingsError::DuplicatePlatformKey { .. }]
+            ),
+            "{errors:?}"
+        );
+        assert_eq!(fs::read_to_string(&settings).unwrap(), content);
+    }
+
+    #[test]
+    fn leaves_dangling_settings_symlink_alone() {
+        let (root, settings) = vscode_root();
+        let target = root.path().join("dotfiles/settings.json");
+        std::os::unix::fs::symlink(&target, &settings).unwrap();
+
+        let errors = sync_settings(root.path(), &hosts(&["project.anvil"]));
+
+        assert!(
+            matches!(errors.as_slice(), [SettingsError::Read { .. }]),
+            "{errors:?}"
+        );
+        assert!(fs::symlink_metadata(&settings).unwrap().is_symlink());
+        assert!(!target.exists());
     }
 
     #[test]

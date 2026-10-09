@@ -192,10 +192,13 @@ C4Component
   trailing commas stay as they are
   ([ADR 0010](decisions/0010-edit-vs-code-settings-with-jsonc-parser.md)). The
   settings live under `$XDG_CONFIG_HOME` (default `~/.config`) on Linux and
-  `~/Library/Application Support` on macOS. An editor whose `User` directory
-  doesn't exist is skipped, and a missing `settings.json` is created. A file
-  that isn't valid JSONC, or whose `remote.SSH.remotePlatform` isn't an object,
-  is left unchanged with a warning. Writes go to a temporary file that is
+  `~/Library/Application Support` on macOS; `ANVIL_EDITOR_CONFIG_ROOT` overrides
+  both, which the `vm-tests` use to stay away from the developer's own settings.
+  An editor whose `User` directory doesn't exist is skipped, and a missing
+  `settings.json` is created. A file is left unchanged with a warning when it
+  isn't JSON with comments and trailing commas (what VS Code accepts), when
+  `remote.SSH.remotePlatform` isn't an object or appears more than once, or when
+  it's a symlink to a missing file. Writes go to a temporary file that is
   renamed onto the file a symlink points to, so a symlinked settings file stays
   a symlink.
 
