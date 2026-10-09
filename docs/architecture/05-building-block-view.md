@@ -99,12 +99,14 @@ C4Component
         Component(session, "session", "Rust", "Attach sessions")
         Component(tunnel, "tunnel", "Rust", "SSH tunnels")
         Component(ssh, "ssh", "russh", "SSH access")
+        Component(vscode, "vscode", "jsonc-parser", "Editor settings")
         Component(runtime, "runtime", "Rust", "Runtime installation")
         Component(secrets, "secrets", "serde_yaml", "Secrets")
     }
     Component_Ext(utils, "anvil-utils", "Rust", "File locations")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
     System_Ext(sshconfig, "~/.ssh/config", "OpenSSH config")
+    System_Ext(editors, "settings.json", "VS Code-family user settings")
 
     Rel(main, runtime, "Ensures runtime")
     Rel(main, ssh, "Ensures keys")
@@ -117,12 +119,14 @@ C4Component
     Rel(server, utils, "Finds socket")
     Rel(sandboxes, secrets, "Loads, stores and applies secrets")
     Rel(sandboxes, ssh, "Host names, SSH config")
+    Rel(sandboxes, vscode, "Syncs Remote-SSH platforms")
     Rel(sandboxes, microsandbox, "Manages sandboxes")
     Rel(session, microsandbox, "Runs processes with a TTY")
     Rel(tunnel, ssh, "Finds SSH keys")
     Rel(tunnel, microsandbox, "Serves SSH")
     Rel(ssh, utils, "Finds SSH directory")
     Rel(ssh, sshconfig, "Adds Include")
+    Rel(vscode, editors, "Maps hosts to linux")
     Rel(runtime, microsandbox, "Installs msb and libkrunfw")
 ```
 
@@ -146,14 +150,18 @@ C4Component
   it removes the half-created sandbox and returns `FAILED_PRECONDITION` with a
   hint to set `init: false`. Invalid values are rejected before it creates
   anything. It starts, stops, gets, lists and removes sandboxes, gives each
-  sandbox a unique SSH host name, regenerates the SSH config, and connects to a
-  sandbox by name or host name. `SetSecret` stores a secret and adds it to the
-  existing sandboxes anvil created. `ListSecrets` returns the names and allowed
-  hosts, sorted by name, never the values. `RemoveSecret` removes a secret from
-  the existing sandboxes anvil created and then from the store, keeps it in the
-  store when a sandbox fails so the removal can be retried, and returns
-  `NOT_FOUND` for an unknown name. A lock around the secret store makes sure a
-  sandbox that is being created can't miss a secret that is being set.
+  sandbox a unique SSH host name, regenerates the SSH config and the editor
+  settings after every start and remove and when the daemon starts, and connects
+  to a sandbox by name or host name. `GetSandbox` returns the sandbox's working
+  directory, which is the workspace mount path, as `workspace_path`; it's empty
+  for a sandbox without one. A failed sync only logs a warning. `SetSecret`
+  stores a secret and adds it to the existing sandboxes anvil created.
+  `ListSecrets` returns the names and allowed hosts, sorted by name, never the
+  values. `RemoveSecret` removes a secret from the existing sandboxes anvil
+  created and then from the store, keeps it in the store when a sandbox fails so
+  the removal can be retried, and returns `NOT_FOUND` for an unknown name. A
+  lock around the secret store makes sure a sandbox that is being created can't
+  miss a secret that is being set.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and
@@ -177,6 +185,22 @@ C4Component
   `*.anvil` in a `known_hosts` file, picks a unique `<leaf>.anvil` host name per
   sandbox (stored in the `anvil.hostname` label), and writes the generated SSH
   config that `~/.ssh/config` includes.
+- `vscode` - Keeps `remote.SSH.remotePlatform` in the user `settings.json` of VS
+  Code, VS Code Insiders, Cursor and VSCodium in sync with the sandbox host
+  names, so Remote-SSH doesn't ask for the platform. Every host maps to
+  `"linux"` and stale `*.anvil` keys are removed; other keys, comments and
+  trailing commas stay as they are
+  ([ADR 0010](decisions/0010-edit-vs-code-settings-with-jsonc-parser.md)). The
+  settings live under `$XDG_CONFIG_HOME` (default `~/.config`) on Linux and
+  `~/Library/Application Support` on macOS; `ANVIL_EDITOR_CONFIG_ROOT` overrides
+  both, which the `vm-tests` use to stay away from the developer's own settings.
+  An editor whose `User` directory doesn't exist is skipped, and a missing
+  `settings.json` is created. A file is left unchanged with a warning when it
+  isn't JSON with comments and trailing commas (what VS Code accepts), when
+  `remote.SSH.remotePlatform` isn't an object or appears more than once, or when
+  it's a symlink to a missing file. Writes go to a temporary file that is
+  renamed onto the file a symlink points to, so a symlinked settings file stays
+  a symlink.
 
 ## Shared crates
 

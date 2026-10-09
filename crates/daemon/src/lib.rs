@@ -18,3 +18,4 @@ pub mod server;
 mod session;
 pub mod ssh;
 mod tunnel;
+pub mod vscode;

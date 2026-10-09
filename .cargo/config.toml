@@ -20,3 +20,6 @@ install-daemon = "install --locked --path crates/daemon"
 # path is short because unix socket paths can't exceed 108 bytes. An `MSB_HOME`
 # set in the environment takes precedence.
 MSB_HOME = "/tmp/anvil-msb"
+# Keep the VS Code-family editor settings that the in-process daemon of the
+# `vm-tests` syncs out of the user's own, on Linux and macOS.
+ANVIL_EDITOR_CONFIG_ROOT = { value = "/tmp/anvil-test/config", force = true }

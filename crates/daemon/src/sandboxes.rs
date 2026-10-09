@@ -1,8 +1,9 @@
 //! Sandbox management on top of microsandbox: the sandbox lifecycle, the secrets of
-//! sandboxes, SSH host names and the generated SSH config.
+//! sandboxes, SSH host names, the generated SSH config and the editors' Remote-SSH settings.
 
 use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
+use crate::vscode;
 use microsandbox::sandbox::{HostPermissions, SandboxBuilder, SandboxHandle, SandboxStatus};
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::HashSet;
@@ -67,7 +68,7 @@ pub struct StartSandbox<'a> {
     pub init: bool,
 }
 
-/// The name, status and SSH host name of a sandbox.
+/// The name, status, SSH host name and workspace path of a sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxInfo {
     /// Name of the sandbox.
@@ -76,6 +77,8 @@ pub struct SandboxInfo {
     pub status: SandboxStatus,
     /// SSH host name of the sandbox, if it has one.
     pub hostname: Option<String>,
+    /// Guest path the workspace is mounted at, e.g. `/workspaces/project`, if it has one.
+    pub workspace_path: Option<String>,
 }
 
 impl SandboxInfo {
@@ -84,8 +87,14 @@ impl SandboxInfo {
             name: handle.name().to_string(),
             status: handle.status_snapshot(),
             hostname: ssh::hostname_of(handle),
+            workspace_path: workspace_path_of(handle),
         }
     }
+}
+
+/// Returns the guest path a sandbox mounts its workspace at, which is its working directory.
+fn workspace_path_of(handle: &SandboxHandle) -> Option<String> {
+    handle.config().ok()?.spec.runtime.workdir
 }
 
 /// Manages sandboxes and the secrets they get.
@@ -106,7 +115,7 @@ impl SandboxManager {
     }
 
     /// Starts an existing sandbox or creates a new one when it doesn't exist, then syncs the
-    /// SSH config. `resources` is only called when the sandbox is created.
+    /// SSH config and the editor settings. `resources` is only called when the sandbox is created.
     pub async fn start(
         &self,
         request: StartSandbox<'_>,
@@ -131,7 +140,7 @@ impl SandboxManager {
             .map_err(|_| SandboxError::internal("failed to stop sandbox"))
     }
 
-    /// Removes a sandbox, then syncs the SSH config.
+    /// Removes a sandbox, then syncs the SSH config and the editor settings.
     pub async fn remove(&self, name: &str) -> Result<(), SandboxError> {
         get_sandbox(name)
             .await?
@@ -450,8 +459,9 @@ async fn taken_hostnames() -> Result<HashSet<String>, SandboxError> {
         .collect())
 }
 
-/// Regenerates the SSH config from the current sandboxes, logging a warning when that fails.
-/// SSH access is a convenience, so a failure here doesn't fail the request.
+/// Regenerates the SSH config and the editors' Remote-SSH settings from the current sandboxes,
+/// logging a warning when that fails. SSH access is a convenience, so a failure here doesn't
+/// fail the request.
 pub async fn sync_ssh_config() {
     let hostnames: Vec<String> = match list_all_sandboxes().await {
         Ok(sandboxes) => sandboxes.iter().filter_map(ssh::hostname_of).collect(),
@@ -463,6 +473,24 @@ pub async fn sync_ssh_config() {
 
     if let Err(err) = ssh::sync_config(&hostnames) {
         tracing::warn!("failed to update SSH config: {err:#}");
+    }
+
+    sync_editor_settings(&hostnames);
+}
+
+/// Syncs the host names into the editors' Remote-SSH settings, logging a warning per editor
+/// that fails.
+fn sync_editor_settings(hostnames: &[String]) {
+    let Some(config_root) = vscode::config_root() else {
+        tracing::warn!("failed to update editor settings: HOME is not set");
+        return;
+    };
+
+    for err in vscode::sync_settings(&config_root, hostnames) {
+        tracing::warn!(
+            "failed to update editor settings: {:#}",
+            anyhow::Error::from(err)
+        );
     }
 }
 

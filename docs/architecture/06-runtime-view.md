@@ -144,6 +144,7 @@ sequenceDiagram
     participant D as anvild
     participant MS as microsandbox
     participant SSH as SSH config
+    participant Ed as Editor settings
 
     Dev->>CLI: anvil start
     CLI->>CLI: Resolve spec, fill in default image, init and resources
@@ -184,11 +185,18 @@ sequenceDiagram
 
     D->>MS: List sandboxes
     D->>SSH: Write Host entries for all host names
+    D->>Ed: Map all host names to linux in remote.SSH.remotePlatform
     D-->>CLI: StartSandboxResponse
     CLI->>D: GetSandbox(name)
-    D-->>CLI: GetSandboxResponse(hostname)
-    CLI-->>Dev: Connect with: ssh project.anvil
+    D-->>CLI: GetSandboxResponse(hostname, workspace_path)
+    CLI-->>Dev: Connect with: ssh project.anvil<br/>Open in VS Code: code --folder-uri<br/>vscode-remote://ssh-remote+project.anvil/workspaces/project
 ```
+
+The editor settings are synced for VS Code, VS Code Insiders, Cursor and
+VSCodium when their `User` settings directory exists. A sync that fails logs a
+warning and doesn't fail the request. The `Open in VS Code` line needs both the
+host name and the workspace path, so it's left out for a sandbox without a
+workspace path.
 
 `anvil run` and SSH connections start a sandbox the same way when it isn't
 running, so `anvil start` is optional.
@@ -257,6 +265,12 @@ daemon generates. It sets `anvil ssh-proxy <host>` as `ProxyCommand`, so the SSH
 protocol runs over the `SshTunnel` gRPC stream instead of a network port. The
 daemon serves each connection with microsandbox's SSH server over an in-memory
 pipe.
+
+VS Code's Remote-SSH extension uses the same OpenSSH config. The daemon maps
+every sandbox host to `"linux"` in `remote.SSH.remotePlatform` of the user
+settings, so the extension doesn't ask for the platform, and the `code
+--folder-uri vscode-remote://ssh-remote+<host>/workspaces/<leaf>` command that
+`anvil start` prints opens the mounted workspace directly.
 
 ```mermaid
 sequenceDiagram

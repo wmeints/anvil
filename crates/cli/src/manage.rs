@@ -10,9 +10,9 @@ use tonic::Code;
 use tonic::transport::Channel;
 
 use crate::api::{
-    GetSandboxRequest, ListSandboxesRequest, ListSandboxesResponse, RemoveSandboxRequest,
-    SandboxResources, SandboxStatus, SandboxSummary, StartSandboxRequest, StopSandboxRequest,
-    sandbox_management_service_client::SandboxManagementServiceClient,
+    GetSandboxRequest, GetSandboxResponse, ListSandboxesRequest, ListSandboxesResponse,
+    RemoveSandboxRequest, SandboxResources, SandboxStatus, SandboxSummary, StartSandboxRequest,
+    StopSandboxRequest, sandbox_management_service_client::SandboxManagementServiceClient,
 };
 use crate::table;
 
@@ -31,17 +31,29 @@ pub async fn start_sandbox(
         None => start_working_dir_sandbox(working_dir, client).await?,
     };
 
-    let hostname = client
+    let sandbox = client
         .get_sandbox(GetSandboxRequest { name })
         .await?
-        .into_inner()
-        .hostname;
+        .into_inner();
 
-    if !hostname.is_empty() {
-        println!("Connect with: ssh {hostname}");
-    }
+    print!("{}", connect_instructions(&sandbox));
 
     Ok(())
+}
+
+/// Returns the commands that connect to the sandbox over SSH and open its workspace in VS Code,
+/// one per line. The VS Code command needs both the host name and the workspace path.
+fn connect_instructions(sandbox: &GetSandboxResponse) -> String {
+    let (hostname, workspace_path) = (&sandbox.hostname, &sandbox.workspace_path);
+
+    match (hostname.is_empty(), workspace_path.is_empty()) {
+        (true, _) => String::new(),
+        (false, true) => format!("Connect with: ssh {hostname}\n"),
+        (false, false) => format!(
+            "Connect with: ssh {hostname}\n\
+             Open in VS Code: code --folder-uri vscode-remote://ssh-remote+{hostname}{workspace_path}\n"
+        ),
+    }
 }
 
 /// Starts the existing sandbox with the name and returns the name.
@@ -373,6 +385,41 @@ mod tests {
             status: status.into(),
             hostname: hostname.to_string(),
         }
+    }
+
+    fn sandbox(hostname: &str, workspace_path: &str) -> GetSandboxResponse {
+        GetSandboxResponse {
+            name: "project".to_string(),
+            hostname: hostname.to_string(),
+            workspace_path: workspace_path.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn connect_instructions_include_vs_code_command() {
+        assert_eq!(
+            connect_instructions(&sandbox("project.anvil", "/workspaces/project")),
+            "Connect with: ssh project.anvil\n\
+             Open in VS Code: code --folder-uri \
+             vscode-remote://ssh-remote+project.anvil/workspaces/project\n"
+        );
+    }
+
+    #[test]
+    fn connect_instructions_skip_vs_code_without_workspace_path() {
+        assert_eq!(
+            connect_instructions(&sandbox("project.anvil", "")),
+            "Connect with: ssh project.anvil\n"
+        );
+    }
+
+    #[test]
+    fn connect_instructions_are_empty_without_hostname() {
+        assert_eq!(
+            connect_instructions(&sandbox("", "/workspaces/project")),
+            ""
+        );
     }
 
     #[test]

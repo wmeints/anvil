@@ -287,7 +287,18 @@ ssh my-project.anvil
 ```
 
 Point your IDE's remote SSH support at the same host name to work in the sandbox
-from your editor.
+from your editor. For VS Code, VS Code Insiders, Cursor and VSCodium, `anvild`
+also registers each host as a Linux host in the Remote-SSH settings, and `anvil
+start` prints a command that opens the workspace in the sandbox:
+
+```sh
+$ anvil start
+Connect with: ssh my-project.anvil
+Open in VS Code: code --folder-uri vscode-remote://ssh-remote+my-project.anvil/workspaces/my-project
+```
+
+Run the printed `code` command, or pick the host in Remote-SSH and open
+`/workspaces/my-project`.
 
 ### Base image
 
