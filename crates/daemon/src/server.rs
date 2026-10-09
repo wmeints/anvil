@@ -56,6 +56,16 @@ impl AnvilServer {
     }
 }
 
+/// Reads the sandbox to start from a request. A request without `init` runs the image's init.
+fn start_sandbox_from(request: &StartSandboxRequest) -> StartSandbox<'_> {
+    StartSandbox {
+        name: &request.name,
+        workspace: &request.workspace,
+        image: &request.image,
+        init: request.init.unwrap_or(true),
+    }
+}
+
 impl From<SandboxError> for Status {
     fn from(err: SandboxError) -> Self {
         match err {
@@ -84,14 +94,11 @@ impl SandboxManagementService for AnvilServer {
         request: Request<StartSandboxRequest>,
     ) -> Result<Response<StartSandboxResponse>, Status> {
         let request_data = request.into_inner();
-        let start = StartSandbox {
-            name: &request_data.name,
-            workspace: &request_data.workspace,
-            image: &request_data.image,
-        };
 
         self.sandboxes
-            .start(start, || sandbox_resources(request_data.resources.clone()))
+            .start(start_sandbox_from(&request_data), || {
+                sandbox_resources(request_data.resources.clone())
+            })
             .await?;
 
         Ok(Response::new(StartSandboxResponse {}))
@@ -411,6 +418,31 @@ mod tests {
     fn map_sandbox_status_produces_valid_proto_values() {
         let value = map_sandbox_status(MsbStatus::Draining);
         assert_eq!(SandboxStatus::try_from(value), Ok(SandboxStatus::Stopping));
+    }
+
+    #[test]
+    fn start_sandbox_from_request_defaults_init_to_true() {
+        let request = StartSandboxRequest::default();
+
+        assert!(start_sandbox_from(&request).init);
+    }
+
+    #[test]
+    fn start_sandbox_from_request_keeps_init() {
+        let request = StartSandboxRequest {
+            name: "dev".to_string(),
+            image: "alpine:3.22".to_string(),
+            workspace: "/home/user/project".to_string(),
+            init: Some(false),
+            ..Default::default()
+        };
+
+        let start = start_sandbox_from(&request);
+
+        assert_eq!(
+            (start.name, start.image, start.workspace, start.init),
+            ("dev", "alpine:3.22", "/home/user/project", false)
+        );
     }
 
     #[test]

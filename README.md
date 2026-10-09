@@ -63,7 +63,7 @@ The commands in this step use bash or zsh syntax. If you use fish, run
 Set the release to install and pick the target for your machine:
 
 ```sh
-VERSION=v0.1.0
+VERSION=v0.2.0
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)  TARGET=x86_64-unknown-linux-gnu ;;
   Linux-aarch64) TARGET=aarch64-unknown-linux-gnu ;;
@@ -202,6 +202,7 @@ Add an `.anvil.yml` file to the project directory to configure the sandbox:
 ```yaml
 name: my-project
 image: ghcr.io/my-org/my-sandbox:1.0
+init: true
 resources:
   cpu: 2
   memory: 4 GiB
@@ -211,14 +212,15 @@ resources:
 | ------------------ | ---------------------------------------------------------------- | --------------------------------------- |
 | `name`             | Name of the sandbox.                                             | Required                                |
 | `image`            | OCI image the sandbox runs.                                      | `ghcr.io/wmeints/anvil-base:v<version>` |
+| `init`             | Run the image's `/sbin/init` as PID 1. See below.                | `true`                                  |
 | `resources.cpu`    | Number of vCPUs.                                                 | `2`                                     |
 | `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`. | `4 GiB`                                 |
 
 Without `.anvil.yml`, Anvil names the sandbox after the full path of the
 working directory and uses the defaults.
 
-The image and resources apply when the sandbox is created. To change them for
-an existing sandbox, run `anvil rm` and start it again.
+The image, init and resources apply when the sandbox is created. To change them
+for an existing sandbox, run `anvil rm` and start it again.
 
 ### Secrets
 
@@ -309,6 +311,15 @@ Anvil runs everything in a sandbox as the `agent` user. A custom image must:
   always logs in as `agent`.
 - Install `sudo` and allow `agent` to use it without a password, if agents
   should be able to install system packages.
+- Provide an executable `/sbin/init`, or set `init: false` in `.anvil.yml`.
+  With `init` on, which is the default, Anvil runs `/sbin/init` as PID 1, and
+  `anvil start` fails with a hint when the image has none. The base image's
+  init disables guest IPv6 and then runs [tini](https://github.com/krallin/tini)
+  to reap zombie processes. It works around a microsandbox bug that resets
+  IPv6 connections on hosts without IPv6 internet access
+  ([microsandbox#1226](https://github.com/superradcompany/microsandbox/issues/1226)).
+  Images built on the base image inherit it; with `init: false`, such hosts
+  can't download from servers that have an IPv6 address.
 
 The workspace is mounted at `/workspaces/<project>`, and its files show up
 as owned by `agent`, whatever the UID of your user on the host is.
@@ -320,7 +331,7 @@ Sandboxes created by an older version of Anvil run `ubuntu:26.04`, which has no
 The simplest way to meet these requirements is to build on the base image:
 
 ```dockerfile
-FROM ghcr.io/wmeints/anvil-base:v0.1.0
+FROM ghcr.io/wmeints/anvil-base:v0.2.0
 
 USER root
 RUN apt-get update \
@@ -329,7 +340,8 @@ RUN apt-get update \
 USER agent
 ```
 
-For another distribution, create the user yourself:
+For another distribution, create the user yourself, and set `init: false` in
+`.anvil.yml` or add an init like the base image's:
 
 ```dockerfile
 FROM alpine:3.22

@@ -21,6 +21,8 @@ message StartSandboxRequest {
   optional SandboxResources resources = 3;
   // Absolute host path, mounted read/write at /workspaces/<leaf-name>.
   string workspace = 4;
+  // Whether the image's /sbin/init runs as PID 1. Unset means true.
+  optional bool init = 5;
 }
 
 message SandboxResources {

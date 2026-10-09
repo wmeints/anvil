@@ -3,7 +3,7 @@
 
 use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
-use microsandbox::sandbox::{HostPermissions, SandboxHandle, SandboxStatus};
+use microsandbox::sandbox::{HostPermissions, SandboxBuilder, SandboxHandle, SandboxStatus};
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::HashSet;
 use std::fmt;
@@ -63,6 +63,8 @@ pub struct StartSandbox<'a> {
     pub workspace: &'a str,
     /// Image to create the sandbox from, or empty for the default image.
     pub image: &'a str,
+    /// Whether the image's `/sbin/init` runs as PID 1 when the sandbox is created.
+    pub init: bool,
 }
 
 /// The name, status and SSH host name of a sandbox.
@@ -295,13 +297,13 @@ impl SandboxManager {
             .workdir(&guest_path)
             .detached(true);
 
-        secrets::add_to_builder(builder, &secrets)
+        if let Err(err) = secrets::add_to_builder(with_init(builder, request.init), &secrets)
             .create()
             .await
-            .map_err(|err| {
-                tracing::warn!("failed to create sandbox {}: {err}", request.name);
-                SandboxError::internal("failed to create sandbox")
-            })?;
+        {
+            tracing::warn!("failed to create sandbox {}: {err}", request.name);
+            return Err(create_failed(request.name, &err.to_string()).await);
+        }
 
         tracing::info!("created sandbox {} as {hostname}", request.name);
 
@@ -490,6 +492,46 @@ fn sandbox_image(image: &str) -> &str {
     }
 }
 
+/// Path of the init that runs as PID 1 in sandboxes with `init` enabled.
+const INIT_PATH: &str = "/sbin/init";
+
+/// Hands PID 1 to the image's `/sbin/init` when `init` is enabled.
+fn with_init(builder: SandboxBuilder, init: bool) -> SandboxBuilder {
+    if init {
+        builder.init(INIT_PATH)
+    } else {
+        builder
+    }
+}
+
+/// Returns the error for a failed create. A sandbox whose init failed to boot is removed, so
+/// a start with `init: false` can create it again.
+async fn create_failed(name: &str, message: &str) -> SandboxError {
+    let error = create_error(message);
+    if matches!(error, SandboxError::FailedPrecondition(_))
+        && let Err(err) = Sandbox::remove(name).await
+    {
+        tracing::warn!("failed to remove sandbox {name} after a failed create: {err}");
+    }
+
+    error
+}
+
+/// Turns the message of a failed create into the error the client sees.
+///
+/// microsandbox only reports a missing init as text, so this matches on it; other failures
+/// stay internal.
+fn create_error(message: &str) -> SandboxError {
+    if message.contains("handoff failed") {
+        SandboxError::failed_precondition(
+            "failed to create sandbox: the image has no /sbin/init; add one or set init: false \
+             in .anvil.yml",
+        )
+    } else {
+        SandboxError::internal("failed to create sandbox")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,6 +554,26 @@ mod tests {
     fn sandbox_image_falls_back_to_default() {
         assert_eq!(sandbox_image("alpine:3.22"), "alpine:3.22");
         assert_eq!(sandbox_image(""), anvil_spec::DEFAULT_IMAGE);
+    }
+
+    #[test]
+    fn create_error_explains_missing_init() {
+        let error = create_error(
+            "guest initialization failed: handoff failed: init error: no init binary found",
+        );
+
+        assert!(
+            matches!(&error, SandboxError::FailedPrecondition(message) if message.contains("set init: false")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn create_error_hides_other_failures() {
+        assert_eq!(
+            create_error("image pull failed"),
+            SandboxError::internal("failed to create sandbox")
+        );
     }
 
     #[test]

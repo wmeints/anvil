@@ -6,3 +6,4 @@
 - [ADR 0004 - Store secrets in a private file](decisions/0004-store-secrets-in-a-private-file.md)
 - [ADR 0005 - Default to the anvil-base image of the same release](decisions/0005-default-to-the-anvil-base-image-of-the-same-release.md)
 - [ADR 0006 - Run sandboxes as the agent user](decisions/0006-run-sandboxes-as-the-agent-user.md)
+- [ADR 0007 - Disable guest IPv6 in the base image](decisions/0007-disable-guest-ipv6-in-the-base-image.md)

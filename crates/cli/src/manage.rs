@@ -172,7 +172,7 @@ async fn start_existing_sandbox(
     }
 }
 
-/// Builds a start request from the spec, filling in the default image and resources.
+/// Builds a start request from the spec, filling in the default image, resources and init.
 /// The workspace is mounted into the sandbox when it's created.
 fn build_start_request(spec: SandboxSpec, workspace: &Path) -> StartSandboxRequest {
     let resources = spec.resources.unwrap_or_default();
@@ -187,6 +187,7 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> StartSandboxReque
             memory: resources.memory,
         }),
         workspace: workspace.to_string_lossy().into_owned(),
+        init: Some(spec.init.unwrap_or(true)),
     }
 }
 
@@ -535,7 +536,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(
             dir.path().join(SPEC_FILE_NAME),
-            "name: dev\nimage: alpine:3.22\nresources:\n  cpu: 4\n  memory: 8Gi\n",
+            "name: dev\nimage: alpine:3.22\ninit: false\nresources:\n  cpu: 4\n  memory: 8Gi\n",
         )
         .unwrap();
 
@@ -543,6 +544,7 @@ mod tests {
         let resources = request.resources.unwrap();
 
         assert_eq!(request.image, "alpine:3.22");
+        assert_eq!(request.init, Some(false));
         assert_eq!((resources.cpu, resources.memory.as_str()), (4, "8Gi"));
     }
 
@@ -556,6 +558,7 @@ mod tests {
         let defaults = anvil_spec::SandboxResourcesSpec::default();
 
         assert_eq!(request.image, anvil_spec::DEFAULT_IMAGE);
+        assert_eq!(request.init, Some(true));
         assert_eq!(resources.cpu, u32::from(defaults.cpu));
         assert_eq!(resources.memory, defaults.memory);
     }

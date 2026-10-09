@@ -74,6 +74,8 @@ pub struct SandboxSpec {
     pub name: String,
     pub resources: Option<SandboxResourcesSpec>,
     pub image: Option<String>,
+    /// Whether the sandbox runs the image's `/sbin/init` as PID 1. Defaults to `true`.
+    pub init: Option<bool>,
 }
 
 /// CPU and memory resources assigned to a sandbox.
@@ -166,6 +168,7 @@ pub fn default_spec(name: String) -> SandboxSpec {
         name,
         image: Some(DEFAULT_IMAGE.to_string()),
         resources: Some(SandboxResourcesSpec::default()),
+        init: Some(true),
     }
 }
 
@@ -345,6 +348,39 @@ pub mod tests {
 
         assert_eq!(spec.image.as_deref(), Some(DEFAULT_IMAGE));
         assert_eq!((resources.cpu, resources.memory.as_str()), (2, "4 GiB"));
+        assert_eq!(spec.init, Some(true));
+    }
+
+    #[test]
+    fn init_is_optional() {
+        let file = write_spec("name: dev\n");
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert!(spec.init.is_none());
+    }
+
+    #[test]
+    fn parses_init() {
+        let file = write_spec("name: dev\nimage: alpine:3.22\ninit: false\n");
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert_eq!(spec.init, Some(false));
+    }
+
+    #[test]
+    fn invalid_init_returns_diagnostic() {
+        let file = write_spec("name: dev\ninit: sometimes\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!(diagnostic.line, 2);
+        assert!(
+            diagnostic.message.contains("init"),
+            "{}",
+            diagnostic.message
+        );
     }
 
     #[test]
