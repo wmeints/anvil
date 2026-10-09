@@ -3,13 +3,14 @@ FROM ubuntu:26.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Base tooling, sudo, tini and the mise apt repository.
+# Base tooling, sudo, procps (sysctl), tini and the mise apt repository.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         git \
         gpg \
+        procps \
         sudo \
         tini \
     && install -dm 755 /etc/apt/keyrings \

@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "anvil-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anvil-spec",
  "anvil-utils",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "anvil-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anvil-spec",
  "anvil-utils",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "anvil-spec"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "anvil-utils"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "anyhow"

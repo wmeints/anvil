@@ -202,7 +202,7 @@ and start it again.
 The `Dockerfile` in the repository root describes a base image for sandbox
 images. It builds on `ubuntu:26.04` and adds:
 
-- Base tooling - `ca-certificates`, `curl`, `git`, `gpg`, `sudo` and `tini`.
+- Base tooling - `ca-certificates`, `curl`, `git`, `gpg`, `procps`, `sudo` and `tini`.
 - `mise` - installed from the mise apt repository. It's activated in
   `.bashrc` for interactive shells, and its shims are on `PATH` for
   everything else.

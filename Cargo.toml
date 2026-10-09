@@ -6,7 +6,7 @@ members = ["crates/cli", "crates/daemon", "crates/spec", "crates/utils"]
 anvil-utils = { path = "crates/utils" }
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Willem Meints"]
 edition = "2024"
 license = "MIT"
