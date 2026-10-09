@@ -105,6 +105,9 @@ A change is done when:
   microsandbox state and SSH config from the user's own.
 - Use the `implement-feature` skill for new behavior: agree on a spec first,
   then test, implement and document.
+- Use the `sandbox-reference` skill before relying on how the `microsandbox`
+  crate behaves. It shows where to find the source of the locked version and
+  lists the behavior and limits we already know.
 - Use the `submit-pr` skill to open a PR. It runs the checks and asks the
   `reviewer` agent to review the branch, so don't run the reviewer before each
   commit.
