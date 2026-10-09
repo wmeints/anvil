@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Reviews a change against the project's coding guidelines before it is committed or submitted as a pull request. Use after implementing a feature or fix, or when the user asks for a review of the current changes.
+description: Reviews a branch against the project's coding guidelines before it is submitted as a pull request. Use from the submit-pr skill, or when the user asks for a review of the current changes.
 tools: Read, Grep, Glob, Bash
 ---
 

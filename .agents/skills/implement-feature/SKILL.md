@@ -56,8 +56,7 @@ Ask about anything the spec can't answer from the request or the code.
   or architectural choices.
 - Update `README.md` when the usage of the project changes.
 
-### 6. Verify and review
+### 6. Verify
 
 - Run the format, lint, and test tasks for the project, and fix any failures.
-- Ask the `reviewer` agent to review the change and address its findings.
 - Report what you built, how it maps to the spec, and anything you left out.

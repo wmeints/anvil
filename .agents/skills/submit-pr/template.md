@@ -6,6 +6,8 @@ Fill every section from the diff evidence. Use the exact section names below; do
 
 <Why this PR is created: the problem or motivation it addresses, and the outcome it delivers. Ground it in the actual change, not a restatement of the title.>
 
+<A visual of the change, chosen with the `show-me` guidance: a `diff`, `mermaid`, or `text` code block showing the call tree, file tree, control flow, or component interaction the change affects. Follow it with one sentence on what the reader should notice.>
+
 ## Review focus
 
 <What needs a human reviewer's attention: the parts that are hard to verify by tests alone, subtle or non-obvious logic, assumptions to confirm, edge cases, and anything the author is unsure about. Point the reviewer at the specific files and decisions that matter most.>

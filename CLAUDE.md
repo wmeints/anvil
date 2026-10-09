@@ -91,8 +91,9 @@ A change is done when:
   failing test, then fix.
 - Use the `implement-feature` skill for new behavior: agree on a spec first,
   then test, implement and document.
-- Ask the `reviewer` agent to review a change before committing it. The
-  `submit-pr` skill runs the checks and the reviewer before opening a PR.
+- Use the `submit-pr` skill to open a PR. It runs the checks and asks the
+  `reviewer` agent to review the branch, so don't run the reviewer before
+  each commit.
 
 ## Automated checks
 
