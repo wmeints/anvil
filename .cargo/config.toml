@@ -1,0 +1,12 @@
+# Shortcuts for the common development commands. Run them as `cargo <alias>`.
+[alias]
+# Lint every crate, including the `vm-tests` integration tests.
+lint = "clippy --workspace --all-targets --all-features -- -D warnings"
+# Run the unit tests.
+unit-tests = "test --workspace"
+# Run the integration tests that boot real microsandbox VMs.
+integration-tests = "test -p anvil-daemon --features vm-tests"
+# Install the `anvil` CLI into `~/.cargo/bin`.
+install-cli = "install --locked --path crates/cli"
+# Install the `anvild` daemon into `~/.cargo/bin`.
+install-daemon = "install --locked --path crates/daemon"
