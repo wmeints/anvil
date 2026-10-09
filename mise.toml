@@ -1,4 +1,5 @@
 [tools]
+actionlint = "1.7.12"
 buf = "latest"
 dprint = "0.61.1"
 lefthook = "latest"

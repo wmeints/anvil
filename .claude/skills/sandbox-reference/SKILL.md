@@ -113,8 +113,9 @@ build on it when `Cargo.lock` has a newer version.
   scratchpad is too long.
 - A newer `msb` migrates `db/msb.db` in place, and an older crate then fails
   every call with "database schema is newer than this msb binary". In anvil that
-  surfaces as `Internal: failed to list sandboxes`. Run the tests with a
-  separate `MSB_HOME` instead of changing the user's database.
+  surfaces as `Internal: failed to list sandboxes`. `.cargo/config.toml` sets
+  `MSB_HOME=/tmp/anvil-msb` for cargo commands so the tests don't use the user's
+  database; never move or change `~/.microsandbox` to make them pass.
 - To run anvil or `msb` against real VMs, use the `smoke-test` skill. It
   isolates `MSB_HOME` and the daemon from the user's, and loads locally built
   images with `msb load`, so no registry is needed.

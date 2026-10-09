@@ -39,6 +39,9 @@ jobs:
       - name: Check markdown formatting
         run: dprint check
 
+      - name: Lint workflows
+        run: actionlint
+
       - name: Build
         run: cargo build --workspace --all-targets
 

@@ -113,16 +113,24 @@ A change is done when:
 
 These checks enforce the rules above, so don't try to bypass them:
 
-- `mise install` provides the Rust toolchain, `buf`, `dprint` and `lefthook`.
+- `mise install` provides the Rust toolchain, `buf`, `dprint`, `actionlint` and
+  `lefthook`.
+- `.cargo/config.toml` sets `MSB_HOME=/tmp/anvil-msb` for every cargo command,
+  so builds and the `vm-tests` use their own microsandbox runtime, database and
+  images instead of `~/.microsandbox`. A `msb` that migrated the user's database
+  can't break the tests. Don't point the tests at `~/.microsandbox`; if the
+  isolated home is broken, remove `/tmp/anvil-msb` and run the tests again.
 - Claude Code hooks in `.claude/settings.json` run `cargo fmt` on Rust files
   after each edit (`.claude/hooks/format-rust.sh`), run `dprint fmt` on Markdown
   files after each edit (`.claude/hooks/format-markdown.sh`), and run the format
   check, clippy, the unit tests and the `vm-tests` integration tests before a
-  turn ends while Rust, proto or `Cargo.toml` files have uncommitted changes
-  (`.claude/hooks/stop-checks.sh`).
-- Lefthook runs the format checks for Rust and Markdown, clippy and the unit
-  tests before each commit and the `vm-tests` integration tests before each
-  push.
-- GitHub Actions (`.github/workflows/ci.yaml`) runs the format checks, build,
-  clippy, unit tests and the `vm-tests` integration tests on every pull request
-  and every push to `main`.
+  turn ends while Rust, proto, `Cargo.toml` or `.cargo/config.toml` files have
+  uncommitted changes (`.claude/hooks/stop-checks.sh`).
+- Lefthook runs the format checks for Rust and Markdown, `actionlint` on the
+  GitHub workflows, clippy and the unit tests before each commit.
+- GitHub Actions (`.github/workflows/ci.yaml`) runs the format checks,
+  `actionlint`, build, clippy, unit tests and the `vm-tests` integration tests
+  on every pull request and every push to `main`.
+- `.github/workflows/image.yaml` builds the `anvil-base` image for both
+  platforms, without pushing it, on pull requests and pushes to `main` that
+  change the `Dockerfile`.

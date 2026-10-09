@@ -8,3 +8,4 @@
 - [ADR 0006 - Run sandboxes as the agent user](decisions/0006-run-sandboxes-as-the-agent-user.md)
 - [ADR 0007 - Disable guest IPv6 in the base image](decisions/0007-disable-guest-ipv6-in-the-base-image.md)
 - [ADR 0008 - Format Markdown with dprint](decisions/0008-format-markdown-with-dprint.md)
+- [ADR 0009 - Lint GitHub workflows with actionlint](decisions/0009-lint-github-workflows-with-actionlint.md)

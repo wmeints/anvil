@@ -354,7 +354,7 @@ WORKDIR /home/agent
 
 ## Development
 
-Install the toolchain (Rust, `buf` and `lefthook`) with
+Install the toolchain (Rust, `buf`, `dprint`, `actionlint` and `lefthook`) with
 [mise](https://mise.jdx.dev). This also installs the git hooks:
 
 ```sh
@@ -374,6 +374,10 @@ instead.
 | `cargo integration-tests` | Run the integration tests that boot real VMs. |
 | `cargo lint`              | Run the linter.                               |
 | `cargo fmt --all`         | Format the code.                              |
+
+Cargo commands in this repository use `/tmp/anvil-msb` as the microsandbox home
+(`MSB_HOME`, set in `.cargo/config.toml`), so the integration tests don't share
+a runtime or database with your own `~/.microsandbox`.
 
 The default sandbox image is the `anvil-base` image of the same release, so it
 doesn't exist for a version that hasn't been released yet. To run a development

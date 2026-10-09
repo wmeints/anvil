@@ -7,7 +7,7 @@ set -uo pipefail
 cd "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}" || exit 0
 
 changed=$(git status --porcelain --untracked-files=all |
-  grep -E '\.(rs|proto)$|Cargo\.toml$' || true)
+  grep -E '\.(rs|proto)$|Cargo\.toml$|\.cargo/config\.toml$' || true)
 [ -z "$changed" ] && exit 0
 
 run_check() {
