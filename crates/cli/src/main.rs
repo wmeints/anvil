@@ -37,6 +37,10 @@ enum Commands {
     Rm {
         /// Name of the sandbox as listed by `anvil ls`. Defaults to the sandbox for the working directory
         name: Option<String>,
+
+        /// Stop the sandbox first when it's running
+        #[arg(long)]
+        force: bool,
     },
     /// Run a command inside the sandbox
     Run(RunArgs),
@@ -141,7 +145,9 @@ async fn run_with_daemon(command: Commands, working_dir: PathBuf) -> Result<()> 
         }
         Commands::Stop { name } => manage::stop_sandbox(name, &working_dir, client_instance).await,
         Commands::Ls { format } => manage::list_sandboxes(client_instance, format).await,
-        Commands::Rm { name } => manage::remove_sandbox(name, &working_dir, client_instance).await,
+        Commands::Rm { name, force } => {
+            manage::remove_sandbox(name, force, &working_dir, client_instance).await
+        }
         Commands::Run(run_args) => run_command(working_dir, run_args, client_instance).await,
         Commands::SshProxy { hostname } => ssh_proxy(hostname, client_instance).await,
         Commands::Secret(SecretCommands::Ls { format }) => {
@@ -225,7 +231,10 @@ mod tests {
         ));
         assert!(matches!(
             parse(&["rm"]).command,
-            Commands::Rm { name: None }
+            Commands::Rm {
+                name: None,
+                force: false
+            }
         ));
         assert!(matches!(
             parse(&["start", "dev"]).command,
@@ -237,7 +246,24 @@ mod tests {
         ));
         assert!(matches!(
             parse(&["rm", "dev"]).command,
-            Commands::Rm { name: Some(name) } if name == "dev"
+            Commands::Rm { name: Some(name), force: false } if name == "dev"
+        ));
+    }
+
+    #[test]
+    fn rm_takes_force_flag() {
+        let parse = |args: &[&str]| Cli::try_parse_from(["anvil"].iter().chain(args)).unwrap();
+
+        assert!(matches!(
+            parse(&["rm", "--force"]).command,
+            Commands::Rm {
+                name: None,
+                force: true
+            }
+        ));
+        assert!(matches!(
+            parse(&["rm", "--force", "dev"]).command,
+            Commands::Rm { name: Some(name), force: true } if name == "dev"
         ));
     }
 

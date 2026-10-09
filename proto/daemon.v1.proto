@@ -75,6 +75,9 @@ enum SandboxStatus {
 
 message RemoveSandboxRequest {
   string name = 1;
+  // Stops the sandbox first when it's running. Without it, removing a running
+  // sandbox fails with FAILED_PRECONDITION.
+  bool force = 2;
 }
 
 message RemoveSandboxResponse {}

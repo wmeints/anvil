@@ -191,12 +191,13 @@ impl SandboxManagementService for AnvilServer {
         }))
     }
 
-    /// Removes a sandbox.
+    /// Removes a sandbox, stopping it first when the request forces it.
     async fn remove_sandbox(
         &self,
         request: Request<RemoveSandboxRequest>,
     ) -> std::result::Result<Response<RemoveSandboxResponse>, Status> {
-        self.sandboxes.remove(&request.into_inner().name).await?;
+        let request = request.into_inner();
+        self.sandboxes.remove(&request.name, request.force).await?;
 
         Ok(Response::new(RemoveSandboxResponse {}))
     }
