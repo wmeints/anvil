@@ -4,7 +4,7 @@ use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
 use anvil_daemon::secrets::{self, SecretStore};
-use anvil_daemon::{runtime, server, ssh};
+use anvil_daemon::{runtime, sandboxes, server, ssh};
 
 /// Sets up logging and runs the daemon on its unix socket until shutdown.
 #[tokio::main]
@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     secrets::protect_database(&msb_config.home())
         .context("failed to protect the microsandbox database")?;
     ssh::ensure_keys()?;
-    server::sync_ssh_config().await;
+    sandboxes::sync_ssh_config().await;
 
     tracing::info!(path = %log_dir.display(), "writing logs");
     tracing::info!(

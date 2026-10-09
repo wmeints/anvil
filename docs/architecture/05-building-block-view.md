@@ -96,7 +96,10 @@ C4Component
 C4Component
     Container_Boundary(daemon, "anvild (crates/daemon)") {
         Component(main, "main", "Rust", "Entrypoint")
-        Component(server, "server", "Tonic server", "Control API server")
+        Component(server, "server", "Tonic server", "Control API adapter")
+        Component(sandboxes, "sandboxes", "Rust", "Sandbox management")
+        Component(session, "session", "Rust", "Attach sessions")
+        Component(tunnel, "tunnel", "Rust", "SSH tunnels")
         Component(ssh, "ssh", "russh", "SSH access")
         Component(runtime, "runtime", "Rust", "Runtime installation")
         Component(secrets, "secrets", "serde_yaml", "Secrets")
@@ -108,11 +111,18 @@ C4Component
     Rel(main, runtime, "Ensures runtime")
     Rel(main, ssh, "Ensures keys")
     Rel(main, secrets, "Protects microsandbox database")
-    Rel(server, secrets, "Loads, stores and applies secrets")
+    Rel(main, sandboxes, "Syncs SSH config")
     Rel(main, server, "Runs")
-    Rel(server, ssh, "Host names, SSH config")
-    Rel(server, microsandbox, "Manages sandboxes, sessions, SSH servers")
+    Rel(server, sandboxes, "Manages sandboxes and secrets")
+    Rel(server, session, "Runs Attach sessions")
+    Rel(server, tunnel, "Serves SSH tunnels")
     Rel(server, utils, "Finds socket")
+    Rel(sandboxes, secrets, "Loads, stores and applies secrets")
+    Rel(sandboxes, ssh, "Host names, SSH config")
+    Rel(sandboxes, microsandbox, "Manages sandboxes")
+    Rel(session, microsandbox, "Runs processes with a TTY")
+    Rel(tunnel, ssh, "Finds SSH keys")
+    Rel(tunnel, microsandbox, "Serves SSH")
     Rel(ssh, utils, "Finds SSH directory")
     Rel(ssh, sshconfig, "Adds Include")
     Rel(runtime, microsandbox, "Installs msb and libkrunfw")
@@ -123,21 +133,34 @@ C4Component
   sure the microsandbox runtime and the SSH keys exist, makes the
   microsandbox `db` directory readable by the user only, syncs the SSH config
   and serves the API until `SIGINT` or `SIGTERM`.
-- `server` - Implements `SandboxManagementService` on top of microsandbox.
-  It creates sandboxes from the requested image with the requested vCPUs and
-  memory, and mounts the workspace read/write at `/workspaces/<leaf>`. It
-  falls back to the defaults from `anvil-spec` when the request has no image
-  or resources, and rejects invalid resources with `INVALID_ARGUMENT` before
-  it creates anything. It starts, stops, lists and removes sandboxes. It runs `Attach` sessions with a TTY, and serves `SshTunnel`
-  connections with microsandbox's SSH server over an in-memory pipe, booting
-  the sandbox when needed. It adds the stored secrets to new sandboxes, and
+- `server` - Adapts `SandboxManagementService` to the modules below: it
+  converts each request into plain values, calls `sandboxes`, `session` or
+  `tunnel`, and converts the result into a response. It converts requested
+  resources to vCPUs and MiB, falling back to the defaults from `anvil-spec`,
+  and rejects invalid resources with `INVALID_ARGUMENT`. It
+  maps the `SandboxError` of `sandboxes` to gRPC status codes in one place.
+  It refuses to start when the socket already exists and removes the socket
+  on shutdown.
+- `sandboxes` - Manages sandboxes on top of microsandbox, without knowing
+  about gRPC. It creates sandboxes from the requested image (or the default
+  image) with the requested vCPUs and memory, mounts the workspace
+  read/write at `/workspaces/<leaf>` and adds the stored secrets. Invalid
+  values are rejected before it creates anything. It starts, stops, gets,
+  lists and removes sandboxes, gives each sandbox a unique SSH host name,
+  regenerates the SSH config, and connects to a sandbox by name or host name.
   `SetSecret` stores a secret and adds it to the existing sandboxes anvil
   created. `ListSecrets` returns the names and allowed hosts, sorted by name,
   never the values. `RemoveSecret` removes a secret from the existing
   sandboxes anvil created and then from the store, keeps it in the store
   when a sandbox fails so the removal can be retried, and returns
-  `NOT_FOUND` for an unknown name. It refuses to start when the socket already exists
-  and removes the socket on shutdown.
+  `NOT_FOUND` for an unknown name. A lock around the secret store makes sure
+  a sandbox that is being created can't miss a secret that is being set.
+- `session` - Runs an `Attach` session: rejects invalid window sizes with
+  `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and forwards input, resizes, output and the exit code
+  between the gRPC stream and the process until either side ends.
+- `tunnel` - Serves an `SshTunnel` connection with microsandbox's SSH server
+  over an in-memory pipe, copying bytes in both directions until the SSH
+  session closes. `sandboxes` boots the sandbox when needed.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `anvild` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,
