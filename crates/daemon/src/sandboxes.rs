@@ -319,7 +319,8 @@ async fn get_sandbox(name: &str) -> Result<SandboxHandle, SandboxError> {
     })
 }
 
-/// Starts an existing sandbox, first giving it a host name when it has none.
+/// Starts an existing sandbox, first giving it a host name when it has none. Does nothing when
+/// the sandbox is already running or starting.
 async fn start_existing_sandbox(
     sb: &SandboxHandle,
     request: StartSandbox<'_>,
@@ -329,11 +330,22 @@ async fn start_existing_sandbox(
         assign_hostname(sb, request).await?;
     }
 
-    sb.start_detached()
-        .await
-        .map_err(|_| SandboxError::internal("failed to start sandbox"))?;
+    if matches!(
+        sb.status_snapshot(),
+        SandboxStatus::Running | SandboxStatus::Starting
+    ) {
+        return Ok(());
+    }
 
-    tracing::info!("started sandbox {}", request.name);
+    match sb.start_detached().await {
+        Ok(_) => tracing::info!("started sandbox {}", request.name),
+        // Another request started the sandbox after its status was read.
+        Err(MicrosandboxError::SandboxStillRunning(_)) => {}
+        Err(err) => {
+            tracing::warn!("failed to start sandbox {}: {err}", request.name);
+            return Err(SandboxError::internal("failed to start sandbox"));
+        }
+    }
 
     Ok(())
 }

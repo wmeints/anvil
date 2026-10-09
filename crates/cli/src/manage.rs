@@ -18,7 +18,8 @@ use crate::table;
 
 pub(crate) const SPEC_FILE_NAME: &str = ".anvil.yml";
 
-/// Starts the sandbox for the working directory, creating it when needed.
+/// Starts the sandbox for the working directory, creating it when needed. Does nothing when
+/// it's already running, and waits for it when it's starting.
 pub async fn start_sandbox(
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
@@ -26,9 +27,7 @@ pub async fn start_sandbox(
     let spec = resolve_spec(working_dir)?;
     let name = spec.name.clone();
 
-    client
-        .start_sandbox(build_start_request(spec, working_dir))
-        .await?;
+    ensure_running(spec, working_dir, client).await?;
 
     let hostname = client
         .get_sandbox(GetSandboxRequest { name })
