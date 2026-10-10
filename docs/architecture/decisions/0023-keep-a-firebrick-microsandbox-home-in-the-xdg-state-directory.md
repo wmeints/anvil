@@ -1,4 +1,4 @@
-# 22. Keep a firebrick microsandbox home in the XDG state directory
+# 23. Keep a firebrick microsandbox home in the XDG state directory
 
 ## Status
 

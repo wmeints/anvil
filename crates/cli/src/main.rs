@@ -6,7 +6,9 @@ use clap::{Args, Parser, Subcommand};
 use firebrick_cli::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use firebrick_cli::manage::OutputFormat;
 use firebrick_cli::network::{self, NetworkChange};
-use firebrick_cli::{client, init, manage, secret, session, ssh, validate};
+use firebrick_cli::secret::Scope;
+use firebrick_cli::{client, init, manage, port, secret, session, ssh, validate};
+use firebrick_spec::PortMapping;
 use tonic::transport::Channel;
 
 /// Firebrick - Run coding agents safely in a sandbox.
@@ -60,6 +62,9 @@ enum Commands {
     /// Change the network rules in .firebrick.yml and apply them to the sandbox
     #[command(subcommand)]
     Network(NetworkCommands),
+    /// Forward host ports to the working directory's sandbox and record them in .firebrick.yml
+    #[command(subcommand)]
+    Port(PortCommands),
     /// Tunnel an SSH connection to a sandbox over stdin/stdout (used by the generated SSH config)
     #[command(hide = true)]
     SshProxy {
@@ -70,18 +75,22 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum SecretCommands {
-    /// Set a secret for all sandboxes
+    /// Set a secret for all sandboxes, or for the working directory's sandbox only
     Set(SetSecretArgs),
-    /// List the secrets and their allowed hosts, without their values
+    /// List the secrets of all scopes and their allowed hosts, without their values
     Ls {
         /// Output format
         #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
         format: OutputFormat,
     },
-    /// Remove a secret from all sandboxes
+    /// Remove a secret from all sandboxes, or from the working directory's sandbox only
     Rm {
         /// Name of the secret, e.g. GH_TOKEN
         name: String,
+
+        /// Remove the global secret, or the working directory's sandbox-scoped secret
+        #[arg(long, value_enum, default_value_t = Scope::Global)]
+        scope: Scope,
     },
 }
 
@@ -112,6 +121,23 @@ enum PolicyCommands {
     Disable,
 }
 
+#[derive(Subcommand, Debug)]
+enum PortCommands {
+    /// Forward a host port on localhost to a port in the sandbox, right away when it runs
+    Forward {
+        /// `<port>` to forward localhost:<port> to the same port in the sandbox, or
+        /// `<host>:<guest>` to forward localhost:<host> to sandbox port <guest>
+        #[arg(value_name = "PORT")]
+        port: PortMapping,
+    },
+    /// Stop forwarding a host port
+    Rm {
+        /// Host port of the forward, e.g. 8080
+        #[arg(value_parser = clap::value_parser!(u16).range(1..))]
+        port: u16,
+    },
+}
+
 #[derive(Args, Debug)]
 struct SetSecretArgs {
     /// Environment variable that exposes the secret in sandboxes, e.g. GH_TOKEN
@@ -129,6 +155,11 @@ struct SetSecretArgs {
     /// hosts. Defaults to the hosts of well-known secrets such as GH_TOKEN and ANTHROPIC_API_KEY
     #[arg(long = "allow-host", value_name = "HOST")]
     allowed_hosts: Vec<String>,
+
+    /// Set the secret for all sandboxes, or for the working directory's sandbox only, where it
+    /// overrides a global secret with the same name
+    #[arg(long, value_enum, default_value_t = Scope::Global)]
+    scope: Scope,
 }
 
 #[derive(Args, Debug)]
@@ -150,7 +181,7 @@ async fn main() -> Result<()> {
         // Validating and creating the spec don't need the daemon.
         Commands::Validate => validate_spec(&working_dir),
         Commands::Init { force } => init_spec(&working_dir, force),
-        Commands::Secret(SecretCommands::Set(args)) => set_secret(args).await,
+        Commands::Secret(SecretCommands::Set(args)) => set_secret(args, &working_dir).await,
         // Changes the spec file first and only needs the daemon to apply it.
         Commands::Network(command) => network::update(network_change(command)?, &working_dir).await,
         command => run_with_daemon(command, working_dir).await,
@@ -176,11 +207,18 @@ fn init_spec(working_dir: &Path, force: bool) -> Result<()> {
 
 /// Stores a secret, reading its value before connecting so a failing read doesn't start the
 /// daemon.
-async fn set_secret(args: SetSecretArgs) -> Result<()> {
+async fn set_secret(args: SetSecretArgs, working_dir: &Path) -> Result<()> {
     let value = secret_value(&args)?;
     let mut client_instance = client::connect().await?;
 
-    secret::set(args.name, value, args.allowed_hosts, &mut client_instance).await
+    let new_secret = secret::NewSecret {
+        name: args.name,
+        value,
+        allowed_hosts: args.allowed_hosts,
+        scope: args.scope,
+    };
+
+    secret::set(new_secret, working_dir, &mut client_instance).await
 }
 
 /// Runs a command that needs the daemon.
@@ -202,15 +240,28 @@ async fn run_with_daemon(command: Commands, working_dir: PathBuf) -> Result<()> 
         Commands::Secret(SecretCommands::Ls { format }) => {
             secret::list(format, client_instance).await
         }
-        Commands::Secret(SecretCommands::Rm { name }) => {
-            secret::remove(name, client_instance).await
+        Commands::Secret(SecretCommands::Rm { name, scope }) => {
+            secret::remove(name, scope, &working_dir, client_instance).await
         }
+        Commands::Port(command) => run_port_command(command, &working_dir, client_instance).await,
         Commands::Validate
         | Commands::Init { .. }
         | Commands::Secret(SecretCommands::Set(_))
         | Commands::Network(_) => {
             unreachable!("handled before connecting to the daemon")
         }
+    }
+}
+
+/// Changes a port forward of the working directory's sandbox.
+async fn run_port_command(
+    command: PortCommands,
+    working_dir: &Path,
+    client_instance: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<()> {
+    match command {
+        PortCommands::Forward { port } => port::forward(port, working_dir, client_instance).await,
+        PortCommands::Rm { port } => port::remove(port, working_dir, client_instance).await,
     }
 }
 
@@ -399,8 +450,94 @@ mod tests {
         let cli = Cli::try_parse_from(["fbk", "secret", "rm", "GH_TOKEN"]).unwrap();
         assert!(matches!(
             cli.command,
-            Commands::Secret(SecretCommands::Rm { name }) if name == "GH_TOKEN"
+            Commands::Secret(SecretCommands::Rm { name, scope: Scope::Global }) if name == "GH_TOKEN"
         ));
+    }
+
+    fn parse_secret_rm_scope(args: &[&str]) -> Result<Scope, clap::Error> {
+        let cli = Cli::try_parse_from(["fbk", "secret", "rm", "X"].iter().chain(args))?;
+
+        match cli.command {
+            Commands::Secret(SecretCommands::Rm { scope, .. }) => Ok(scope),
+            command => panic!("unexpected command {command:?}"),
+        }
+    }
+
+    fn parse_port(args: &[&str]) -> Result<PortCommands, clap::Error> {
+        let cli = Cli::try_parse_from(["fbk", "port"].iter().chain(args))?;
+
+        match cli.command {
+            Commands::Port(command) => Ok(command),
+            command => panic!("unexpected command {command:?}"),
+        }
+    }
+
+    #[test]
+    fn secret_set_and_rm_take_a_scope() {
+        let set_scope = |args: &[&str]| {
+            let args: Vec<&str> = ["X", "abc"].iter().chain(args).copied().collect();
+            parse_secret_set(&args).map(|args| args.scope)
+        };
+
+        for parse in [set_scope, parse_secret_rm_scope] {
+            assert_eq!(parse(&[]).unwrap(), Scope::Global);
+            assert_eq!(parse(&["--scope", "global"]).unwrap(), Scope::Global);
+            assert_eq!(parse(&["--scope", "sandbox"]).unwrap(), Scope::Sandbox);
+        }
+    }
+
+    #[test]
+    fn secret_set_and_rm_reject_other_scopes() {
+        for result in [
+            parse_secret_set(&["X", "abc", "--scope", "project"]).map(|args| args.scope),
+            parse_secret_rm_scope(&["--scope", "project"]),
+        ] {
+            let error = result.unwrap_err();
+
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+            assert!(error.to_string().contains("global, sandbox"), "{error}");
+        }
+    }
+
+    #[test]
+    fn port_forward_takes_a_port_or_a_mapping() {
+        assert!(matches!(
+            parse_port(&["forward", "3000"]).unwrap(),
+            PortCommands::Forward {
+                port: PortMapping {
+                    host: 3000,
+                    guest: 3000
+                }
+            }
+        ));
+        assert!(matches!(
+            parse_port(&["forward", "8080:5173"]).unwrap(),
+            PortCommands::Forward {
+                port: PortMapping {
+                    host: 8080,
+                    guest: 5173
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn port_forward_rejects_invalid_ports() {
+        for arg in ["0", "65536", "web", "8080:0", "8080:", ":80", "1:2:3"] {
+            assert!(parse_port(&["forward", arg]).is_err(), "{arg}");
+        }
+        assert!(parse_port(&["forward"]).is_err());
+    }
+
+    #[test]
+    fn port_rm_takes_a_host_port() {
+        assert!(matches!(
+            parse_port(&["rm", "8080"]).unwrap(),
+            PortCommands::Rm { port: 8080 }
+        ));
+        for arg in ["0", "65536", "web", "8080:5173"] {
+            assert!(parse_port(&["rm", arg]).is_err(), "{arg}");
+        }
     }
 
     #[test]

@@ -43,7 +43,7 @@ installed runtime with another version. See
   `$XDG_STATE_HOME/firebrick/msb` (by default `~/.local/state/firebrick/msb`).
   `fbkd` never reads or writes `~/.microsandbox`, so a separately installed
   `msb` keeps its own runtime and database. See
-  [ADR 0022](decisions/0022-keep-a-firebrick-microsandbox-home-in-the-xdg-state-directory.md).
+  [ADR 0023](decisions/0023-keep-a-firebrick-microsandbox-home-in-the-xdg-state-directory.md).
 - `fbkd` ignores an empty or relative `XDG_STATE_HOME` or `HOME`, as the XDG
   spec requires, and refuses to start when neither is an absolute path and
   `MSB_HOME` isn't set. The home holds the `msb` binary `fbkd` runs, so it must

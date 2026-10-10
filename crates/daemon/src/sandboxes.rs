@@ -9,7 +9,7 @@ use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
 use crate::vscode;
 use crate::zed;
-use firebrick_spec::{MountSpec, NetworkSpec, PortMapping, VolumesSpec};
+use firebrick_spec::{MountSpec, NetworkSpec, PortMapping, VolumesSpec, with_port};
 use microsandbox::sandbox::{
     HostPermissions, MountBuilder, OwnedVolumeStorage, SandboxBuilder, SandboxHandle,
     SandboxStatus, VolumeMount,
@@ -74,6 +74,20 @@ pub struct Resources {
     pub memory_mib: u32,
     /// Size of the Docker volume in MiB.
     pub docker_volume_mib: u32,
+}
+
+/// A secret to store, and the sandbox it belongs to. It has no `Debug`, so its value can't end
+/// up in logs.
+#[derive(Clone)]
+pub struct NewSecret {
+    /// Environment variable that exposes the secret's placeholder in sandboxes.
+    pub name: String,
+    /// Value of the secret.
+    pub value: String,
+    /// Hosts that may receive the value. Empty uses the defaults for well-known names.
+    pub allowed_hosts: Vec<String>,
+    /// Sandbox the secret belongs to, or `None` for a global secret.
+    pub sandbox: Option<String>,
 }
 
 /// The sandbox to start, and the workspace and image to create it from when it doesn't exist.
@@ -256,7 +270,8 @@ pub struct SandboxManager {
     // can't miss a secret that is being set, and concurrent sets can't mix up values.
     secrets_lock: tokio::sync::Mutex<()>,
     // One lock per sandbox name, held while the sandbox is started, stopped, removed, connected
-    // to or recreated, so recreating a sandbox can't interleave with another operation on it.
+    // to, recreated or its ports change, so recreating a sandbox can't interleave with another
+    // operation on it.
     sandbox_locks: SandboxLocks,
     // Held while the ports of a sandbox are read or stored and its forwards are reconciled, so a
     // request with stale ports can't undo the forwards of a newer one.
@@ -382,6 +397,86 @@ impl SandboxManager {
         self.forwards.apply(name, &ports).await
     }
 
+    /// Adds the forward to the ports stored with the sandbox, replacing a stored one with the
+    /// same host port, and opens it when the sandbox runs. Returns whether the sandbox runs.
+    /// Fails with `FailedPrecondition` when the host port can't be listened on, and then keeps
+    /// the stored ports and the open forwards.
+    pub async fn forward_port(&self, name: &str, port: PortMapping) -> Result<bool, SandboxError> {
+        let _guard = self.lock_sandbox(name).await;
+        let _ports = self.ports_lock.lock().await;
+        let sb = get_sandbox(name).await?;
+        let stored = stored_ports(&sb);
+        let change = PortsChange {
+            ports: with_port(&stored, port),
+            stored,
+            requested: Some(port),
+        };
+
+        self.change_ports(&sb, &change).await
+    }
+
+    /// Removes the forward of the host port from the ports stored with the sandbox, and closes
+    /// it when the sandbox runs. Returns whether the sandbox runs. Fails with `NotFound` when
+    /// the sandbox doesn't forward the host port.
+    pub async fn remove_port(&self, name: &str, host: u16) -> Result<bool, SandboxError> {
+        let _guard = self.lock_sandbox(name).await;
+        let _ports = self.ports_lock.lock().await;
+        let sb = get_sandbox(name).await?;
+        let stored = stored_ports(&sb);
+        let ports: Vec<PortMapping> = stored.iter().filter(|p| p.host != host).copied().collect();
+
+        if ports.len() == stored.len() {
+            return Err(SandboxError::not_found(format!(
+                "port {host} isn't forwarded for sandbox {name}"
+            )));
+        }
+
+        let change = PortsChange {
+            stored,
+            ports,
+            requested: None,
+        };
+
+        self.change_ports(&sb, &change).await
+    }
+
+    /// Makes the open forwards of a running sandbox match the changed ports, then stores them
+    /// with the sandbox. Returns whether the sandbox runs. When a new forward can't be opened or
+    /// the ports can't be stored, reopens the stored forwards and fails.
+    async fn change_ports(
+        &self,
+        sb: &SandboxHandle,
+        change: &PortsChange,
+    ) -> Result<bool, SandboxError> {
+        let running = sb.status_snapshot() == SandboxStatus::Running;
+
+        if running {
+            self.apply_new_ports(sb.name(), change).await?;
+        }
+
+        let saved = save_ports(sb, &change.ports).await;
+
+        if saved.is_err() && running {
+            self.forwards.apply(sb.name(), &change.stored).await;
+        }
+
+        saved.map(|()| running)
+    }
+
+    /// Makes the open forwards of the sandbox match the changed ports. Fails with
+    /// `FailedPrecondition` when a new forward can't be opened, after reopening the stored
+    /// forwards.
+    async fn apply_new_ports(&self, name: &str, change: &PortsChange) -> Result<(), SandboxError> {
+        let report = self.forwards.apply(name, &change.ports).await;
+        let Some(failure) = report.failed.iter().find(|f| change.is_new(f.port)) else {
+            return Ok(());
+        };
+
+        self.forwards.apply(name, &change.stored).await;
+
+        Err(SandboxError::failed_precondition(failure.reason.clone()))
+    }
+
     /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`],
     /// then closes its forwards.
     pub async fn stop(&self, name: &str) -> Result<(), SandboxError> {
@@ -417,17 +512,24 @@ impl SandboxManager {
             self.forwards.close(name).await;
         }
 
-        sb.remove().await.map_err(|err| match err {
-            MicrosandboxError::SandboxStillRunning(_) => SandboxError::failed_precondition(
-                format!("sandbox {name} is running; stop it first or remove it with force"),
-            ),
-            err => {
-                tracing::error!(error = ?err, "failed to remove sandbox {name}");
-                SandboxError::internal("failed to remove sandbox")
-            }
-        })?;
+        sb.remove().await.map_err(|err| remove_failed(name, err))?;
 
         sync_ssh_config().await;
+
+        self.remove_sandbox_secrets(name).await
+    }
+
+    /// Removes the sandbox-scoped secrets of a removed sandbox from the store, so a later
+    /// sandbox with the same name doesn't inherit them.
+    async fn remove_sandbox_secrets(&self, name: &str) -> Result<(), SandboxError> {
+        let _secrets_guard = self.secrets_lock.lock().await;
+
+        self.secrets.remove_sandbox(name).map_err(|err| {
+            tracing::error!(error = ?err, "failed to remove the secrets of sandbox {name}");
+            SandboxError::internal(format!(
+                "removed sandbox {name}, but failed to remove its secrets"
+            ))
+        })?;
 
         Ok(())
     }
@@ -586,8 +688,8 @@ impl SandboxManager {
         Ok(())
     }
 
-    /// Creates the sandbox from the snapshot with its settings, the stored secrets and the
-    /// egress rules. microsandbox boots it.
+    /// Creates the sandbox from the snapshot with its settings, its secrets and the egress
+    /// rules. microsandbox boots it.
     async fn create_from_snapshot(
         &self,
         settings: &SandboxSettings,
@@ -595,7 +697,9 @@ impl SandboxManager {
         snapshot: &str,
     ) -> Result<Sandbox, String> {
         let _secrets_guard = self.secrets_lock.lock().await;
-        let secrets = self.load_secrets().map_err(|err| err.to_string())?;
+        let secrets = self
+            .load_secrets_for(&settings.name)
+            .map_err(|err| err.to_string())?;
 
         // `image(..)` would discard the pending snapshot, so the builder must not set one.
         let builder = settings.builder().override_snapshot(snapshot);
@@ -605,25 +709,26 @@ impl SandboxManager {
             .map_err(|err| format!("{err:?}"))
     }
 
-    /// Stores a secret and adds it to the existing sandboxes. Running sandboxes pick it up the
-    /// next time they start. Returns the names of the sandboxes it couldn't be added to.
-    pub async fn set_secret(
-        &self,
-        name: String,
-        value: String,
-        allowed_hosts: Vec<String>,
-    ) -> Result<Vec<String>, SandboxError> {
-        let secret = Secret::new(name, value, allowed_hosts)
-            .map_err(|err| SandboxError::invalid_argument(err.to_string()))?;
+    /// Stores a secret and adds it to the sandboxes in its scope: the sandbox it belongs to, or,
+    /// for a global secret, every existing sandbox without a sandbox-scoped secret with that
+    /// name. Running sandboxes pick it up the next time they start. Returns the names of the
+    /// sandboxes it couldn't be added to.
+    pub async fn set_secret(&self, request: NewSecret) -> Result<Vec<String>, SandboxError> {
+        let secret = Secret::new(request.name, request.value, request.allowed_hosts)
+            .map_err(|err| SandboxError::invalid_argument(err.to_string()))?
+            .in_scope(request.sandbox);
 
         let _secrets_guard = self.secrets_lock.lock().await;
+        let scoped_handle = scoped_sandbox(secret.sandbox()).await?;
 
         self.secrets.set(secret.clone()).map_err(|err| {
             tracing::error!(error = ?err, "failed to store secret {}", secret.name());
             SandboxError::internal("failed to store secret")
         })?;
 
-        let failed_sandboxes = update_firebrick_sandboxes(SecretChange::Add(&secret))
+        let change = SecretChange::Add(&secret);
+        let failed_sandboxes = self
+            .update_scope(scoped_handle.as_ref(), secret.name(), change)
             .await
             .map_err(|_| {
                 SandboxError::internal(
@@ -631,44 +736,99 @@ impl SandboxManager {
                 )
             })?;
 
-        tracing::info!("set secret {}", secret.name());
+        tracing::info!(
+            "set secret {}",
+            describe_secret(secret.name(), secret.sandbox())
+        );
 
         Ok(failed_sandboxes)
     }
 
-    /// Returns the stored secrets, sorted by name.
+    /// Returns the stored secrets, sorted by name, then by scope with the global secret first.
     pub fn list_secrets(&self) -> Result<Vec<Secret>, SandboxError> {
         let mut secrets = self.load_secrets()?;
-        secrets.sort_by(|a, b| a.name().cmp(b.name()));
+        secrets.sort_by(|a, b| (a.name(), a.sandbox()).cmp(&(b.name(), b.sandbox())));
         Ok(secrets)
     }
 
-    /// Removes a stored secret and removes it from the existing sandboxes. Running sandboxes
-    /// keep it until they restart. Returns the names of the sandboxes it couldn't be removed
-    /// from, in which case the secret stays in the store so the removal can be retried.
-    pub async fn remove_secret(&self, name: &str) -> Result<Vec<String>, SandboxError> {
+    /// Removes a stored secret and removes it from the sandboxes in its scope, like
+    /// [`SandboxManager::set_secret`]. A sandbox that loses its sandbox-scoped secret gets the
+    /// global secret with the same name back, if there is one. Running sandboxes keep the old
+    /// secret until they restart. Returns the names of the sandboxes the change failed for, in
+    /// which case the secret stays in the store so the removal can be retried.
+    pub async fn remove_secret(
+        &self,
+        name: &str,
+        sandbox: Option<&str>,
+    ) -> Result<Vec<String>, SandboxError> {
         secrets::validate_name(name)
             .map_err(|err| SandboxError::invalid_argument(err.to_string()))?;
 
         let _secrets_guard = self.secrets_lock.lock().await;
-        self.ensure_secret_exists(name)?;
+        let scoped_handle = scoped_sandbox(sandbox).await?;
+        let stored = self.load_secrets()?;
+        ensure_secret_exists(&stored, name, sandbox)?;
 
         // Remove the secret from the store last, so it can be removed again when a sandbox
         // fails.
-        let failed_sandboxes = update_firebrick_sandboxes(SecretChange::Remove(name)).await?;
+        let change = removal(&stored, name, sandbox);
+        let failed_sandboxes = self
+            .update_scope(scoped_handle.as_ref(), name, change)
+            .await?;
 
         if !failed_sandboxes.is_empty() {
             return Ok(failed_sandboxes);
         }
 
-        self.secrets.remove(name).map_err(|err| {
+        self.secrets.remove(name, sandbox).map_err(|err| {
             tracing::error!(error = ?err, "failed to remove secret {name}");
             SandboxError::internal("failed to remove secret")
         })?;
 
-        tracing::info!("removed secret {name}");
+        tracing::info!("removed secret {}", describe_secret(name, sandbox));
 
         Ok(failed_sandboxes)
+    }
+
+    /// Applies a change to the secret with the name to the sandbox it belongs to, or, without
+    /// one, to the sandboxes that get the global secret. Returns the names of the sandboxes the
+    /// change failed for.
+    async fn update_scope(
+        &self,
+        scoped_handle: Option<&SandboxHandle>,
+        name: &str,
+        change: SecretChange<'_>,
+    ) -> Result<Vec<String>, SandboxError> {
+        match scoped_handle {
+            Some(handle) => Ok(apply_to_sandbox(handle, &change).await),
+            None => self.update_unscoped_sandboxes(name, change).await,
+        }
+    }
+
+    /// Applies a change to a global secret to every firebrick sandbox, except the ones with a
+    /// sandbox-scoped secret with the same name. Returns the names of the sandboxes the change
+    /// failed for.
+    async fn update_unscoped_sandboxes(
+        &self,
+        name: &str,
+        change: SecretChange<'_>,
+    ) -> Result<Vec<String>, SandboxError> {
+        let overridden: HashSet<String> = self
+            .load_secrets()?
+            .iter()
+            .filter(|secret| secret.name() == name)
+            .filter_map(|secret| secret.sandbox().map(str::to_string))
+            .collect();
+
+        update_firebrick_sandboxes(change, &overridden).await
+    }
+
+    /// Returns the stored secrets the sandbox with the name gets when it's created: the global
+    /// secrets, with its own sandbox-scoped secrets in place of the global ones with the same
+    /// name. A new sandbox only has scoped secrets left over from an earlier sandbox with its
+    /// name, for example one removed without fbkd, which global changes skip.
+    fn load_secrets_for(&self, sandbox: &str) -> Result<Vec<Secret>, SandboxError> {
+        Ok(secrets::for_sandbox(self.load_secrets()?, sandbox))
     }
 
     /// Returns the stored secrets.
@@ -677,21 +837,6 @@ impl SandboxManager {
             tracing::error!(error = ?err, "failed to load secrets");
             SandboxError::internal("failed to load secrets")
         })
-    }
-
-    /// Fails with `NotFound` when no secret with the name is stored.
-    fn ensure_secret_exists(&self, name: &str) -> Result<(), SandboxError> {
-        if self
-            .load_secrets()?
-            .iter()
-            .any(|secret| secret.name() == name)
-        {
-            Ok(())
-        } else {
-            Err(SandboxError::not_found(format!(
-                "secret {name} doesn't exist"
-            )))
-        }
     }
 
     /// Creates a sandbox, then installs its workspace's mise tools when the request enables
@@ -722,7 +867,7 @@ impl SandboxManager {
         let resources = resources()?;
         let hostname = ssh::pick_hostname(request.workspace, &taken_hostnames().await?);
         let _secrets_guard = self.secrets_lock.lock().await;
-        let secrets = self.load_secrets()?;
+        let secrets = self.load_secrets_for(request.name)?;
 
         let settings = new_sandbox_settings(request, &guest_path, &hostname, resources);
         let builder = settings.builder().image(sandbox_image(request.image));
@@ -923,6 +1068,56 @@ async fn create_with(
     secrets::add_to_builder(builder, secrets).create().await
 }
 
+/// Fails with `NotFound` when no secret with the name is stored in the scope.
+fn ensure_secret_exists(
+    secrets: &[Secret],
+    name: &str,
+    sandbox: Option<&str>,
+) -> Result<(), SandboxError> {
+    if secrets.iter().any(|secret| secret.matches(name, sandbox)) {
+        return Ok(());
+    }
+
+    Err(SandboxError::not_found(match sandbox {
+        Some(sandbox) => format!("secret {name} doesn't exist in sandbox {sandbox}"),
+        None => format!("secret {name} doesn't exist"),
+    }))
+}
+
+/// Names a secret and its scope for the log.
+fn describe_secret(name: &str, sandbox: Option<&str>) -> String {
+    match sandbox {
+        Some(sandbox) => format!("{name} for sandbox {sandbox}"),
+        None => name.to_string(),
+    }
+}
+
+/// Returns the change that removes the secret from its scope. A sandbox that loses its
+/// sandbox-scoped secret gets the global secret with the same name instead, if there is one.
+fn removal<'a>(stored: &'a [Secret], name: &'a str, sandbox: Option<&str>) -> SecretChange<'a> {
+    let global = stored.iter().find(|secret| secret.matches(name, None));
+
+    match (sandbox, global) {
+        (Some(_), Some(global)) => SecretChange::Add(global),
+        _ => SecretChange::Remove(name),
+    }
+}
+
+/// Returns the sandbox a sandbox-scoped secret belongs to, or `None` for a global secret.
+/// Fails with an error that names the sandbox when it doesn't exist.
+async fn scoped_sandbox(sandbox: Option<&str>) -> Result<Option<SandboxHandle>, SandboxError> {
+    let Some(name) = sandbox else {
+        return Ok(None);
+    };
+
+    get_sandbox(name).await.map(Some).map_err(|err| match err {
+        SandboxError::NotFound(_) => {
+            SandboxError::not_found(format!("sandbox {name} doesn't exist"))
+        }
+        err => err,
+    })
+}
+
 /// Returns the sandbox with the name.
 async fn get_sandbox(name: &str) -> Result<SandboxHandle, SandboxError> {
     Sandbox::get(name).await.map_err(|err| match err {
@@ -946,6 +1141,19 @@ fn connect_failed(name: &str, err: &MicrosandboxError) -> SandboxError {
     }
 
     SandboxError::failed_precondition("sandbox is not running")
+}
+
+/// Returns the error for a failed remove, logging failures other than a running sandbox.
+fn remove_failed(name: &str, err: MicrosandboxError) -> SandboxError {
+    match err {
+        MicrosandboxError::SandboxStillRunning(_) => SandboxError::failed_precondition(format!(
+            "sandbox {name} is running; stop it first or remove it with force"
+        )),
+        err => {
+            tracing::error!(error = ?err, "failed to remove sandbox {name}");
+            SandboxError::internal("failed to remove sandbox")
+        }
+    }
 }
 
 /// Logs why a forced remove couldn't stop the sandbox and returns the error the client sees.
@@ -1016,6 +1224,25 @@ async fn start_existing_sandbox(
     }
 }
 
+/// A change to the ports stored with a sandbox.
+struct PortsChange {
+    /// The ports stored before the change.
+    stored: Vec<PortMapping>,
+    /// The ports after the change.
+    ports: Vec<PortMapping>,
+    /// The forward the change asks for, if any.
+    requested: Option<PortMapping>,
+}
+
+impl PortsChange {
+    /// Whether the change opens the forward: it's the requested one, which must open even when
+    /// it's stored already, or it isn't stored. A stored forward that already failed to open
+    /// doesn't block other changes.
+    fn is_new(&self, port: PortMapping) -> bool {
+        self.requested == Some(port) || !self.stored.contains(&port)
+    }
+}
+
 /// Returns the ports stored with the sandbox.
 fn stored_ports(sb: &SandboxHandle) -> Vec<PortMapping> {
     sb.config()
@@ -1025,24 +1252,34 @@ fn stored_ports(sb: &SandboxHandle) -> Vec<PortMapping> {
         .unwrap_or_default()
 }
 
-/// Stores the ports with the sandbox when they differ from the stored ones, logging a warning
-/// when that fails. The label doesn't affect the running VM, so it's applied on the next start
-/// rather than restarting the sandbox.
+/// Stores the ports with the sandbox like [`save_ports`], logging a warning when that fails.
 async fn store_ports(sb: &SandboxHandle, ports: &[PortMapping]) {
+    if let Err(err) = save_ports(sb, ports).await {
+        tracing::warn!("{err}");
+    }
+}
+
+/// Stores the ports with the sandbox when they differ from the stored ones. The label doesn't
+/// affect the running VM, so it's applied on the next start rather than restarting the sandbox.
+async fn save_ports(sb: &SandboxHandle, ports: &[PortMapping]) -> Result<(), SandboxError> {
     if stored_ports(sb) == ports {
-        return;
+        return Ok(());
     }
 
-    let result = sb
-        .modify()
+    sb.modify()
         .label(forward::PORTS_LABEL, forward::label_value(ports))
         .next_start()
         .apply()
-        .await;
+        .await
+        .map_err(|err| {
+            tracing::error!(error = ?err, "failed to store the ports of sandbox {}", sb.name());
+            SandboxError::internal(format!(
+                "failed to store the ports of sandbox {}",
+                sb.name()
+            ))
+        })?;
 
-    if let Err(err) = result {
-        tracing::warn!("failed to store the ports of sandbox {}: {err}", sb.name());
-    }
+    Ok(())
 }
 
 /// Whether the sandbox installs its workspace's mise tools on start.
@@ -1140,27 +1377,38 @@ impl fmt::Display for SecretChange<'_> {
 }
 
 /// Applies a secret change to every sandbox firebrick created, which are the ones with a host
-/// name. Returns the names of the sandboxes the change failed for.
-async fn update_firebrick_sandboxes(change: SecretChange<'_>) -> Result<Vec<String>, SandboxError> {
+/// name, except the `skipped` ones. Returns the names of the sandboxes the change failed for.
+async fn update_firebrick_sandboxes(
+    change: SecretChange<'_>,
+    skipped: &HashSet<String>,
+) -> Result<Vec<String>, SandboxError> {
     let mut failed = vec![];
 
     for handle in list_all_sandboxes().await? {
-        if ssh::hostname_of(&handle).is_none() {
+        if ssh::hostname_of(&handle).is_none() || skipped.contains(handle.name()) {
             continue;
         }
 
-        let result = match change {
-            SecretChange::Add(secret) => secrets::add_to_sandbox(&handle, secret).await,
-            SecretChange::Remove(name) => secrets::remove_from_sandbox(&handle, name).await,
-        };
-
-        if let Err(err) = result {
-            tracing::warn!(error = ?err, "failed to {change} sandbox {}", handle.name());
-            failed.push(handle.name().to_string());
-        }
+        failed.extend(apply_to_sandbox(&handle, &change).await);
     }
 
     Ok(failed)
+}
+
+/// Applies a secret change to one sandbox. Returns its name when the change failed.
+async fn apply_to_sandbox(handle: &SandboxHandle, change: &SecretChange<'_>) -> Vec<String> {
+    let result = match change {
+        SecretChange::Add(secret) => secrets::add_to_sandbox(handle, secret).await,
+        SecretChange::Remove(name) => secrets::remove_from_sandbox(handle, name).await,
+    };
+
+    match result {
+        Ok(()) => vec![],
+        Err(err) => {
+            tracing::warn!(error = ?err, "failed to {change} sandbox {}", handle.name());
+            vec![handle.name().to_string()]
+        }
+    }
 }
 
 /// Returns the SSH host names that sandboxes already use.
@@ -1389,6 +1637,31 @@ mod tests {
         SandboxManager::new(store)
     }
 
+    /// Returns a secret for `example.com` with the name, in the sandbox's scope or global.
+    fn scoped_secret(name: &str, sandbox: Option<&str>) -> Secret {
+        Secret::new(name.to_string(), "value".into(), vec!["example.com".into()])
+            .unwrap()
+            .in_scope(sandbox.map(str::to_string))
+    }
+
+    #[test]
+    fn removal_puts_the_global_secret_back_in_a_sandbox() {
+        let stored = [scoped_secret("X", None), scoped_secret("X", Some("a"))];
+
+        assert!(matches!(
+            removal(&stored, "X", Some("a")),
+            SecretChange::Add(secret) if secret == &stored[0]
+        ));
+        assert!(matches!(
+            removal(&stored[1..], "X", Some("a")),
+            SecretChange::Remove("X")
+        ));
+        assert!(matches!(
+            removal(&stored, "X", None),
+            SecretChange::Remove("X")
+        ));
+    }
+
     /// Polls the future once and returns whether it's still pending.
     async fn poll_once_pending<F: Future>(mut future: std::pin::Pin<&mut F>) -> bool {
         std::future::poll_fn(|cx| std::task::Poll::Ready(future.as_mut().poll(cx).is_pending()))
@@ -1550,18 +1823,100 @@ mod tests {
     }
 
     #[test]
-    fn list_secrets_sorts_by_name() {
+    fn list_secrets_sorts_by_name_then_scope_with_global_first() {
         let dir = tempfile::tempdir().unwrap();
-        let manager = manager_with_secrets(&dir.path().join("secrets.yml"), &["B", "A"]);
+        let store = SecretStore::new(dir.path().join("secrets.yml"));
+        let entries = [
+            ("B", Some("a")),
+            ("B", None),
+            ("A", Some("z")),
+            ("A", None),
+            ("A", Some("b")),
+        ];
+        for (name, sandbox) in entries {
+            store.set(scoped_secret(name, sandbox)).unwrap();
+        }
+        let manager = SandboxManager::new(store);
 
-        let names: Vec<String> = manager
-            .list_secrets()
-            .unwrap()
-            .iter()
-            .map(|secret| secret.name().to_string())
-            .collect();
+        let listed = manager.list_secrets().unwrap();
 
-        assert_eq!(names, ["A", "B"]);
+        let expected = [
+            ("A", None),
+            ("A", Some("b")),
+            ("A", Some("z")),
+            ("B", None),
+            ("B", Some("a")),
+        ]
+        .map(|(name, sandbox)| scoped_secret(name, sandbox));
+        assert_eq!(listed, expected);
+    }
+
+    #[tokio::test]
+    async fn set_secret_returns_not_found_for_missing_sandbox_without_storing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.yml");
+        let manager = SandboxManager::new(SecretStore::new(&path));
+        let sandbox = format!("fbk-unit-missing-{}", std::process::id());
+
+        let result = manager
+            .set_secret(NewSecret {
+                name: "X".into(),
+                value: "value".into(),
+                allowed_hosts: vec!["example.com".into()],
+                sandbox: Some(sandbox.clone()),
+            })
+            .await;
+
+        assert_eq!(
+            result,
+            Err(SandboxError::NotFound(format!(
+                "sandbox {sandbox} doesn't exist"
+            )))
+        );
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn remove_secret_returns_not_found_for_missing_sandbox_and_keeps_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.yml");
+        let manager = manager_with_secrets(&path, &["X"]);
+        let sandbox = format!("fbk-unit-missing-{}", std::process::id());
+
+        let result = manager.remove_secret("X", Some(&sandbox)).await;
+
+        assert_eq!(
+            result,
+            Err(SandboxError::NotFound(format!(
+                "sandbox {sandbox} doesn't exist"
+            )))
+        );
+        assert_eq!(SecretStore::new(&path).load().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ensure_secret_exists_checks_the_scope() {
+        let global = scoped_secret("X", None);
+        let scoped = scoped_secret("X", Some("a"));
+
+        assert_eq!(
+            ensure_secret_exists(std::slice::from_ref(&scoped), "X", Some("a")),
+            Ok(())
+        );
+        assert_eq!(
+            ensure_secret_exists(std::slice::from_ref(&global), "X", None),
+            Ok(())
+        );
+        assert_eq!(
+            ensure_secret_exists(&[global], "X", Some("a")),
+            Err(SandboxError::NotFound(
+                "secret X doesn't exist in sandbox a".into()
+            ))
+        );
+        assert_eq!(
+            ensure_secret_exists(&[scoped], "X", None),
+            Err(SandboxError::NotFound("secret X doesn't exist".into()))
+        );
     }
 
     #[tokio::test]
@@ -1571,7 +1926,12 @@ mod tests {
         let manager = SandboxManager::new(SecretStore::new(&path));
 
         let result = manager
-            .set_secret("NOT-A-NAME".into(), "value".into(), vec![])
+            .set_secret(NewSecret {
+                name: "NOT-A-NAME".into(),
+                value: "value".into(),
+                allowed_hosts: vec![],
+                sandbox: None,
+            })
             .await;
 
         assert!(matches!(result, Err(SandboxError::InvalidArgument(_))));
@@ -1584,7 +1944,7 @@ mod tests {
         let path = dir.path().join("secrets.yml");
         let manager = manager_with_secrets(&path, &["A"]);
 
-        let result = manager.remove_secret("B").await;
+        let result = manager.remove_secret("B", None).await;
 
         assert_eq!(
             result,
