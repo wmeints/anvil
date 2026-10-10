@@ -29,6 +29,27 @@ message StartSandboxRequest {
   optional bool mise = 7;
   // Egress rules, applied when the sandbox is created. Unset means microsandbox's default policy.
   optional NetworkPolicy network = 8;
+  // Host ports to forward to the sandbox's loopback. Stored with the sandbox, and applied to a
+  // running sandbox too. Unset keeps the stored list; an empty list means no forwards.
+  optional PortForwards ports = 9;
+}
+
+message PortForwards {
+  // No host port appears twice.
+  repeated PortForward ports = 1;
+}
+
+message PortForward {
+  // Port fbkd listens on at the host's loopback, from 1 to 65535.
+  uint32 host = 1;
+  // Port on the sandbox's 127.0.0.1 that connections reach, from 1 to 65535.
+  uint32 guest = 2;
+}
+
+message PortForwardFailure {
+  PortForward port = 1;
+  // Why fbkd couldn't listen on the host port, e.g. because another process uses it.
+  string reason = 2;
 }
 
 message NetworkPolicy {
@@ -51,7 +72,12 @@ message SandboxVolumes {
   string docker = 1;
 }
 
-message StartSandboxResponse {}
+message StartSandboxResponse {
+  // The forwards that are open for the sandbox, sorted by host port.
+  repeated PortForward forwards = 1;
+  // The forwards fbkd couldn't open. The sandbox still started.
+  repeated PortForwardFailure failed_forwards = 2;
+}
 
 message StopSandboxRequest {
   string name = 1;

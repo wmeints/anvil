@@ -1,14 +1,15 @@
 //! Sandbox management on top of microsandbox: the sandbox lifecycle, the workspace's mise
-//! tools, the secrets of sandboxes, SSH host names, the generated SSH config, the editors'
-//! Remote-SSH settings and Zed's remote projects.
+//! tools, the secrets of sandboxes, their port forwards, SSH host names, the generated SSH
+//! config, the editors' Remote-SSH settings and Zed's remote projects.
 
+use crate::forward::{self, ForwardReport, Forwards, SshConnector};
 use crate::mise::{self, MiseError};
 use crate::network;
 use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
 use crate::vscode;
 use crate::zed;
-use firebrick_spec::NetworkSpec;
+use firebrick_spec::{NetworkSpec, PortMapping};
 use microsandbox::sandbox::{
     HostPermissions, SandboxBuilder, SandboxHandle, SandboxStatus, VolumeMount,
 };
@@ -87,6 +88,9 @@ pub struct StartSandbox<'a> {
     pub mise: bool,
     /// Egress rules of the sandbox, applied when it is created.
     pub network: &'a NetworkSpec,
+    /// Host ports to forward to the sandbox. Stored with the sandbox; `None` keeps the stored
+    /// list.
+    pub ports: Option<&'a [PortMapping]>,
 }
 
 /// The name, status, SSH host name and workspace paths of a sandbox.
@@ -135,12 +139,16 @@ fn workspace_host_path_of(handle: &SandboxHandle) -> Option<String> {
     })
 }
 
-/// Manages sandboxes and the secrets they get.
+/// Manages sandboxes, the secrets they get and their port forwards.
 pub struct SandboxManager {
     secrets: SecretStore,
+    forwards: Forwards,
     // Held while secrets are stored or added to sandboxes, so a sandbox that is being created
     // can't miss a secret that is being set, and concurrent sets can't mix up values.
     secrets_lock: tokio::sync::Mutex<()>,
+    // Held while the ports of a sandbox are read or stored and its forwards are reconciled, so a
+    // request with stale ports can't undo the forwards of a newer one.
+    ports_lock: tokio::sync::Mutex<()>,
 }
 
 impl SandboxManager {
@@ -148,48 +156,101 @@ impl SandboxManager {
     pub fn new(secrets: SecretStore) -> Self {
         Self {
             secrets,
+            forwards: Forwards::new(SshConnector::default()),
             secrets_lock: tokio::sync::Mutex::new(()),
+            ports_lock: tokio::sync::Mutex::new(()),
         }
     }
 
     /// Starts an existing sandbox or creates a new one when it doesn't exist, installs the
     /// workspace's mise tools when it started, then syncs the SSH config and the editor
-    /// settings, also when starting failed. `resources` is only called when the sandbox is
-    /// created.
+    /// settings, also when starting failed. Once the sandbox runs, stores the requested ports
+    /// and opens its forwards, also when it was already running. `resources` is only called
+    /// when the sandbox is created.
     pub async fn start(
         &self,
         request: StartSandbox<'_>,
         resources: impl FnOnce() -> Result<Resources, SandboxError>,
-    ) -> Result<(), SandboxError> {
+    ) -> Result<ForwardReport, SandboxError> {
         let result = match Sandbox::get(request.name).await {
             Ok(existing_sb) => start_existing_sandbox(&existing_sb, request).await,
             Err(_) => self.create_and_install(request, resources).await,
         };
 
         sync_ssh_config().await;
+        result?;
 
-        result
+        Ok(self.open_forwards(request.name, request.ports).await)
     }
 
-    /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`].
+    /// Opens the forwards of the sandboxes that are running, from their stored ports. Used
+    /// when the daemon starts.
+    pub async fn restore_forwards(&self) {
+        let sandboxes = match list_all_sandboxes().await {
+            Ok(sandboxes) => sandboxes,
+            Err(err) => {
+                tracing::warn!("failed to restore port forwards: {err}");
+                return;
+            }
+        };
+        let _ports = self.ports_lock.lock().await;
+
+        for sb in sandboxes
+            .iter()
+            .filter(|sb| sb.status_snapshot() == SandboxStatus::Running)
+        {
+            self.forwards.apply(sb.name(), &stored_ports(sb)).await;
+        }
+    }
+
+    /// Stores the ports with the sandbox when they're given, then makes its open forwards
+    /// match the stored ports.
+    async fn open_forwards(&self, name: &str, ports: Option<&[PortMapping]>) -> ForwardReport {
+        let _ports = self.ports_lock.lock().await;
+        let ports = match (ports, Sandbox::get(name).await) {
+            (Some(ports), Ok(sb)) => {
+                store_ports(&sb, ports).await;
+                ports.to_vec()
+            }
+            (Some(ports), Err(_)) => ports.to_vec(),
+            (None, Ok(sb)) => stored_ports(&sb),
+            (None, Err(_)) => vec![],
+        };
+
+        self.forwards.apply(name, &ports).await
+    }
+
+    /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`],
+    /// then closes its forwards.
     pub async fn stop(&self, name: &str) -> Result<(), SandboxError> {
-        stop_or_kill(&get_sandbox(name).await?, STOP_TIMEOUT)
-            .await
-            .map_err(|err| {
-                tracing::error!(error = ?err, "failed to stop sandbox {name}");
-                SandboxError::internal("failed to stop sandbox")
-            })
+        let sb = self.get_or_close_forwards(name).await?;
+
+        stop_or_kill(&sb, STOP_TIMEOUT).await.map_err(|err| {
+            tracing::error!(error = ?err, "failed to stop sandbox {name}");
+            SandboxError::internal("failed to stop sandbox")
+        })?;
+
+        self.forwards.close(name).await;
+
+        Ok(())
     }
 
-    /// Removes a sandbox, then syncs the SSH config and the editor settings. A running sandbox
-    /// is only removed with `force`, which stops it first like [`SandboxManager::stop`].
+    /// Removes a sandbox and closes its forwards, then syncs the SSH config and the editor
+    /// settings. A running sandbox is only removed with `force`, which stops it first like
+    /// [`SandboxManager::stop`].
     pub async fn remove(&self, name: &str, force: bool) -> Result<(), SandboxError> {
-        let sb = get_sandbox(name).await?;
+        let sb = self.get_or_close_forwards(name).await?;
+        let live = is_live(sb.status_snapshot());
 
-        if force && is_live(sb.status_snapshot()) {
+        if force && live {
             stop_or_kill(&sb, STOP_TIMEOUT)
                 .await
                 .map_err(|err| stop_before_remove_failed(name, &err))?;
+        }
+
+        // The sandbox doesn't run anymore, also when removing it fails below.
+        if force || !live {
+            self.forwards.close(name).await;
         }
 
         sb.remove().await.map_err(|err| match err {
@@ -205,6 +266,18 @@ impl SandboxManager {
         sync_ssh_config().await;
 
         Ok(())
+    }
+
+    /// Returns the sandbox with the name. Closes its forwards when it doesn't exist anymore, for
+    /// example because it was removed without fbkd, so its host ports are freed.
+    async fn get_or_close_forwards(&self, name: &str) -> Result<SandboxHandle, SandboxError> {
+        let result = get_sandbox(name).await;
+
+        if let Err(SandboxError::NotFound(_)) = result {
+            self.forwards.close(name).await;
+        }
+
+        result
     }
 
     /// Returns the sandbox with the name.
@@ -230,9 +303,10 @@ impl SandboxManager {
             .map_err(|err| connect_failed(name, &err))
     }
 
-    /// Connects to the sandbox with the SSH host name, starting it when needed.
+    /// Connects to the sandbox with the SSH host name, starting it when needed, and opens its
+    /// stored forwards.
     pub async fn connect_by_hostname(&self, hostname: &str) -> Result<Sandbox, SandboxError> {
-        Sandbox::list_with(|opt| opt.label(ssh::HOSTNAME_LABEL, hostname))
+        let sb = Sandbox::list_with(|opt| opt.label(ssh::HOSTNAME_LABEL, hostname))
             .await
             .map_err(|err| {
                 tracing::error!(error = ?err, "failed to list sandboxes with host name {hostname}");
@@ -247,7 +321,11 @@ impl SandboxManager {
             .map_err(|err| {
                 tracing::error!(error = ?err, "failed to start sandbox with host name {hostname}");
                 SandboxError::failed_precondition("failed to start sandbox")
-            })
+            })?;
+
+        self.open_forwards(sb.name(), None).await;
+
+        Ok(sb)
     }
 
     /// Stores a secret and adds it to the existing sandboxes. Running sandboxes pick it up the
@@ -368,10 +446,8 @@ impl SandboxManager {
         let _secrets_guard = self.secrets_lock.lock().await;
         let secrets = self.load_secrets()?;
 
-        let builder = Sandbox::builder(request.name)
-            .image(sandbox_image(request.image))
-            .label(ssh::HOSTNAME_LABEL, &hostname)
-            .label(mise::ENABLED_LABEL, mise::label_value(request.mise))
+        let builder = Sandbox::builder(request.name).image(sandbox_image(request.image));
+        let builder = with_labels(builder, &hostname, request)
             // Mounted read/write; Mirror propagates guest chmod changes to the host files.
             // Mount has the ownership in the guest set to the 1000/1000 (agent) user.
             .volume(&guest_path, |m| {
@@ -499,6 +575,35 @@ async fn start_existing_sandbox(
     match workspace_path_of(sb) {
         Some(workspace) if mise_enabled(sb) => install_mise_tools(&started, &workspace).await,
         _ => Ok(()),
+    }
+}
+
+/// Returns the ports stored with the sandbox.
+fn stored_ports(sb: &SandboxHandle) -> Vec<PortMapping> {
+    sb.config()
+        .ok()
+        .and_then(|config| config.spec.labels.get(forward::PORTS_LABEL).cloned())
+        .map(|value| forward::ports_from_label(&value))
+        .unwrap_or_default()
+}
+
+/// Stores the ports with the sandbox when they differ from the stored ones, logging a warning
+/// when that fails. The label doesn't affect the running VM, so it's applied on the next start
+/// rather than restarting the sandbox.
+async fn store_ports(sb: &SandboxHandle, ports: &[PortMapping]) {
+    if stored_ports(sb) == ports {
+        return;
+    }
+
+    let result = sb
+        .modify()
+        .label(forward::PORTS_LABEL, forward::label_value(ports))
+        .next_start()
+        .apply()
+        .await;
+
+    if let Err(err) = result {
+        tracing::warn!("failed to store the ports of sandbox {}: {err}", sb.name());
     }
 }
 
@@ -716,6 +821,17 @@ fn sandbox_image(image: &str) -> &str {
     } else {
         image
     }
+}
+
+/// Stores the host name, whether mise is enabled and the ports with the sandbox.
+fn with_labels(builder: SandboxBuilder, hostname: &str, request: StartSandbox) -> SandboxBuilder {
+    builder
+        .label(ssh::HOSTNAME_LABEL, hostname)
+        .label(mise::ENABLED_LABEL, mise::label_value(request.mise))
+        .label(
+            forward::PORTS_LABEL,
+            forward::label_value(request.ports.unwrap_or_default()),
+        )
 }
 
 /// Path of the init that runs as PID 1 in sandboxes with `init` enabled.
