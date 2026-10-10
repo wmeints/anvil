@@ -65,7 +65,7 @@
   resolves to: a public name that resolves to a private address still opens, and
   data can still leave through an allowed host, such as a query string to
   `github.com`. The browser sends the user's cookies with the request
-  ([ADR 0022](decisions/0022-relay-urls-to-the-host-through-an-exec-stream.md)).
+  ([ADR 0026](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)).
 - **Ageing Linux build runners:** Linux releases build on the `ubuntu-22.04`
   runners to support glibc 2.35. GitHub retires runner images before their
   Ubuntu release reaches end of support (April 2027), after which the release

@@ -37,7 +37,7 @@ pub(crate) fn load_spec(spec_path: &Path) -> Result<SandboxSpec, String> {
 }
 
 /// Formats a problem with the spec file, with its position when it has one.
-fn report(err: &SandboxSpecError) -> String {
+pub(crate) fn report(err: &SandboxSpecError) -> String {
     match err.diagnostic() {
         Some(diagnostic) => format!(
             "{SPEC_FILE_NAME}:{}:{}: error: {}",

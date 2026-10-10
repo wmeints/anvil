@@ -22,6 +22,10 @@ vm-tests = []
 name = "grpc"
 required-features = ["vm-tests"]
 
+[[test]]
+name = "msb_home"
+required-features = ["vm-tests"]
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
@@ -32,9 +36,13 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 firebrick-utils = { workspace = true }
 tracing-appender = "0.2.5"
-# microsandbox pins microsandbox-network with `=`, so keep both versions equal.
+# microsandbox pins microsandbox-network and microsandbox-image with `=`, so keep the versions
+# equal.
 microsandbox = { version = "0.7.7", features = ["ssh", "embed-binaries"] }
 microsandbox-network = { version = "0.7.7", default-features = false }
+microsandbox-image = { version = "0.7.7", default-features = false }
+# The registry errors of image pulls; keep the version microsandbox-image uses.
+oci-client = { version = "0.18.0", default-features = false }
 russh = "0.63.1"
 firebrick-proto = { workspace = true }
 firebrick-spec = { workspace = true }

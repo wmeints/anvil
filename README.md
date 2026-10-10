@@ -36,7 +36,12 @@ daemon mounts the working directory read/write in the sandbox at
 - On Linux, glibc 2.35 or newer for the release binaries.
 
 Windows isn't supported. `fbkd` embeds the microsandbox runtime and installs it
-in `~/.microsandbox` on first start.
+in its own microsandbox home, `~/.local/state/firebrick/msb` (or
+`$XDG_STATE_HOME/firebrick/msb`), on first start. It never touches
+`~/.microsandbox`, so a separately installed `msb` keeps its own runtime and
+database. Set `MSB_HOME` to use another directory. Sandboxes created by
+firebrick 0.3.0 and earlier stay in `~/.microsandbox`; remove them with `msb` if
+you no longer need them.
 
 ## Installation
 
@@ -130,8 +135,8 @@ fbk ls
 `fbk --version` prints the installed version, for example `fbk 0.3.0`.
 
 `fbk ls` starts `fbkd`, which installs the microsandbox runtime in
-`~/.microsandbox`, and lists your sandboxes (none yet). An error here means
-`fbkd` couldn't start, for example because it isn't next to `fbk`.
+`~/.local/state/firebrick/msb`, and lists your sandboxes (none yet). An error
+here means `fbkd` couldn't start, for example because it isn't next to `fbk`.
 
 ### macOS: remove the quarantine flag
 
@@ -207,22 +212,26 @@ Run the commands from your project directory. Firebrick derives the sandbox from
 that directory. Pass a name from `fbk ls` to `start`, `stop` or `rm` to manage
 another sandbox from any directory.
 
-| Command                           | Description                                                                                                                        |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `fbk start [name]`                | Start the sandbox for the current directory, or the existing sandbox with the name from `fbk ls`.                                  |
-| `fbk run <cmd> [args...]`         | Start the sandbox when needed and run a command in it with a terminal attached.                                                    |
-| `fbk stop [name]`                 | Stop the sandbox, or the one with the name from `fbk ls`. Files on its disk are kept. Killed when it doesn't shut down within 30s. |
-| `fbk ls [--format json]`          | List all sandboxes as a table, or as JSON with `--format json`.                                                                    |
-| `fbk rm [--force] [name]`         | Remove the sandbox, or the one with the name from `fbk ls`. Refuses a running sandbox; `--force` stops it first.                   |
-| `fbk validate`                    | Check the `.firebrick.yml` file in the current directory.                                                                          |
-| `fbk init [--force]`              | Write a `.firebrick.yml` with the defaults to the current directory. `--force` overwrites an existing one.                         |
-| `fbk secret set <name> [<value>]` | Set a secret for all sandboxes. See [Secrets](#secrets).                                                                           |
-| `fbk secret ls [--format json]`   | List the secrets and their allowed hosts, without their values.                                                                    |
-| `fbk secret rm <name>`            | Remove a secret from all sandboxes.                                                                                                |
-| `fbk network allow <rule>...`     | Allow destinations in `.firebrick.yml` and apply the rules to the sandbox. See [Network](#network).                                |
-| `fbk network deny <rule>...`      | Deny destinations in `.firebrick.yml` and apply the rules to the sandbox.                                                          |
-| `fbk network policy enable`       | Turn on enforcement of the network rules (`network.enforce: true`).                                                                |
-| `fbk network policy disable`      | Turn off enforcement of the network rules; the rules are kept.                                                                     |
+| Command                                                     | Description                                                                                                                        |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `fbk start [name]`                                          | Start the sandbox for the current directory, or the existing sandbox with the name from `fbk ls`.                                  |
+| `fbk run <cmd> [args...]`                                   | Start the sandbox when needed and run a command in it with a terminal attached.                                                    |
+| `fbk stop [name]`                                           | Stop the sandbox, or the one with the name from `fbk ls`. Files on its disk are kept. Killed when it doesn't shut down within 30s. |
+| `fbk ls [--format json]`                                    | List all sandboxes as a table, or as JSON with `--format json`.                                                                    |
+| `fbk rm [--force] [name]`                                   | Remove the sandbox, or the one with the name from `fbk ls`. Refuses a running sandbox; `--force` stops it first.                   |
+| `fbk validate`                                              | Check the `.firebrick.yml` file in the current directory.                                                                          |
+| `fbk init [--force]`                                        | Write a `.firebrick.yml` with the defaults to the current directory. `--force` overwrites an existing one.                         |
+| `fbk secret set <name> [<value>] [--scope global\|sandbox]` | Set a secret for all sandboxes, or for the working directory's sandbox. See [Secrets](#secrets).                                   |
+| `fbk secret ls [--format json]`                             | List the secrets of all scopes and their allowed hosts, without their values.                                                      |
+| `fbk secret rm <name> [--scope global\|sandbox]`            | Remove a secret from all sandboxes, or from the working directory's sandbox.                                                       |
+| `fbk port forward <port>`                                   | Forward a host port to the sandbox right away and add it to `ports`. See [Ports](#ports).                                          |
+| `fbk port rm <port>`                                        | Stop forwarding a host port and remove it from `ports`.                                                                            |
+| `fbk network allow <rule>...`                               | Allow destinations in `.firebrick.yml` and apply the rules to the sandbox. See [Network](#network).                                |
+| `fbk network deny <rule>...`                                | Deny destinations in `.firebrick.yml` and apply the rules to the sandbox.                                                          |
+| `fbk network policy enable`                                 | Turn on enforcement of the network rules (`network.enforce: true`).                                                                |
+| `fbk network policy disable`                                | Turn off enforcement of the network rules; the rules are kept.                                                                     |
+| `fbk network disable`                                       | Remove the sandbox's network device (`network.enabled: false`), so it works fully offline. See [Offline](#offline).                |
+| `fbk network enable`                                        | Give the sandbox its network device back (`network.enabled: true`).                                                                |
 
 For example, to open a shell in the sandbox:
 
@@ -294,6 +303,7 @@ agent user owns the mounted files, like the workspace.
 | `resources.cpu`     | Number of vCPUs.                                                        | `2`                                         |
 | `resources.memory`  | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`.         | `4 GiB`                                     |
 | `volumes.docker`    | Size of the Docker data disk, in the same units as `memory`.            | `20 GiB`                                    |
+| `network.enabled`   | Give the sandbox a network device. See [Offline](#offline).             | `true`                                      |
 | `network.enforce`   | Deny outgoing traffic unless a rule allows it. See [Network](#network). | `false`                                     |
 | `network.allow`     | Destinations the sandbox may connect to.                                | Empty                                       |
 | `network.deny`      | Destinations the sandbox may not connect to, even if allowed.           | Empty                                       |
@@ -418,6 +428,47 @@ Keep in mind that:
 - `mise install` downloads its tools when the sandbox starts, so allow the hosts
   it needs, or set `mise: false`.
 
+#### Offline
+
+To keep an agent fully offline, for example for code that must not leave your
+machine, remove the sandbox's network device:
+
+```yaml
+name: my-project
+network:
+  enabled: false # default: true
+```
+
+Or run `fbk network disable` in the project directory, and `fbk network enable`
+to turn the network back on:
+
+```sh
+$ fbk network disable
+disabled the network of my-project
+$ fbk run -- curl -sI https://github.com
+curl: (6) Could not resolve host: github.com
+$ fbk network enable
+enabled the network of my-project
+```
+
+Without a network device, nothing in the sandbox resolves or connects, and
+`enforce`, `allow` and `deny` are validated but ignored. `fbk run`, `ssh
+<leaf>.fbk`, port forwards and the editor integrations keep working, because
+they don't use the sandbox's network. `mise install` can't download tools, so
+install them while the network is on, or set `mise: false`.
+
+This is different from `fbk network policy disable`: that keeps the network
+device and only stops enforcing the rules, so the sandbox can reach the internet
+again. `fbk network disable` takes the network away entirely, whatever the rules
+say.
+
+The commands work like the other `fbk network` commands: they create
+`.firebrick.yml` when it's missing, print `the network is already disabled` or
+`the network is already enabled` when nothing changes, restart an existing
+sandbox while keeping its disks, and only change the file when the sandbox
+doesn't exist yet (`updated .firebrick.yml; the change applies when my-project
+starts`).
+
 ### Ports
 
 To open a server in the sandbox, such as a dev server, from the browser on your
@@ -443,6 +494,21 @@ your network. To change them, edit the list and run `fbk start` again; the
 sandbox keeps running and unchanged forwards keep their connections. `fbk stop`
 and `fbk rm` close them, and an SSH connection that starts the sandbox opens
 them again.
+
+To add or remove a forward while you work, without editing the file:
+
+```sh
+fbk port forward 3000          # host localhost:3000 -> sandbox port 3000
+fbk port forward 8080:5173     # host localhost:8080 -> sandbox port 5173
+fbk port rm 8080               # stop forwarding host port 8080
+```
+
+They apply right away to a running sandbox and update the `ports` list in
+`.firebrick.yml`, keeping its comments and other fields, or create the file when
+there's none. Forwarding a host port that's already listed replaces its sandbox
+port. For a stopped sandbox, or one that doesn't exist yet, the change applies
+when it starts. When the host port is in use, `fbk port forward` fails with
+`couldn't forward localhost:<port>: <reason>` and changes nothing.
 
 When a host port is already in use, the sandbox still starts and `fbk start`
 prints `warning: couldn't forward localhost:<port>: <reason>`. Free the port and
@@ -474,13 +540,36 @@ you can repeat:
 | `COPILOT_GITHUB_TOKEN`                         | `github.com`, `api.github.com`, `*.githubcopilot.com` |
 | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` | `api.anthropic.com`                                   |
 
-Secrets apply to all sandboxes. A running sandbox gets a new or changed secret
-after `fbk stop` and `fbk start`.
+Secrets apply to all sandboxes. To give one project its own value, set the
+secret with `--scope sandbox` in the project's directory. It applies to that
+project's sandbox only, which must exist, and wins over a global secret with the
+same name there:
 
-`fbk secret ls` shows the names and allowed hosts of the secrets, never their
-values. `fbk secret rm <name>` removes a secret, but a running sandbox keeps
-using it until it restarts. If a token leaked, revoke it where you created it as
-well.
+```sh
+fbk secret set MY_SECRET --from-stdin --allow-host api.example.com --scope sandbox
+Secret MY_SECRET set for sandbox firebrick-d9f287. The sandbox sees the placeholder $MSB_MY_SECRET; it gets it after a restart when it's running.
+```
+
+A running sandbox gets a new or changed secret after `fbk stop` and `fbk start`.
+
+`fbk secret ls` shows the names, scopes and allowed hosts of the secrets, never
+their values:
+
+```text
+┌─────────────────────────┬──────────────────┬───────────────────┐
+│ NAME                    │ SCOPE            │ ALLOWED HOSTS     │
+├─────────────────────────┼──────────────────┼───────────────────┤
+│ CLAUDE_CODE_OAUTH_TOKEN │ global           │ api.anthropic.com │
+│ MY_SECRET               │ firebrick-d9f287 │ api.example.com   │
+│ MY_SECRET               │ other-project    │ api.example.org   │
+└─────────────────────────┴──────────────────┴───────────────────┘
+```
+
+`fbk secret rm <name>` removes a global secret, and `fbk secret rm <name>
+--scope sandbox` the working directory's sandbox secret, after which that
+sandbox gets the global secret with the same name again. A running sandbox keeps
+using a removed secret until it restarts. `fbk rm` removes the sandbox's own
+secrets too. If a token leaked, revoke it where you created it as well.
 
 To let `git` push and pull over HTTPS with `GH_TOKEN`, configure a credential
 helper in the sandbox that hands git the placeholder as the password:
@@ -642,7 +731,7 @@ instead.
 
 Cargo commands in this repository use `/tmp/firebrick-msb` as the microsandbox
 home (`MSB_HOME`, set in `.cargo/config.toml`), so the integration tests don't
-share a runtime or database with your own `~/.microsandbox`.
+share a runtime or database with an installed `fbkd` or `msb`.
 
 The default sandbox image is the `firebrick-base` image of the same release, so
 it doesn't exist for a version that hasn't been released yet. To run a
@@ -655,8 +744,9 @@ docker build -t localhost:5000/firebrick-base:dev .
 docker push localhost:5000/firebrick-base:dev
 ```
 
-The local registry speaks plain HTTP, so allow it in
-`~/.microsandbox/config.json` before `fbkd` starts:
+The local registry speaks plain HTTP, so allow it in `config.json` in the
+microsandbox home (`$MSB_HOME`, or `~/.local/state/firebrick/msb`) before `fbkd`
+starts:
 
 ```json
 { "registries": { "hosts": { "localhost:5000": { "insecure": true } } } }
@@ -664,13 +754,13 @@ The local registry speaks plain HTTP, so allow it in
 
 The workspace contains five crates:
 
-| Crate              | Folder          | Purpose                                                                  |
-| ------------------ | --------------- | ------------------------------------------------------------------------ |
-| `firebrick-cli`    | `crates/cli`    | The `fbk` CLI.                                                           |
-| `firebrick-daemon` | `crates/daemon` | The `fbkd` daemon.                                                       |
-| `firebrick-proto`  | `crates/proto`  | Generated gRPC code for the daemon API.                                  |
-| `firebrick-spec`   | `crates/spec`   | Parses and validates `.firebrick.yml`.                                   |
-| `firebrick-utils`  | `crates/utils`  | Shared paths for the socket, logs and SSH files, and the name sanitizer. |
+| Crate              | Folder          | Purpose                                                                                     |
+| ------------------ | --------------- | ------------------------------------------------------------------------------------------- |
+| `firebrick-cli`    | `crates/cli`    | The `fbk` CLI.                                                                              |
+| `firebrick-daemon` | `crates/daemon` | The `fbkd` daemon.                                                                          |
+| `firebrick-proto`  | `crates/proto`  | Generated gRPC code for the daemon API.                                                     |
+| `firebrick-spec`   | `crates/spec`   | Parses and validates `.firebrick.yml`.                                                      |
+| `firebrick-utils`  | `crates/utils`  | Shared paths for the socket, logs, SSH files and microsandbox home, and the name sanitizer. |
 
 The gRPC contract lives in
 [`crates/proto/proto/daemon.v1.proto`](crates/proto/proto/daemon.v1.proto).

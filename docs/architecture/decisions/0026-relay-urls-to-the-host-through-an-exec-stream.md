@@ -1,4 +1,4 @@
-# 22. Relay URLs to the host through an exec stream
+# 26. Relay URLs to the host through an exec stream
 
 ## Status
 
@@ -48,7 +48,8 @@ output with `exec_stream_with`, the same way `fbk run` sessions work.
   cookies, to services on the host or its LAN. When the sandbox enforces egress
   rules, the host must also be one the rules allow, so the browser can't carry
   data to a host the sandbox can't reach itself. `fbkd` reads the rules from the
-  sandbox's `firebrick.network` label and opens nothing when it can't.
+  sandbox's `firebrick.network` label and opens nothing when it can't, or when
+  the sandbox's network is disabled.
 - `fbkd` opens at most 5 URLs per sandbox within 10 seconds, so a loop in the
   sandbox can't flood the host with browser processes.
 - It opens the URL as the `url` crate serializes it, with `xdg-open` or `open`

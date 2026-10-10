@@ -15,9 +15,11 @@ use tonic::transport::Channel;
 use crate::api::{
     GetSandboxRequest, GetSandboxResponse, ListSandboxesRequest, ListSandboxesResponse, Mount,
     NetworkPolicy, PortForward, PortForwards, RemoveSandboxRequest, SandboxResources,
-    SandboxStatus, SandboxSummary, SandboxVolumes, StartSandboxRequest, StartSandboxResponse,
+    SandboxStarted, SandboxStatus, SandboxSummary, SandboxVolumes, StartSandboxRequest,
     StopSandboxRequest, sandbox_management_service_client::SandboxManagementServiceClient,
+    start_sandbox_response,
 };
+use crate::progress::PullProgressView;
 use crate::table;
 
 /// Name of the spec file `fbk` looks for in the working directory.
@@ -48,7 +50,7 @@ pub async fn start_sandbox(
 }
 
 /// Returns a line per open forward of the sandbox.
-fn forward_lines(started: &StartSandboxResponse) -> String {
+fn forward_lines(started: &SandboxStarted) -> String {
     started
         .forwards
         .iter()
@@ -62,7 +64,7 @@ fn forward_lines(started: &StartSandboxResponse) -> String {
 }
 
 /// Prints a warning to stderr for each forward the daemon couldn't open.
-fn warn_failed_forwards(started: &StartSandboxResponse) {
+fn warn_failed_forwards(started: &SandboxStarted) {
     for failure in &started.failed_forwards {
         let host = failure.port.as_ref().map_or(0, |port| port.host);
         eprintln!(
@@ -93,7 +95,7 @@ fn connect_instructions(sandbox: &GetSandboxResponse) -> String {
 async fn start_named_sandbox(
     name: String,
     client: &mut SandboxManagementServiceClient<Channel>,
-) -> Result<(String, StartSandboxResponse)> {
+) -> Result<(String, SandboxStarted)> {
     // The daemon falls back to the sandbox name for the host name when the workspace is empty.
     let Some(started) = start_if_exists(start_request(&name, Path::new(""), None), client).await?
     else {
@@ -110,7 +112,7 @@ async fn start_named_sandbox(
 async fn start_working_dir_sandbox(
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
-) -> Result<(String, StartSandboxResponse)> {
+) -> Result<(String, SandboxStarted)> {
     let spec = resolve_spec(working_dir, client).await?;
     let name = spec.name.clone();
 
@@ -130,7 +132,7 @@ pub(crate) async fn ensure_running(
     spec: SandboxSpec,
     workspace: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
-) -> Result<StartSandboxResponse> {
+) -> Result<SandboxStarted> {
     check_workspace_owner(&spec.name, workspace, client).await?;
 
     let ports = port_forwards(&spec.ports);
@@ -141,13 +143,38 @@ pub(crate) async fn ensure_running(
             let request = build_start_request(spec, workspace)?;
 
             eprintln!("Creating sandbox {}...", request.name);
-            client.start_sandbox(request).await?.into_inner()
+            send_start_request(request, client).await?
         }
     };
 
     warn_failed_forwards(&started);
 
     Ok(started)
+}
+
+/// Sends the start request and shows the progress of the image pull while the daemon creates
+/// the sandbox. Returns the message that ends the stream.
+async fn send_start_request(
+    request: StartSandboxRequest,
+    client: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<SandboxStarted> {
+    let mut stream = client.start_sandbox(request).await?.into_inner();
+    let mut pull = PullProgressView::stderr();
+
+    while let Some(response) = stream.message().await? {
+        match response.message {
+            Some(start_sandbox_response::Message::PullProgress(progress)) => {
+                pull.update(&progress);
+            }
+            Some(start_sandbox_response::Message::Started(started)) => {
+                pull.finish();
+                return Ok(started);
+            }
+            None => {}
+        }
+    }
+
+    bail!("the daemon ended the start without starting the sandbox")
 }
 
 /// Turns the ports of a spec into their API message.
@@ -225,7 +252,7 @@ fn start_request(name: &str, workspace: &Path, ports: Option<PortForwards>) -> S
 async fn start_if_exists(
     request: StartSandboxRequest,
     client: &mut SandboxManagementServiceClient<Channel>,
-) -> Result<Option<StartSandboxResponse>> {
+) -> Result<Option<SandboxStarted>> {
     let name = request.name.clone();
     let deadline = Instant::now() + STARTING_TIMEOUT;
 
@@ -249,7 +276,7 @@ async fn start_if_exists(
 }
 
 /// Returns the status of the sandbox, or `None` when it doesn't exist.
-async fn sandbox_status(
+pub(crate) async fn sandbox_status(
     client: &mut SandboxManagementServiceClient<Channel>,
     name: &str,
 ) -> Result<Option<SandboxStatus>> {
@@ -271,7 +298,7 @@ async fn start_existing_sandbox(
     status: SandboxStatus,
     request: StartSandboxRequest,
     client: &mut SandboxManagementServiceClient<Channel>,
-) -> Result<ControlFlow<StartSandboxResponse>> {
+) -> Result<ControlFlow<SandboxStarted>> {
     let name = request.name.clone();
 
     match status {
@@ -281,7 +308,7 @@ async fn start_existing_sandbox(
                 eprintln!("Starting sandbox {name}...");
             }
 
-            let started = client.start_sandbox(request).await?.into_inner();
+            let started = send_start_request(request, client).await?;
 
             Ok(ControlFlow::Break(started))
         }
@@ -408,6 +435,7 @@ pub(crate) fn network_policy(network: NetworkSpec) -> NetworkPolicy {
     let rules = |rules: Vec<NetworkRule>| rules.iter().map(ToString::to_string).collect();
 
     NetworkPolicy {
+        enabled: network.enabled,
         enforce: network.enforce,
         allow: rules(network.allow),
         deny: rules(network.deny),
@@ -992,7 +1020,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(
             dir.path().join(SPEC_FILE_NAME),
-            "name: dev\nnetwork:\n  enforce: true\n  allow: [github.com, \"*.example.com\", 10.0.0.1, 10.0.0.0/8]\n  deny: [gist.github.com]\n",
+            "name: dev\nnetwork:\n  enabled: false\n  enforce: true\n  allow: [github.com, \"*.example.com\", 10.0.0.1, 10.0.0.0/8]\n  deny: [gist.github.com]\n",
         )
         .unwrap();
 
@@ -1010,6 +1038,7 @@ mod tests {
                     "10.0.0.0/8".to_string(),
                 ],
                 deny: vec!["gist.github.com".to_string()],
+                enabled: Some(false),
             })
         );
     }
@@ -1045,7 +1074,7 @@ mod tests {
 
     #[test]
     fn forward_lines_name_host_and_sandbox_ports() {
-        let started = StartSandboxResponse {
+        let started = SandboxStarted {
             forwards: vec![PortForward {
                 host: 8080,
                 guest: 5173,

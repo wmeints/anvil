@@ -490,7 +490,7 @@ mod tests {
         NetworkSpec {
             enforce: true,
             allow: allow.iter().map(|rule| rule.parse().unwrap()).collect(),
-            deny: vec![],
+            ..NetworkSpec::default()
         }
     }
 

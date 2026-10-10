@@ -43,7 +43,9 @@ C4Component
         Component(init, "init", "serde_yaml", "Default spec")
         Component(secret, "secret", "Rust", "Secrets")
         Component(network, "network", "Rust", "Network rules")
+        Component(port, "port", "Rust", "Port forwards")
         Component(table, "table", "ratatui", "Tables")
+        Component(progress, "progress", "indicatif", "Image pull progress")
         Component(client, "client", "Tonic client", "Daemon client")
     }
     Component_Ext(spec, "firebrick-spec", "serde_yaml", "Sandbox spec")
@@ -57,8 +59,12 @@ C4Component
     Rel(main, init, "Uses")
     Rel(main, secret, "Uses")
     Rel(main, network, "Uses")
+    Rel(main, port, "Uses")
+    Rel(port, manage, "Resolves sandbox name")
+    Rel(port, spec, "Edits ports in .firebrick.yml")
     Rel(main, client, "Connects")
     Rel(manage, table, "Renders sandboxes")
+    Rel(manage, progress, "Shows image pull")
     Rel(secret, table, "Renders secrets")
     Rel(session, manage, "Ensures running")
     Rel(manage, spec, "Loads .firebrick.yml")
@@ -74,9 +80,11 @@ C4Component
 
 - `main` - Parses the `start`, `stop`, `ls`, `rm`, `run`, `validate`, `init`,
   `secret set`, `secret ls`, `secret rm`, `network allow`, `network deny`,
-  `network policy enable` and `network policy disable` commands, and the hidden
-  `ssh-proxy` command. `validate`, `init` and `--version`, which prints the
-  package version, run without the daemon.
+  `network policy enable`, `network policy disable`, `network enable`, `network
+  disable`, `port forward` and `port rm` commands, and the hidden `ssh-proxy`
+  command. The argument of `port forward` is parsed with `PortMapping`'s parser,
+  and that of `port rm` as a port from 1 to 65535. `validate`, `init` and
+  `--version`, which prints the package version, run without the daemon.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
   waits at most 5 seconds for the socket.
@@ -91,26 +99,48 @@ C4Component
 - `ssh` - Tunnels SSH protocol bytes between stdin/stdout and the `SshTunnel`
   stream. The generated SSH config uses it as `ProxyCommand`.
 - `secret` - Sends a secret to the daemon with `SetSecret`. With `--from-stdin`,
-  it reads the value from stdin and removes one trailing line ending. `secret
-  ls` prints the names and allowed hosts from `ListSecrets` as a table or, with
+  it reads the value from stdin and removes one trailing line ending. With
+  `--scope sandbox`, `secret set` and `secret rm` send the name of the working
+  directory's sandbox, resolved like `fbk stop` without a name; the default
+  `--scope global` sends none. `secret ls` prints the names, scopes (`global` or
+  the sandbox name) and allowed hosts from `ListSecrets` as a table or, with
   `--format json`, as a JSON array. `secret rm` removes a secret with
   `RemoveSecret`. It warns about sandboxes the daemon couldn't add the secret to
   or remove it from.
-- `network` - Keeps the network rules in `.firebrick.yml` and the sandbox in
+- `network` - Keeps the network settings in `.firebrick.yml` and the sandbox in
   sync. It validates the rules, applies the change to the network section of the
   spec in the working directory and writes the file, before it sends the whole
   section to the daemon with `UpdateNetwork`. `allow` and `deny` add rules to
   one list and remove them from the other, without duplicates. `policy` sets
-  `enforce`. Without `.firebrick.yml`, it writes `default_spec` with the name
-  `manage` would pick, including a legacy name, plus the change. An invalid file
-  is reported like `validate` reports it, and nothing changes. When the network
-  section didn't change, it leaves the file alone but still asks the daemon, so
-  the sandbox catches up with the file. `NOT_FOUND` from the daemon means the
-  sandbox doesn't exist yet, so the file alone is enough. It warns when `allow`
-  or `deny` leave `enforce` off.
+  `enforce`, which decides whether the rules are enforced. `enable` and
+  `disable` set `enabled`, which decides whether the sandbox has a network
+  device at all; a missing `enabled` counts as `true`. Without `.firebrick.yml`,
+  it writes `default_spec` with the name `manage` would pick, including a legacy
+  name, plus the change. An invalid file is reported like `validate` reports it,
+  and nothing changes. When the network section didn't change, it leaves the
+  file alone but still asks the daemon, so the sandbox catches up with the file.
+  `NOT_FOUND` from the daemon means the sandbox doesn't exist yet, so the file
+  alone is enough. It warns when `allow` or `deny` leave `enforce` off.
+- `port` - Forwards a host port to the working directory's sandbox with
+  `ForwardPort`, or removes a forward with `RemovePort`, and records the change
+  in `.firebrick.yml` with `firebrick_spec::add_port` and `remove_port`. It
+  resolves the sandbox name like `fbk start`, prepares the edited file text
+  before it contacts the daemon, and writes the file only after the daemon
+  accepted the change; without a `.firebrick.yml` it creates one with the
+  resolved name. When the sandbox doesn't exist yet, it skips the RPC and only
+  writes the file. It reports an invalid spec like `validate`, a
+  `FAILED_PRECONDITION` as `couldn't forward localhost:<port>: <reason>` and a
+  `NOT_FOUND` as `port <port> isn't forwarded for sandbox <name>`. See
+  [Forwarding a port](06-runtime-view.md#forwarding-a-port).
 - `table` - Renders rows as a bordered table with `ratatui` into an in-memory
   buffer and returns it as plain text lines
   ([ADR 0003](decisions/0003-render-cli-tables-with-ratatui.md)).
+- `progress` - Shows the image pull progress from the `StartSandbox` stream on
+  stderr: a progress bar made with `indicatif` with the downloaded and total MiB
+  and a percentage when stderr is a terminal, and otherwise `Pulling image
+  <ref>...` and `Pulled image <ref>`. It shows nothing when no progress arrives,
+  and clears an unfinished bar when the start fails
+  ([ADR 0024](decisions/0024-stream-image-pull-progress-from-startsandbox.md)).
 - `validate` - Checks `.firebrick.yml` and reports problems as
   `file:line:column: error: message`.
 - `init` - Writes `firebrick_spec::default_spec` as YAML to `.firebrick.yml` in
@@ -136,6 +166,7 @@ C4Component
         Component(network, "network", "microsandbox-network", "Egress rules")
         Component(forward, "forward", "russh", "Port forwards")
         Component(open, "open", "Rust", "URL relays")
+        Component(pull, "pull", "Rust", "Image pull progress")
     }
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
@@ -156,6 +187,7 @@ C4Component
     Rel(sandboxes, secrets, "Loads, stores and applies secrets")
     Rel(sandboxes, network, "Applies egress rules")
     Rel(sandboxes, forward, "Reconciles port forwards")
+    Rel(sandboxes, pull, "Reports image pull progress")
     Rel(forward, microsandbox, "Opens direct-tcpip channels")
     Rel(sandboxes, open, "Starts URL relays")
     Rel(open, microsandbox, "Runs the relay as an exec stream")
@@ -190,12 +222,14 @@ C4Component
   a `StartSandbox` or `UpdateNetwork` request with `firebrick-spec` and rejects
   an invalid rule with `INVALID_ARGUMENT`, also when the sandbox already exists.
   It rejects a port outside 1 to 65535 or a host port that is listed twice with
-  `INVALID_ARGUMENT`, and returns the open and failed forwards in the
-  `StartSandbox` response. It maps the `SandboxError` of `sandboxes` to gRPC
-  status codes in one place. It refuses to start when the socket already exists,
-  gives the socket mode `0600` after binding it and removes it on shutdown. It
-  only hands a connection to tonic when the peer's UID, read with `SO_PEERCRED`,
-  is the daemon's own UID or root (see
+  `INVALID_ARGUMENT`. `StartSandbox` is a server-streaming RPC: `server` runs
+  the start in a task of its own, so it finishes when the client disconnects,
+  streams the image pull progress and ends the stream with the open and failed
+  forwards, or with the error status. It maps the `SandboxError` of `sandboxes`
+  to gRPC status codes in one place. It refuses to start when the socket already
+  exists, gives the socket mode `0600` after binding it and removes it on
+  shutdown. It only hands a connection to tonic when the peer's UID, read with
+  `SO_PEERCRED`, is the daemon's own UID or root (see
   [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
@@ -206,15 +240,18 @@ C4Component
   workspace path or `/var/lib/docker` with `INVALID_ARGUMENT`, attaches a
   sandbox-owned ext4 disk of the requested size at `/var/lib/docker` (see
   [ADR 0015](decisions/0015-give-each-sandbox-a-docker-data-disk.md)), applies
-  the egress rules with the `network` module and adds the stored secrets. The
-  disk survives stops and restarts, and microsandbox deletes it when the sandbox
-  is removed. With `init` on, it hands PID 1 to the image's `/sbin/init`. When
-  that fails because the image has no init, it removes the half-created sandbox
-  and returns `FAILED_PRECONDITION` with a hint to set `init: false`. Invalid
-  values are rejected before it creates anything. When it creates or starts a
-  sandbox, it uses the `mise` module to trust the mise config files at the
-  workspace root and run `mise install`, unless the sandbox's `firebrick.mise`
-  label, stored at create time, turns mise off (see
+  the egress rules with the `network` module and adds the global secrets, with
+  the sandbox's own sandbox-scoped secrets in their place. The disk survives
+  stops and restarts, and microsandbox deletes it when the sandbox is removed.
+  With `init` on, it hands PID 1 to the image's `/sbin/init`. When that fails
+  because the image has no init, it removes the half-created sandbox and returns
+  `FAILED_PRECONDITION` with a hint to set `init: false`. A pull of an image
+  that doesn't exist returns `NOT_FOUND`, and one whose registry can't be
+  reached `UNAVAILABLE`, both naming the image. Invalid values are rejected
+  before it creates anything. When it creates or starts a sandbox, it uses the
+  `mise` module to trust the mise config files at the workspace root and run
+  `mise install`, unless the sandbox's `firebrick.mise` label, stored at create
+  time, turns mise off (see
   [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It starts,
   stops, gets, lists and removes sandboxes, gives each sandbox a unique SSH host
   name, regenerates the SSH config, the editor settings and Zed's remote
@@ -225,35 +262,58 @@ C4Component
   Both are empty for a sandbox without a workspace. The CLI compares
   `workspace_host_path` with the working directory before it uses an existing
   sandbox. A failed sync only logs a warning. `SetSecret` stores a secret and
-  adds it to the existing sandboxes firebrick created. `ListSecrets` returns the
-  names and allowed hosts, sorted by name, never the values. `RemoveSecret`
-  removes a secret from the existing sandboxes firebrick created and then from
-  the store, keeps it in the store when a sandbox fails so the removal can be
-  retried, and returns `NOT_FOUND` for an unknown name. A lock around the secret
-  store makes sure a sandbox that is being created can't miss a secret that is
-  being set. It stores a sandbox's port mappings in the `firebrick.ports` label
-  (`3000:3000,8080:5173`), updates it from each `StartSandbox` that carries
-  ports, also for a running sandbox (as a `next_start` change, so the VM keeps
-  running), and keeps it when a request carries none. Once a sandbox runs after
-  `StartSandbox`, or after `SshTunnel` started it, it hands the stored ports to
-  `forward`; `StopSandbox` and `RemoveSandbox` close the sandbox's forwards.
-  `UpdateNetwork` replaces the egress rules of an existing sandbox by recreating
-  it from a disk snapshot, with the settings it reads from the sandbox's stored
-  config (see
+  adds it to the sandboxes in its scope: a global secret to the existing
+  sandboxes firebrick created, except the ones with a sandbox-scoped secret with
+  that name, and a sandbox-scoped secret to its sandbox only, which must exist.
+  `ListSecrets` returns the names, scopes and allowed hosts, sorted by name and
+  then scope with the global secret first, never the values. `RemoveSecret`
+  removes a secret from the same sandboxes and then from the store, keeps it in
+  the store when a sandbox fails so the removal can be retried, and returns
+  `NOT_FOUND` for an unknown name or sandbox. A sandbox that loses its
+  sandbox-scoped secret gets the global one with that name back. Removing a
+  sandbox removes its sandbox-scoped secrets from the store (see
+  [Secret scopes](08-crosscutting-concepts.md#secret-scopes)). A lock around the
+  secret store makes sure a sandbox that is being created can't miss a secret
+  that is being set. It stores a sandbox's port mappings in the
+  `firebrick.ports` label (`3000:3000,8080:5173`), updates it from each
+  `StartSandbox` that carries ports, also for a running sandbox (as a
+  `next_start` change, so the VM keeps running), and keeps it when a request
+  carries none. Once a sandbox runs after `StartSandbox`, or after `SshTunnel`
+  started it, it hands the stored ports to `forward`; `StopSandbox` and
+  `RemoveSandbox` close the sandbox's forwards. `UpdateNetwork` replaces the
+  network settings of an existing sandbox, the network switch and the egress
+  rules, by recreating it from a disk snapshot, with the settings it reads from
+  the sandbox's stored config (see
   [Updating the network rules](06-runtime-view.md#updating-the-network-rules)
   and
   [ADR 0021](decisions/0021-recreate-sandboxes-from-a-disk-snapshot-to-change-their-network-rules.md)).
-  It skips a sandbox whose `firebrick.network` label already records the rules
-  and refuses a paused one. It closes the forwards while it stops the sandbox
-  and reopens them when the sandbox runs afterwards. The recreated sandbox keeps
-  its extra mounts and its labels, including `firebrick.ports`. Creating and
-  recreating a sandbox share one builder chain, which also sets that label. A
-  lock per sandbox name, held by start, stop, remove, connect and
-  `UpdateNetwork`, keeps those operations from interleaving with a recreate; a
-  lock is dropped when no task holds or waits for it. `StartSandbox`, `Attach`,
-  `SshTunnel` and an `UpdateNetwork` of a running sandbox make sure the
-  sandbox's URL relay runs, through `open`; `StopSandbox`, `RemoveSandbox` and
-  recreating the sandbox forget it.
+  It skips a sandbox whose `firebrick.network` label already records the
+  settings (`disabled` for a sandbox without a network device, whatever its
+  rules) and refuses a paused one. It closes the forwards while it stops the
+  sandbox and reopens them when the sandbox runs afterwards. The recreated
+  sandbox keeps its extra mounts and its labels, including `firebrick.ports`.
+  Creating and recreating a sandbox share one builder chain, which also sets
+  that label. A lock per sandbox name, held by start, stop, remove, connect,
+  `ForwardPort`, `RemovePort` and `UpdateNetwork`, keeps those operations from
+  interleaving with a recreate; a lock is dropped when no task holds or waits
+  for it. `ForwardPort` adds one mapping to the stored ports, replacing the one
+  with the same host port, and `RemovePort` removes the mapping of a host port,
+  or returns `NOT_FOUND` when it isn't stored. For a running sandbox, both first
+  reconcile its forwards with the new list; when the requested forward can't be
+  opened, also when it was stored already, they reopen the old forwards and
+  return `FAILED_PRECONDITION` with the reason, without changing the label. For
+  a stopped sandbox they only update the label, and the forward opens on the
+  next start. Both return whether the sandbox runs. They hold the sandbox's
+  lock, so they can't interleave with a recreate by `UpdateNetwork`, and the
+  ports lock while they read, reconcile and store the ports. `StartSandbox`,
+  `Attach`, `SshTunnel` and an `UpdateNetwork` of a running sandbox make sure
+  the sandbox's URL relay runs, through `open`; `StopSandbox`, `RemoveSandbox`
+  and recreating the sandbox forget it.
+- `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
+  up the downloaded bytes per layer, takes the total from the manifest, and
+  reports at most one update every 100 ms, one for each layer that finishes and
+  a final one when the pull completes. A pull without layer downloads, because
+  the image is cached, reports nothing.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and
@@ -283,7 +343,7 @@ C4Component
   closed and logged at `debug`.
 - `open` - Opens http and https URLs from a sandbox in the browser on the host
   (see
-  [ADR 0022](decisions/0022-relay-urls-to-the-host-through-an-exec-stream.md)
+  [ADR 0026](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)
   and
   [Opening a URL on the host](06-runtime-view.md#opening-a-url-on-the-host)).
   `Relays::ensure` starts the relay of a connected, running sandbox unless it
@@ -325,12 +385,20 @@ C4Component
   a placeholder such as `$MSB_GH_TOKEN`, and microsandbox's TLS proxy puts the
   real value in requests to the secret's allowed hosts. It knows the default
   allowed hosts for well-known names such as `GH_TOKEN` and `ANTHROPIC_API_KEY`
-  ([ADR 0004](decisions/0004-store-secrets-in-a-private-file.md)).
+  ([ADR 0004](decisions/0004-store-secrets-in-a-private-file.md)). Each secret
+  is global or belongs to one sandbox, and a name is unique within a scope
+  ([ADR 0022](decisions/0022-scope-secrets-per-sandbox.md)).
 - `network` - Turns the `network` section of a spec into the network settings of
-  a sandbox that is being created. Without `enforce`, it leaves the sandbox with
-  microsandbox's default policy. With `enforce`, it builds a policy of all deny
-  rules, then all allow rules, then microsandbox's DNS rule, with deny as the
-  default for egress. Host names map to a `Domain`, `*.domain` to a
+  a sandbox that is being created. With `enabled: false`, it calls
+  microsandbox's `disable_network()`, which removes the network device and sets
+  a deny-all policy, and ignores `enforce`, `allow` and `deny`: there is no
+  traffic to intercept, so it sets up no TLS interception or deny page. Stored
+  secrets are still added; they don't bring the device back. `fbk run`, the SSH
+  tunnel and port forwards keep working, because they go through microsandbox's
+  agent channel instead of the guest network. Without `enforce`, it leaves the
+  sandbox with microsandbox's default policy. With `enforce`, it builds a policy
+  of all deny rules, then all allow rules, then microsandbox's DNS rule, with
+  deny as the default for egress. Host names map to a `Domain`, `*.domain` to a
   `DomainSuffix`, and IP addresses and CIDR ranges to a `Cidr`. It also turns on
   TLS interception for port 443 and microsandbox's HTTP deny response, whose
   body names the host and `fbk network allow <host>`
@@ -382,19 +450,26 @@ C4Component
 - `firebrick-spec` (`crates/spec`) - Parses `.firebrick.yml` into a
   `SandboxSpec` with a `name`, an optional `image`, optional `init` and `mise`
   flags, optional `resources` (`cpu`, `memory`), `volumes` (`docker`, the size
-  of the Docker data disk), an optional `network` section (`enforce`, default
-  `false`, and the `allow` and `deny` rules), an optional `ports` list and
-  optional `mounts` (`host`, `guest` and `readonly`, default `false`), rejects
-  unknown fields and reports the line and column of a problem. A `PortMapping`
-  in `ports` is written like Docker Compose: `3000` forwards host port 3000 to
-  guest port 3000, and `"8080:5173"` host port 8080 to guest port 5173. Ports
-  outside 1 to 65535, other forms and a host port that appears twice are
-  reported at the entry. `guest_mount_path` checks a mount's `guest` the way
-  microsandbox does: an absolute path other than `/`, without `..`, `:`, `;` or
-  `,`. It normalizes the path (no `.` parts or trailing slash), and each
-  normalized path may appear only once. The daemon uses the same check. The CLI
-  resolves each mount's `host` against the spec file's directory, expanding `~`
-  to `$HOME` and `~user` to that user's home directory
+  of the Docker data disk), an optional `network` section (`enabled`, default
+  `true`, `enforce`, default `false`, and the `allow` and `deny` rules), an
+  optional `ports` list and optional `mounts` (`host`, `guest` and `readonly`,
+  default `false`), rejects unknown fields and reports the line and column of a
+  problem. A `PortMapping` in `ports` is written like Docker Compose: `3000`
+  forwards host port 3000 to guest port 3000, and `"8080:5173"` host port 8080
+  to guest port 5173. Ports outside 1 to 65535, other forms and a host port that
+  appears twice are reported at the entry. `add_port` and `remove_port` add,
+  replace or remove one entry in the text of a spec file: they edit only the
+  lines of the top-level `ports` block, so comments and formatting elsewhere
+  stay, append a `ports` key when there is none, write `ports: []` when the last
+  entry goes, and rewrite a flow list such as `[3000]` as a block list. They
+  parse the result before returning it. `with_port` replaces or adds a mapping
+  by host port; the daemon uses it for the stored ports too. `guest_mount_path`
+  checks a mount's `guest` the way microsandbox does: an absolute path other
+  than `/`, without `..`, `:`, `;` or `,`. It normalizes the path (no `.` parts
+  or trailing slash), and each normalized path may appear only once. The daemon
+  uses the same check. The CLI resolves each mount's `host` against the spec
+  file's directory, expanding `~` to `$HOME` and `~user` to that user's home
+  directory
   ([ADR 0020](decisions/0020-look-up-user-home-directories-with-nix.md)), to the
   canonical path of an existing directory before it sends `StartSandbox`.
   `NetworkRule` parses a rule: a host name, `*.` plus a domain of at least two
@@ -404,8 +479,9 @@ C4Component
   vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
   `VolumesSpec::default()`) and `parse_size_mib`, which reads memory and volume
   sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both use them.
-  `NetworkSpec::allow` and `NetworkSpec::deny` move rules between the lists, and
-  `to_file` writes a spec back as YAML, leaving out unset fields.
+  `NetworkSpec::allow` and `NetworkSpec::deny` move rules between the lists,
+  `NetworkSpec::is_enabled` reads `enabled` with its default, and `to_file`
+  writes a spec back as YAML, leaving out unset fields.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
   (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
   (`$XDG_STATE_HOME/firebrick`), the SSH directory
@@ -419,8 +495,8 @@ sandbox is created. Changing them in `.firebrick.yml` doesn't change an existing
 sandbox; remove it with `fbk rm` and start it again. There are two exceptions:
 `fbk start` and `fbk run` send `ports` to existing and running sandboxes too, so
 a changed list applies without a restart, and `fbk network` changes the network
-rules in `.firebrick.yml` and has `fbkd` recreate the sandbox from a disk
-snapshot, which keeps its disks.
+switch or rules in `.firebrick.yml` and has `fbkd` recreate the sandbox from a
+disk snapshot, which keeps its disks.
 
 ## Base image
 

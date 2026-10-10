@@ -5,6 +5,7 @@ pub mod forward;
 pub mod mise;
 pub mod network;
 pub mod open;
+pub mod pull;
 pub mod runtime;
 pub mod sandboxes;
 pub mod secrets;
