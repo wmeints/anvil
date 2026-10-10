@@ -1,14 +1,24 @@
 name: Release
 
+# The tag-release workflow calls this workflow after it tags a version bump on main,
+# because a tag pushed with the GITHUB_TOKEN doesn't start the push trigger.
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag, such as v0.4.0
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  # A workflow call runs on main, so the tag comes from the input instead of the ref.
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   package:
@@ -28,6 +38,8 @@ jobs:
           # Windows is left out: fbk and fbkd depend on unix sockets and signals.
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
       # Ubuntu 22.04's apt protoc (3.12) rejects proto3 optional fields, so install a current release.
       - uses: arduino/setup-protoc@v3
@@ -44,8 +56,8 @@ jobs:
         run: |
           pkgid=$(cargo pkgid -p firebrick-spec)
           version=${pkgid##*[#@]}
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME doesn't match the workspace version v$version"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::Tag $TAG doesn't match the workspace version v$version"
             exit 1
           fi
 
@@ -55,7 +67,7 @@ jobs:
       # The CLI starts fbkd from its own directory, so both binaries ship side by side.
       - name: Package
         env:
-          NAME: firebrick-${{ github.ref_name }}-${{ matrix.target }}
+          NAME: firebrick-${{ env.TAG }}-${{ matrix.target }}
         run: |
           mkdir "$NAME"
           cp target/release/fbk target/release/fbkd "$NAME/"
@@ -69,7 +81,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: firebrick-${{ matrix.target }}
-          path: firebrick-${{ github.ref_name }}-${{ matrix.target }}.tar.gz*
+          path: firebrick-${{ env.TAG }}-${{ matrix.target }}.tar.gz*
           if-no-files-found: error
 
   image:
@@ -82,6 +94,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
       - uses: docker/setup-qemu-action@v3
 
@@ -99,10 +113,10 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/firebrick-base:${{ github.ref_name }}
+          tags: ghcr.io/${{ github.repository_owner }}/firebrick-base:${{ env.TAG }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.version=${{ env.TAG }}
             org.opencontainers.image.revision=${{ github.sha }}
 
   release:
@@ -112,6 +126,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      # The notes start with the version's section of CHANGELOG.md, followed by the generated list of pull requests.
+      - name: Extract release notes
+        run: |
+          awk -v tag="$TAG" '/^## /{p = ($2 == tag); next} p' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::warning::CHANGELOG.md has no section for $TAG; the release only gets generated notes"
+          fi
+
       # Only the packages: the image job's build record (*.dockerbuild) can't be downloaded here.
       - uses: actions/download-artifact@v4
         with:
@@ -121,7 +147,9 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
           files: dist/*
+          body_path: release-notes.md
           generate_release_notes: true
           # Tags such as v0.2.0-rc.1 publish a pre-release.
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.TAG, '-') }}

@@ -26,3 +26,4 @@
 - [ADR 0024 - Stream image pull progress from StartSandbox](decisions/0024-stream-image-pull-progress-from-startsandbox.md)
 - [ADR 0025 - Match image pull errors on their types](decisions/0025-match-image-pull-errors-on-their-types.md)
 - [ADR 0026 - Relay URLs to the host through an exec stream](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)
+- [ADR 0028 - Release by merging a version bump pull request](decisions/0028-release-by-merging-a-version-bump-pull-request.md)
