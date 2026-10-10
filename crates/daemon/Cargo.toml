@@ -4,6 +4,8 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "The fbkd daemon that manages Firebrick microVM sandboxes for coding agents."
 
 [lints]
 workspace = true
@@ -23,27 +25,22 @@ required-features = ["vm-tests"]
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
-prost = "0.14.4"
 thiserror = "2.0.21"
 tokio = { version = "1.53.2", features = ["full", "signal"] }
 tonic = { version = "0.14.6", features = ["server"] }
-tonic-prost = "0.14.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 firebrick-utils = { workspace = true }
 tracing-appender = "0.2.5"
 microsandbox = { version = "0.7.6", features = ["ssh", "embed-binaries"] }
 russh = "0.63.1"
-firebrick-spec = {
-    path = "../spec"
-}
+firebrick-proto = { workspace = true }
+firebrick-spec = { workspace = true }
 async-trait = "0.1.92"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_yaml = "0.9.34"
 jsonc-parser = { version = "0.34.0", features = ["cst"] }
 
-[build-dependencies]
-tonic-prost-build = "0.14.6"
 
 [dev-dependencies]
 hyper-util = { version = "0.1.21", features = ["tokio"] }
