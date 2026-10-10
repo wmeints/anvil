@@ -93,7 +93,7 @@ pub fn hostname_of(handle: &SandboxHandle) -> Option<String> {
 /// Picks a host name for a workspace that none of the `taken` names uses: `<leaf>.fbk`,
 /// then `<leaf>-2.fbk`, `<leaf>-3.fbk` and so on.
 pub fn pick_hostname(workspace: &str, taken: &HashSet<String>) -> String {
-    let base = hostname_base(workspace);
+    let base = firebrick_utils::sanitize_label(Path::new(workspace));
 
     (1..)
         .map(|n| match n {
@@ -102,33 +102,6 @@ pub fn pick_hostname(workspace: &str, taken: &HashSet<String>) -> String {
         })
         .find(|hostname| !taken.contains(hostname))
         .expect("there's always a free host name")
-}
-
-/// Turns the workspace's leaf directory into a DNS label of lowercase ASCII letters, digits
-/// and dashes.
-fn hostname_base(workspace: &str) -> String {
-    let leaf = Path::new(workspace)
-        .file_name()
-        .map(|leaf| leaf.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-
-    let mut base = String::new();
-
-    for c in leaf.chars() {
-        if c.is_ascii_alphanumeric() {
-            base.push(c);
-        } else if !base.is_empty() && !base.ends_with('-') {
-            base.push('-');
-        }
-    }
-
-    let base = base.trim_end_matches('-');
-
-    if base.is_empty() {
-        "sandbox".to_string()
-    } else {
-        base.to_string()
-    }
 }
 
 /// Rewrites the generated SSH config for the given host names and makes sure the user's

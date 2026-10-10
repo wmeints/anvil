@@ -1,0 +1,145 @@
+use anyhow::{Context, Result, bail};
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
+
+use crate::manage::SPEC_FILE_NAME;
+
+/// Writes the default spec, named after the working directory, to `.firebrick.yml` in the
+/// working directory and returns its path. Refuses to replace an existing file unless `force`
+/// is set.
+pub fn init_spec(working_dir: &Path, force: bool) -> Result<PathBuf> {
+    let spec_path = working_dir.join(SPEC_FILE_NAME);
+    let spec = firebrick_spec::default_spec(firebrick_utils::sanitize_label(working_dir));
+    let content = serde_yaml::to_string(&spec).context("can't serialize the default spec")?;
+
+    let mut file = match open_spec_file(&spec_path, force) {
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => bail!(
+            "{SPEC_FILE_NAME} already exists in {}; use fbk init --force to overwrite it",
+            working_dir.display()
+        ),
+        result => result.with_context(|| format!("can't create {}", spec_path.display()))?,
+    };
+
+    file.write_all(content.as_bytes())
+        .with_context(|| format!("can't write {}", spec_path.display()))?;
+
+    Ok(spec_path)
+}
+
+/// Opens the spec file for writing, failing with `AlreadyExists` when it exists and `force`
+/// isn't set, so a file created in the meantime is never overwritten.
+fn open_spec_file(spec_path: &Path, force: bool) -> std::io::Result<std::fs::File> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(!force)
+        .create(force)
+        .truncate(force)
+        .open(spec_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use firebrick_spec::DEFAULT_IMAGE;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::TempDir;
+
+    fn project_dir(name: &str) -> (TempDir, PathBuf) {
+        let root = TempDir::new().unwrap();
+        let dir = root.path().join(name);
+        fs::create_dir(&dir).unwrap();
+        (root, dir)
+    }
+
+    #[test]
+    fn creates_default_spec() {
+        let (_root, dir) = project_dir("project");
+
+        let spec_path = init_spec(&dir, false).unwrap();
+        let spec = firebrick_spec::from_file(&spec_path).unwrap();
+        let resources = spec.resources.unwrap();
+
+        assert_eq!(spec_path, dir.join(SPEC_FILE_NAME));
+        assert_eq!(spec.name, "project");
+        assert_eq!(spec.image.as_deref(), Some(DEFAULT_IMAGE));
+        assert_eq!(resources.cpu, 2);
+        assert_eq!(resources.memory, "4 GiB");
+        assert_eq!(spec.init, Some(true));
+        assert_eq!(spec.mise, Some(true));
+        assert_eq!(spec.volumes, firebrick_spec::VolumesSpec::default());
+    }
+
+    #[test]
+    fn name_is_sanitized_leaf_of_working_dir() {
+        for (leaf, name) in [("My.App", "my-app"), ("my project_", "my-project")] {
+            let (_root, dir) = project_dir(leaf);
+
+            let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap()).unwrap();
+
+            assert_eq!(spec.name, name);
+        }
+    }
+
+    #[test]
+    fn name_falls_back_to_sandbox() {
+        let (_root, dir) = project_dir("__");
+
+        let spec = firebrick_spec::from_file(&init_spec(&dir, false).unwrap()).unwrap();
+
+        assert_eq!(spec.name, "sandbox");
+    }
+
+    #[test]
+    fn refuses_to_overwrite_existing_spec() {
+        let (_root, dir) = project_dir("project");
+        let spec_path = dir.join(SPEC_FILE_NAME);
+        fs::write(&spec_path, "name: mine\n").unwrap();
+
+        let err = init_spec(&dir, false).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                ".firebrick.yml already exists in {}; use fbk init --force to overwrite it",
+                dir.display()
+            )
+        );
+        assert_eq!(fs::read_to_string(&spec_path).unwrap(), "name: mine\n");
+    }
+
+    #[test]
+    fn force_overwrites_existing_spec() {
+        let (_root, dir) = project_dir("project");
+        let spec_path = dir.join(SPEC_FILE_NAME);
+        fs::write(
+            &spec_path,
+            "name: mine\nimage: ubuntu:24.04\n# a long trailing comment\n",
+        )
+        .unwrap();
+
+        init_spec(&dir, true).unwrap();
+        let spec = firebrick_spec::from_file(&spec_path).unwrap();
+
+        assert_eq!(spec.name, "project");
+        assert_eq!(spec.image.as_deref(), Some(DEFAULT_IMAGE));
+    }
+
+    #[test]
+    fn write_failure_names_the_path() {
+        let (_root, dir) = project_dir("project");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = init_spec(&dir, false);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(&dir.join(SPEC_FILE_NAME).display().to_string()),
+            "{err}"
+        );
+        assert!(err.root_cause().downcast_ref::<std::io::Error>().is_some());
+    }
+}
