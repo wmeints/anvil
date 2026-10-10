@@ -241,8 +241,8 @@ mise skip this step. Set `mise: false` in `.firebrick.yml` to turn it off.
 ### Configuring a sandbox
 
 Add a `.firebrick.yml` file to the project directory to configure the sandbox.
-`fbk init` creates one with the defaults below, named after the project
-directory (`My.App` becomes `my-app`):
+`fbk init` creates one with the defaults from the table below, named after the
+project directory (`My.App` becomes `my-app`). For example:
 
 ```yaml
 name: my-project
