@@ -517,7 +517,7 @@ of a running sandbox.
 
 `fbk secret set <name> <value>` stores a secret that sandboxes use without
 seeing its value. With `--from-stdin`, the CLI reads the value from stdin
-instead.
+instead. Without `--scope`, or with `--scope global`, the secret is global.
 
 ```mermaid
 sequenceDiagram
@@ -544,7 +544,22 @@ sequenceDiagram
     CLI-->>Dev: Secret set, warnings for failed sandboxes
 ```
 
-When `fbkd` creates a sandbox, it adds all secrets from `secrets.yml`.
+The loop skips the sandboxes that have a sandbox-scoped secret with the same
+name, because that one wins in its sandbox (see
+[Secret scopes](08-crosscutting-concepts.md#secret-scopes)).
+
+With `--scope sandbox`, the CLI first resolves the working directory's sandbox
+like `fbk stop` does without a name, and sends its name in `SetSecret`. `fbkd`
+returns `NOT_FOUND` with `sandbox <name> doesn't exist` when the sandbox doesn't
+exist, before it changes `secrets.yml`. Otherwise it stores the secret with the
+sandbox's name and adds it to that sandbox only, replacing the global value
+there.
+
+When `fbkd` creates or recreates a sandbox, it adds the global secrets from
+`secrets.yml`, with the sandbox's own sandbox-scoped secrets in place of the
+global ones with the same name. A brand-new sandbox has none of those, because
+they can only be set for a sandbox that exists, but a sandbox whose scoped
+secrets were left behind, or one that `fbk network` recreates, keeps its own.
 microsandbox enables TLS interception for the sandbox and sets each secret's
 environment variable to a placeholder such as `$MSB_GH_TOKEN`. Its TLS proxy
 replaces the placeholder with the real value in HTTP headers of requests to the
@@ -559,6 +574,18 @@ then from `secrets.yml`. When a sandbox fails, it keeps the secret in
 retries them. microsandbox can't change the secrets of a running sandbox, so a
 running sandbox keeps the placeholder, and its proxy keeps putting in the real
 value, until it restarts.
+
+`fbk secret rm <name>` removes the global secret only and skips the sandboxes
+with a sandbox-scoped secret with that name. `fbk secret rm <name> --scope
+sandbox` removes the working directory's sandbox-scoped secret: `fbkd` returns
+`NOT_FOUND` when the sandbox doesn't exist or has no such secret. When a global
+secret with that name exists, it adds that one to the sandbox instead of
+removing the secret, so the sandbox falls back to the global value after its
+next start.
+
+`fbk rm` removes the sandbox's scoped secrets from `secrets.yml` after
+microsandbox removed the sandbox. When that fails, `RemoveSandbox` returns
+`INTERNAL` with `removed sandbox <name>, but failed to remove its secrets`.
 
 ## Updating the network rules
 
@@ -607,7 +634,7 @@ sequenceDiagram
         D-->>CLI: INTERNAL, keeps its old rules
         CLI-->>Dev: Error
     end
-    D->>MS: Create it from the snapshot with the same settings,<br/>the stored secrets, the new rules and their label
+    D->>MS: Create it from the snapshot with the same settings,<br/>its secrets, the new rules and their label
     alt Recreate fails
         D->>MS: Remove what was created
         D-->>CLI: INTERNAL, names the kept snapshot

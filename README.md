@@ -207,24 +207,24 @@ Run the commands from your project directory. Firebrick derives the sandbox from
 that directory. Pass a name from `fbk ls` to `start`, `stop` or `rm` to manage
 another sandbox from any directory.
 
-| Command                           | Description                                                                                                                        |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `fbk start [name]`                | Start the sandbox for the current directory, or the existing sandbox with the name from `fbk ls`.                                  |
-| `fbk run <cmd> [args...]`         | Start the sandbox when needed and run a command in it with a terminal attached.                                                    |
-| `fbk stop [name]`                 | Stop the sandbox, or the one with the name from `fbk ls`. Files on its disk are kept. Killed when it doesn't shut down within 30s. |
-| `fbk ls [--format json]`          | List all sandboxes as a table, or as JSON with `--format json`.                                                                    |
-| `fbk rm [--force] [name]`         | Remove the sandbox, or the one with the name from `fbk ls`. Refuses a running sandbox; `--force` stops it first.                   |
-| `fbk validate`                    | Check the `.firebrick.yml` file in the current directory.                                                                          |
-| `fbk init [--force]`              | Write a `.firebrick.yml` with the defaults to the current directory. `--force` overwrites an existing one.                         |
-| `fbk secret set <name> [<value>]` | Set a secret for all sandboxes. See [Secrets](#secrets).                                                                           |
-| `fbk secret ls [--format json]`   | List the secrets and their allowed hosts, without their values.                                                                    |
-| `fbk secret rm <name>`            | Remove a secret from all sandboxes.                                                                                                |
-| `fbk port forward <port>`         | Forward a host port to the sandbox right away and add it to `ports`. See [Ports](#ports).                                          |
-| `fbk port rm <port>`              | Stop forwarding a host port and remove it from `ports`.                                                                            |
-| `fbk network allow <rule>...`     | Allow destinations in `.firebrick.yml` and apply the rules to the sandbox. See [Network](#network).                                |
-| `fbk network deny <rule>...`      | Deny destinations in `.firebrick.yml` and apply the rules to the sandbox.                                                          |
-| `fbk network policy enable`       | Turn on enforcement of the network rules (`network.enforce: true`).                                                                |
-| `fbk network policy disable`      | Turn off enforcement of the network rules; the rules are kept.                                                                     |
+| Command                                                     | Description                                                                                                                        |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `fbk start [name]`                                          | Start the sandbox for the current directory, or the existing sandbox with the name from `fbk ls`.                                  |
+| `fbk run <cmd> [args...]`                                   | Start the sandbox when needed and run a command in it with a terminal attached.                                                    |
+| `fbk stop [name]`                                           | Stop the sandbox, or the one with the name from `fbk ls`. Files on its disk are kept. Killed when it doesn't shut down within 30s. |
+| `fbk ls [--format json]`                                    | List all sandboxes as a table, or as JSON with `--format json`.                                                                    |
+| `fbk rm [--force] [name]`                                   | Remove the sandbox, or the one with the name from `fbk ls`. Refuses a running sandbox; `--force` stops it first.                   |
+| `fbk validate`                                              | Check the `.firebrick.yml` file in the current directory.                                                                          |
+| `fbk init [--force]`                                        | Write a `.firebrick.yml` with the defaults to the current directory. `--force` overwrites an existing one.                         |
+| `fbk secret set <name> [<value>] [--scope global\|sandbox]` | Set a secret for all sandboxes, or for the working directory's sandbox. See [Secrets](#secrets).                                   |
+| `fbk secret ls [--format json]`                             | List the secrets of all scopes and their allowed hosts, without their values.                                                      |
+| `fbk secret rm <name> [--scope global\|sandbox]`            | Remove a secret from all sandboxes, or from the working directory's sandbox.                                                       |
+| `fbk port forward <port>`                                   | Forward a host port to the sandbox right away and add it to `ports`. See [Ports](#ports).                                          |
+| `fbk port rm <port>`                                        | Stop forwarding a host port and remove it from `ports`.                                                                            |
+| `fbk network allow <rule>...`                               | Allow destinations in `.firebrick.yml` and apply the rules to the sandbox. See [Network](#network).                                |
+| `fbk network deny <rule>...`                                | Deny destinations in `.firebrick.yml` and apply the rules to the sandbox.                                                          |
+| `fbk network policy enable`                                 | Turn on enforcement of the network rules (`network.enforce: true`).                                                                |
+| `fbk network policy disable`                                | Turn off enforcement of the network rules; the rules are kept.                                                                     |
 
 For example, to open a shell in the sandbox:
 
@@ -491,13 +491,36 @@ you can repeat:
 | `COPILOT_GITHUB_TOKEN`                         | `github.com`, `api.github.com`, `*.githubcopilot.com` |
 | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` | `api.anthropic.com`                                   |
 
-Secrets apply to all sandboxes. A running sandbox gets a new or changed secret
-after `fbk stop` and `fbk start`.
+Secrets apply to all sandboxes. To give one project its own value, set the
+secret with `--scope sandbox` in the project's directory. It applies to that
+project's sandbox only, which must exist, and wins over a global secret with the
+same name there:
 
-`fbk secret ls` shows the names and allowed hosts of the secrets, never their
-values. `fbk secret rm <name>` removes a secret, but a running sandbox keeps
-using it until it restarts. If a token leaked, revoke it where you created it as
-well.
+```sh
+fbk secret set MY_SECRET --from-stdin --allow-host api.example.com --scope sandbox
+Secret MY_SECRET set for sandbox firebrick-d9f287. The sandbox sees the placeholder $MSB_MY_SECRET; it gets it after a restart when it's running.
+```
+
+A running sandbox gets a new or changed secret after `fbk stop` and `fbk start`.
+
+`fbk secret ls` shows the names, scopes and allowed hosts of the secrets, never
+their values:
+
+```text
+┌─────────────────────────┬──────────────────┬───────────────────┐
+│ NAME                    │ SCOPE            │ ALLOWED HOSTS     │
+├─────────────────────────┼──────────────────┼───────────────────┤
+│ CLAUDE_CODE_OAUTH_TOKEN │ global           │ api.anthropic.com │
+│ MY_SECRET               │ firebrick-d9f287 │ api.example.com   │
+│ MY_SECRET               │ other-project    │ api.example.org   │
+└─────────────────────────┴──────────────────┴───────────────────┘
+```
+
+`fbk secret rm <name>` removes a global secret, and `fbk secret rm <name>
+--scope sandbox` the working directory's sandbox secret, after which that
+sandbox gets the global secret with the same name again. A running sandbox keeps
+using a removed secret until it restarts. `fbk rm` removes the sandbox's own
+secrets too. If a token leaked, revoke it where you created it as well.
 
 To let `git` push and pull over HTTPS with `GH_TOKEN`, configure a credential
 helper in the sandbox that hands git the placeholder as the password:

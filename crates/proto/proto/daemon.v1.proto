@@ -198,6 +198,10 @@ message SetSecretRequest {
   string value = 2;
   // Hosts that may receive the real value. Empty uses the defaults for well-known names.
   repeated string allowed_hosts = 3;
+  // Sandbox the secret belongs to, which must exist. It overrides a global secret with the same
+  // name in that sandbox. Unset means global: every firebrick sandbox gets it, except the ones
+  // with a sandbox-scoped secret with the same name.
+  optional string sandbox = 4;
 }
 
 message SetSecretResponse {
@@ -208,17 +212,22 @@ message SetSecretResponse {
 message ListSecretsRequest {}
 
 message ListSecretsResponse {
-  // Sorted by name. Values are never returned.
+  // Sorted by name, then by scope with the global secret first. Values are never returned.
   repeated SecretSummary secrets = 1;
 }
 
 message SecretSummary {
   string name = 1;
   repeated string allowed_hosts = 2;
+  // Sandbox the secret belongs to. Unset means global.
+  optional string sandbox = 3;
 }
 
 message RemoveSecretRequest {
   string name = 1;
+  // Sandbox to remove the secret from, which must exist. The sandbox gets the global secret with
+  // the same name back, if there is one. Unset means global.
+  optional string sandbox = 2;
 }
 
 message RemoveSecretResponse {

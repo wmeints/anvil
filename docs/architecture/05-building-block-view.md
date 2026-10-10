@@ -97,8 +97,11 @@ C4Component
 - `ssh` - Tunnels SSH protocol bytes between stdin/stdout and the `SshTunnel`
   stream. The generated SSH config uses it as `ProxyCommand`.
 - `secret` - Sends a secret to the daemon with `SetSecret`. With `--from-stdin`,
-  it reads the value from stdin and removes one trailing line ending. `secret
-  ls` prints the names and allowed hosts from `ListSecrets` as a table or, with
+  it reads the value from stdin and removes one trailing line ending. With
+  `--scope sandbox`, `secret set` and `secret rm` send the name of the working
+  directory's sandbox, resolved like `fbk stop` without a name; the default
+  `--scope global` sends none. `secret ls` prints the names, scopes (`global` or
+  the sandbox name) and allowed hosts from `ListSecrets` as a table or, with
   `--format json`, as a JSON array. `secret rm` removes a secret with
   `RemoveSecret`. It warns about sandboxes the daemon couldn't add the secret to
   or remove it from.
@@ -218,15 +221,16 @@ C4Component
   workspace path or `/var/lib/docker` with `INVALID_ARGUMENT`, attaches a
   sandbox-owned ext4 disk of the requested size at `/var/lib/docker` (see
   [ADR 0015](decisions/0015-give-each-sandbox-a-docker-data-disk.md)), applies
-  the egress rules with the `network` module and adds the stored secrets. The
-  disk survives stops and restarts, and microsandbox deletes it when the sandbox
-  is removed. With `init` on, it hands PID 1 to the image's `/sbin/init`. When
-  that fails because the image has no init, it removes the half-created sandbox
-  and returns `FAILED_PRECONDITION` with a hint to set `init: false`. Invalid
-  values are rejected before it creates anything. When it creates or starts a
-  sandbox, it uses the `mise` module to trust the mise config files at the
-  workspace root and run `mise install`, unless the sandbox's `firebrick.mise`
-  label, stored at create time, turns mise off (see
+  the egress rules with the `network` module and adds the global secrets, with
+  the sandbox's own sandbox-scoped secrets in their place. The disk survives
+  stops and restarts, and microsandbox deletes it when the sandbox is removed.
+  With `init` on, it hands PID 1 to the image's `/sbin/init`. When that fails
+  because the image has no init, it removes the half-created sandbox and returns
+  `FAILED_PRECONDITION` with a hint to set `init: false`. Invalid values are
+  rejected before it creates anything. When it creates or starts a sandbox, it
+  uses the `mise` module to trust the mise config files at the workspace root
+  and run `mise install`, unless the sandbox's `firebrick.mise` label, stored at
+  create time, turns mise off (see
   [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It starts,
   stops, gets, lists and removes sandboxes, gives each sandbox a unique SSH host
   name, regenerates the SSH config, the editor settings and Zed's remote
@@ -237,21 +241,27 @@ C4Component
   Both are empty for a sandbox without a workspace. The CLI compares
   `workspace_host_path` with the working directory before it uses an existing
   sandbox. A failed sync only logs a warning. `SetSecret` stores a secret and
-  adds it to the existing sandboxes firebrick created. `ListSecrets` returns the
-  names and allowed hosts, sorted by name, never the values. `RemoveSecret`
-  removes a secret from the existing sandboxes firebrick created and then from
-  the store, keeps it in the store when a sandbox fails so the removal can be
-  retried, and returns `NOT_FOUND` for an unknown name. A lock around the secret
-  store makes sure a sandbox that is being created can't miss a secret that is
-  being set. It stores a sandbox's port mappings in the `firebrick.ports` label
-  (`3000:3000,8080:5173`), updates it from each `StartSandbox` that carries
-  ports, also for a running sandbox (as a `next_start` change, so the VM keeps
-  running), and keeps it when a request carries none. Once a sandbox runs after
-  `StartSandbox`, or after `SshTunnel` started it, it hands the stored ports to
-  `forward`; `StopSandbox` and `RemoveSandbox` close the sandbox's forwards.
-  `UpdateNetwork` replaces the egress rules of an existing sandbox by recreating
-  it from a disk snapshot, with the settings it reads from the sandbox's stored
-  config (see
+  adds it to the sandboxes in its scope: a global secret to the existing
+  sandboxes firebrick created, except the ones with a sandbox-scoped secret with
+  that name, and a sandbox-scoped secret to its sandbox only, which must exist.
+  `ListSecrets` returns the names, scopes and allowed hosts, sorted by name and
+  then scope with the global secret first, never the values. `RemoveSecret`
+  removes a secret from the same sandboxes and then from the store, keeps it in
+  the store when a sandbox fails so the removal can be retried, and returns
+  `NOT_FOUND` for an unknown name or sandbox. A sandbox that loses its
+  sandbox-scoped secret gets the global one with that name back. Removing a
+  sandbox removes its sandbox-scoped secrets from the store (see
+  [Secret scopes](08-crosscutting-concepts.md#secret-scopes)). A lock around the
+  secret store makes sure a sandbox that is being created can't miss a secret
+  that is being set. It stores a sandbox's port mappings in the
+  `firebrick.ports` label (`3000:3000,8080:5173`), updates it from each
+  `StartSandbox` that carries ports, also for a running sandbox (as a
+  `next_start` change, so the VM keeps running), and keeps it when a request
+  carries none. Once a sandbox runs after `StartSandbox`, or after `SshTunnel`
+  started it, it hands the stored ports to `forward`; `StopSandbox` and
+  `RemoveSandbox` close the sandbox's forwards. `UpdateNetwork` replaces the
+  egress rules of an existing sandbox by recreating it from a disk snapshot,
+  with the settings it reads from the sandbox's stored config (see
   [Updating the network rules](06-runtime-view.md#updating-the-network-rules)
   and
   [ADR 0021](decisions/0021-recreate-sandboxes-from-a-disk-snapshot-to-change-their-network-rules.md)).
@@ -311,7 +321,9 @@ C4Component
   a placeholder such as `$MSB_GH_TOKEN`, and microsandbox's TLS proxy puts the
   real value in requests to the secret's allowed hosts. It knows the default
   allowed hosts for well-known names such as `GH_TOKEN` and `ANTHROPIC_API_KEY`
-  ([ADR 0004](decisions/0004-store-secrets-in-a-private-file.md)).
+  ([ADR 0004](decisions/0004-store-secrets-in-a-private-file.md)). Each secret
+  is global or belongs to one sandbox, and a name is unique within a scope
+  ([ADR 0022](decisions/0022-scope-secrets-per-sandbox.md)).
 - `network` - Turns the `network` section of a spec into the network settings of
   a sandbox that is being created. Without `enforce`, it leaves the sandbox with
   microsandbox's default policy. With `enforce`, it builds a policy of all deny
