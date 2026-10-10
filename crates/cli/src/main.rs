@@ -1,14 +1,14 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use anvil_cli::api::sandbox_management_service_client::SandboxManagementServiceClient;
-use anvil_cli::manage::OutputFormat;
-use anvil_cli::{client, manage, secret, session, ssh, validate};
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+use firebrick_cli::api::sandbox_management_service_client::SandboxManagementServiceClient;
+use firebrick_cli::manage::OutputFormat;
+use firebrick_cli::{client, manage, secret, session, ssh, validate};
 use tonic::transport::Channel;
 
-/// Anvil - Run coding agents safely in a sandbox.
+/// Firebrick - Run coding agents safely in a sandbox.
 #[derive(Parser, Debug)]
 struct Cli {
     #[command(subcommand)]
@@ -19,12 +19,12 @@ struct Cli {
 enum Commands {
     /// Start a sandbox
     Start {
-        /// Name of the sandbox as listed by `anvil ls`. Defaults to the sandbox for the working directory
+        /// Name of the sandbox as listed by `fbk ls`. Defaults to the sandbox for the working directory
         name: Option<String>,
     },
     /// Stop a running sandbox
     Stop {
-        /// Name of the sandbox as listed by `anvil ls`. Defaults to the sandbox for the working directory
+        /// Name of the sandbox as listed by `fbk ls`. Defaults to the sandbox for the working directory
         name: Option<String>,
     },
     /// List all sandboxes
@@ -35,7 +35,7 @@ enum Commands {
     },
     /// Remove a sandbox
     Rm {
-        /// Name of the sandbox as listed by `anvil ls`. Defaults to the sandbox for the working directory
+        /// Name of the sandbox as listed by `fbk ls`. Defaults to the sandbox for the working directory
         name: Option<String>,
 
         /// Stop the sandbox first when it's running
@@ -44,7 +44,7 @@ enum Commands {
     },
     /// Run a command inside the sandbox
     Run(RunArgs),
-    /// Validate the .anvil.yml file in the working directory
+    /// Validate the .firebrick.yml file in the working directory
     Validate,
     /// Manage the secrets sandboxes use without seeing their values
     #[command(subcommand)]
@@ -52,7 +52,7 @@ enum Commands {
     /// Tunnel an SSH connection to a sandbox over stdin/stdout (used by the generated SSH config)
     #[command(hide = true)]
     SshProxy {
-        /// Host name of the sandbox, e.g. `project.anvil`
+        /// Host name of the sandbox, e.g. `project.fbk`
         hostname: String,
     },
 }
@@ -204,7 +204,7 @@ mod tests {
     use clap::CommandFactory;
 
     fn parse_secret_set(args: &[&str]) -> Result<SetSecretArgs, clap::Error> {
-        let cli = Cli::try_parse_from(["anvil", "secret", "set"].iter().chain(args))?;
+        let cli = Cli::try_parse_from(["fbk", "secret", "set"].iter().chain(args))?;
 
         match cli.command {
             Commands::Secret(SecretCommands::Set(args)) => Ok(args),
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn start_stop_and_rm_take_an_optional_name() {
-        let parse = |args: &[&str]| Cli::try_parse_from(["anvil"].iter().chain(args)).unwrap();
+        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
 
         assert!(matches!(
             parse(&["start"]).command,
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn rm_takes_force_flag() {
-        let parse = |args: &[&str]| Cli::try_parse_from(["anvil"].iter().chain(args)).unwrap();
+        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
 
         assert!(matches!(
             parse(&["rm", "--force"]).command,
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn secret_ls_defaults_to_table() {
-        let cli = Cli::try_parse_from(["anvil", "secret", "ls"]).unwrap();
+        let cli = Cli::try_parse_from(["fbk", "secret", "ls"]).unwrap();
 
         assert!(matches!(
             cli.command,
@@ -307,9 +307,9 @@ mod tests {
 
     #[test]
     fn secret_rm_requires_name() {
-        assert!(Cli::try_parse_from(["anvil", "secret", "rm"]).is_err());
+        assert!(Cli::try_parse_from(["fbk", "secret", "rm"]).is_err());
 
-        let cli = Cli::try_parse_from(["anvil", "secret", "rm", "GH_TOKEN"]).unwrap();
+        let cli = Cli::try_parse_from(["fbk", "secret", "rm", "GH_TOKEN"]).unwrap();
         assert!(matches!(
             cli.command,
             Commands::Secret(SecretCommands::Rm { name }) if name == "GH_TOKEN"

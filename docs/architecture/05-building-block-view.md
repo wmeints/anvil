@@ -5,34 +5,35 @@
 ```mermaid
 C4Container
     Person(user, "Developer")
-    Container(anvil, "anvil", "Rust, Clap", "CLI")
-    Container(anvild, "anvild", "Rust, Tonic", "User daemon")
+    Container(firebrick, "fbk", "Rust, Clap", "CLI")
+    Container(fbkd, "fbkd", "Rust, Tonic", "User daemon")
     System_Ext(ssh, "OpenSSH client", "ssh, scp, IDEs")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
 
-    Rel(user, anvil, "Runs commands")
-    Rel(user, ssh, "Connects to <leaf>.anvil")
-    Rel(ssh, anvil, "ProxyCommand", "anvil ssh-proxy")
-    Rel(anvil, anvild, "gRPC", "Unix socket")
-    Rel(anvild, microsandbox, "Manages sandboxes")
+    Rel(user, firebrick, "Runs commands")
+    Rel(user, ssh, "Connects to <leaf>.fbk")
+    Rel(ssh, firebrick, "ProxyCommand", "fbk ssh-proxy")
+    Rel(firebrick, fbkd, "gRPC", "Unix socket")
+    Rel(fbkd, microsandbox, "Manages sandboxes")
 ```
 
-- `anvil` - CLI that sends commands to the daemon, attaches the terminal to
+- `fbk` - CLI that sends commands to the daemon, attaches the terminal to
   sandbox sessions and tunnels SSH connections to sandboxes. It starts the
   daemon when the daemon isn't running.
-- `anvild` - Daemon that manages the lifecycle of the sandboxes and sessions,
+- `fbkd` - Daemon that manages the lifecycle of the sandboxes and sessions,
   provisions the SSH keys and writes the SSH config for the sandboxes.
 
 The CLI and daemon speak gRPC (`proto/daemon.v1.proto`) over the unix socket
-`$XDG_RUNTIME_DIR/anvild.sock`. The workspace is a Cargo workspace with four
-crates: `anvil-cli`, `anvil-daemon`, `anvil-spec` and `anvil-utils`. The CLI and
-daemon each generate their gRPC code from the proto file in their `build.rs`.
+`$XDG_RUNTIME_DIR/fbkd.sock`. The workspace is a Cargo workspace with four
+crates: `firebrick-cli`, `firebrick-daemon`, `firebrick-spec` and
+`firebrick-utils`. The CLI and daemon each generate their gRPC code from the
+proto file in their `build.rs`.
 
 ## Level 2 - CLI
 
 ```mermaid
 C4Component
-    Container_Boundary(cli, "anvil (crates/cli)") {
+    Container_Boundary(cli, "fbk (crates/cli)") {
         Component(main, "main", "Clap", "Commands")
         Component(manage, "manage", "Rust", "Sandbox lifecycle")
         Component(session, "session", "crossterm", "Terminal sessions")
@@ -42,9 +43,9 @@ C4Component
         Component(table, "table", "ratatui", "Tables")
         Component(client, "client", "Tonic client", "Daemon client")
     }
-    Component_Ext(spec, "anvil-spec", "serde_yaml", "Sandbox spec")
-    Component_Ext(utils, "anvil-utils", "Rust", "File locations")
-    Container_Ext(anvild, "anvild")
+    Component_Ext(spec, "firebrick-spec", "serde_yaml", "Sandbox spec")
+    Component_Ext(utils, "firebrick-utils", "Rust", "File locations")
+    Container_Ext(fbkd, "fbkd")
 
     Rel(main, manage, "Uses")
     Rel(main, session, "Uses")
@@ -55,22 +56,23 @@ C4Component
     Rel(manage, table, "Renders sandboxes")
     Rel(secret, table, "Renders secrets")
     Rel(session, manage, "Ensures running")
-    Rel(manage, spec, "Loads .anvil.yml")
-    Rel(validate, spec, "Loads .anvil.yml")
+    Rel(manage, spec, "Loads .firebrick.yml")
+    Rel(validate, spec, "Loads .firebrick.yml")
     Rel(client, utils, "Finds socket")
-    Rel(client, anvild, "gRPC")
+    Rel(client, fbkd, "gRPC")
 ```
 
 - `main` - Parses the `start`, `stop`, `ls`, `rm`, `run`, `validate`, `secret
   set`, `secret ls` and `secret rm` commands, and the hidden `ssh-proxy`
   command. `validate` runs without the daemon.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
-  stale socket, spawns `anvild` from next to the `anvil` binary (or from `PATH`)
-  and waits at most 5 seconds for the socket.
+  stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
+  waits at most 5 seconds for the socket.
 - `manage` - Resolves the sandbox spec for the working directory and starts,
-  stops, lists and removes sandboxes. Without `.anvil.yml`, it names the sandbox
-  after the full working directory path. `ls` prints the name, status and host
-  name of each sandbox as a table, or as a JSON array with `--format json`.
+  stops, lists and removes sandboxes. Without `.firebrick.yml`, it names the
+  sandbox after the full working directory path. `ls` prints the name, status
+  and host name of each sandbox as a table, or as a JSON array with `--format
+  json`.
 - `session` - Runs a command in the sandbox through the `Attach` stream. It
   makes sure the sandbox runs first, puts the terminal in raw mode and forwards
   input, output and window resizes.
@@ -85,14 +87,14 @@ C4Component
 - `table` - Renders rows as a bordered table with `ratatui` into an in-memory
   buffer and returns it as plain text lines
   ([ADR 0003](decisions/0003-render-cli-tables-with-ratatui.md)).
-- `validate` - Checks `.anvil.yml` and reports problems as `file:line:column:
-  error: message`.
+- `validate` - Checks `.firebrick.yml` and reports problems as
+  `file:line:column: error: message`.
 
 ## Level 2 - Daemon
 
 ```mermaid
 C4Component
-    Container_Boundary(daemon, "anvild (crates/daemon)") {
+    Container_Boundary(daemon, "fbkd (crates/daemon)") {
         Component(main, "main", "Rust", "Entrypoint")
         Component(server, "server", "Tonic server", "Control API adapter")
         Component(sandboxes, "sandboxes", "Rust", "Sandbox management")
@@ -104,7 +106,7 @@ C4Component
         Component(runtime, "runtime", "Rust", "Runtime installation")
         Component(secrets, "secrets", "serde_yaml", "Secrets")
     }
-    Component_Ext(utils, "anvil-utils", "Rust", "File locations")
+    Component_Ext(utils, "firebrick-utils", "Rust", "File locations")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
     System_Ext(sshconfig, "~/.ssh/config", "OpenSSH config")
     System_Ext(editors, "settings.json", "VS Code-family user settings")
@@ -135,17 +137,17 @@ C4Component
 ```
 
 - `main` - Sets up logging to stdout and to a daily log file in
-  `$XDG_STATE_HOME/anvil`, exits when the socket is already in use, makes sure
-  the microsandbox runtime and the SSH keys exist, makes the microsandbox `db`
-  directory readable by the user only, syncs the SSH config and serves the API
-  until `SIGINT` or `SIGTERM`.
+  `$XDG_STATE_HOME/firebrick`, exits when the socket is already in use, makes
+  sure the microsandbox runtime and the SSH keys exist, makes the microsandbox
+  `db` directory readable by the user only, syncs the SSH config and serves the
+  API until `SIGINT` or `SIGTERM`.
 - `server` - Adapts `SandboxManagementService` to the modules below: it converts
   each request into plain values, calls `sandboxes`, `session` or `tunnel`, and
   converts the result into a response. It converts requested resources to vCPUs
-  and MiB, falling back to the defaults from `anvil-spec`, and rejects invalid
-  resources with `INVALID_ARGUMENT`. It maps the `SandboxError` of `sandboxes`
-  to gRPC status codes in one place. It refuses to start when the socket already
-  exists and removes the socket on shutdown.
+  and MiB, falling back to the defaults from `firebrick-spec`, and rejects
+  invalid resources with `INVALID_ARGUMENT`. It maps the `SandboxError` of
+  `sandboxes` to gRPC status codes in one place. It refuses to start when the
+  socket already exists and removes the socket on shutdown.
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
   with the requested vCPUs and memory, mounts the workspace read/write at
@@ -160,10 +162,10 @@ C4Component
   returns the sandbox's working directory, which is the workspace mount path, as
   `workspace_path`; it's empty for a sandbox without one. A failed sync only
   logs a warning. `SetSecret` stores a secret and adds it to the existing
-  sandboxes anvil created. `ListSecrets` returns the names and allowed hosts,
-  sorted by name, never the values. `RemoveSecret` removes a secret from the
-  existing sandboxes anvil created and then from the store, keeps it in the
-  store when a sandbox fails so the removal can be retried, and returns
+  sandboxes firebrick created. `ListSecrets` returns the names and allowed
+  hosts, sorted by name, never the values. `RemoveSecret` removes a secret from
+  the existing sandboxes firebrick created and then from the store, keeps it in
+  the store when a sandbox fails so the removal can be retried, and returns
   `NOT_FOUND` for an unknown name. A lock around the secret store makes sure a
   sandbox that is being created can't miss a secret that is being set.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
@@ -174,7 +176,7 @@ C4Component
   over an in-memory pipe, copying bytes in both directions until the SSH session
   closes. `sandboxes` boots the sandbox when needed.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
-  matches the runtime archive embedded in `anvild` at build time, so it never
+  matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,
   and replaces a runtime in the microsandbox home whose `msb` has another
   version. An explicitly configured runtime with another version, or a partial
@@ -186,23 +188,23 @@ C4Component
   allowed hosts for well-known names such as `GH_TOKEN` and `ANTHROPIC_API_KEY`
   ([ADR 0004](decisions/0004-store-secrets-in-a-private-file.md)).
 - `ssh` - Creates the ed25519 client and host keys, pins the host key for
-  `*.anvil` in a `known_hosts` file, picks a unique `<leaf>.anvil` host name per
-  sandbox (stored in the `anvil.hostname` label), and writes the generated SSH
-  config that `~/.ssh/config` includes.
+  `*.fbk` in a `known_hosts` file, picks a unique `<leaf>.fbk` host name per
+  sandbox (stored in the `firebrick.hostname` label), and writes the generated
+  SSH config that `~/.ssh/config` includes.
 - `vscode` - Keeps `remote.SSH.remotePlatform` in the user `settings.json` of VS
   Code, VS Code Insiders, Cursor and VSCodium in sync with the sandbox host
   names, so Remote-SSH doesn't ask for the platform. Every host maps to
-  `"linux"` and stale `*.anvil` keys are removed; other keys, comments and
+  `"linux"` and stale `*.fbk` keys are removed; other keys, comments and
   trailing commas stay as they are
   ([ADR 0010](decisions/0010-edit-vs-code-settings-with-jsonc-parser.md)). The
   settings live under `$XDG_CONFIG_HOME` (default `~/.config`) on Linux and
-  `~/Library/Application Support` on macOS; `ANVIL_EDITOR_CONFIG_ROOT` overrides
-  both, which the `vm-tests` use to stay away from the developer's own settings.
-  An editor whose `User` directory doesn't exist is skipped, and a missing
-  `settings.json` is created. A file is left unchanged with a warning when it
-  isn't JSON with comments and trailing commas (what VS Code accepts), when
-  `remote.SSH.remotePlatform` isn't an object or appears more than once, or when
-  it's a symlink to a missing file. Writes go to a temporary file that is
+  `~/Library/Application Support` on macOS; `FIREBRICK_EDITOR_CONFIG_ROOT`
+  overrides both, which the `vm-tests` use to stay away from the developer's own
+  settings. An editor whose `User` directory doesn't exist is skipped, and a
+  missing `settings.json` is created. A file is left unchanged with a warning
+  when it isn't JSON with comments and trailing commas (what VS Code accepts),
+  when `remote.SSH.remotePlatform` isn't an object or appears more than once, or
+  when it's a symlink to a missing file. Writes go to a temporary file that is
   renamed onto the file a symlink points to, so a symlinked settings file stays
   a symlink. The reading, writing and parse options live in `settings_file`,
   which `zed` shares.
@@ -211,33 +213,35 @@ C4Component
   sandbox with a host name gets an entry with `host`, the sandbox name as
   `nickname`, and one project whose `paths` hold the workspace path (no projects
   for a sandbox without one). The daemon owns the entries whose `host` ends in
-  `.anvil`: it adds missing ones, rewrites the ones whose value differs and
+  `.fbk`: it adds missing ones, rewrites the ones whose value differs and
   removes stale and duplicate ones; other entries, keys, comments and trailing
   commas stay as they are
   ([ADR 0011](decisions/0011-own-the-anvil-entries-in-zeds-ssh-connections.md)).
   The file is `zed/settings.json` under `$XDG_CONFIG_HOME` (default `~/.config`)
   on Linux and under `~/.config` on macOS, the same as Zed's own config
-  directory; `ANVIL_EDITOR_CONFIG_ROOT` overrides both. When the `zed` directory
-  doesn't exist, Zed is skipped; a missing `settings.json` is created. The file
-  is left unchanged with a warning when it can't be parsed, when
+  directory; `FIREBRICK_EDITOR_CONFIG_ROOT` overrides both. When the `zed`
+  directory doesn't exist, Zed is skipped; a missing `settings.json` is created.
+  The file is left unchanged with a warning when it can't be parsed, when
   `ssh_connections` isn't an array, appears more than once or has an entry that
   isn't an object, or when it can't be read or written.
 
 ## Shared crates
 
-- `anvil-spec` (`crates/spec`) - Parses `.anvil.yml` into a `SandboxSpec` with a
-  `name`, an optional `image`, an optional `init` and optional `resources`
-  (`cpu`, `memory`), rejects unknown fields and reports the line and column of a
-  problem. It owns the defaults (`ghcr.io/wmeints/anvil-base:v<version>`, `init:
-  true`, 2 vCPUs, `4 GiB`) and `parse_memory_mib`, which reads memory sizes in
-  `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both use them.
-- `anvil-utils` (`crates/utils`) - Well-known paths: the daemon socket
-  (`$XDG_RUNTIME_DIR/anvild.sock`), the log directory (`$XDG_STATE_HOME/anvil`),
-  the SSH directory (`$XDG_DATA_HOME/anvil/ssh`) and the secrets file
-  (`$XDG_DATA_HOME/anvil/secrets.yml`).
+- `firebrick-spec` (`crates/spec`) - Parses `.firebrick.yml` into a
+  `SandboxSpec` with a `name`, an optional `image`, an optional `init` and
+  optional `resources` (`cpu`, `memory`), rejects unknown fields and reports the
+  line and column of a problem. It owns the defaults
+  (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, 2 vCPUs, `4 GiB`)
+  and `parse_memory_mib`, which reads memory sizes in `Mi`/`MiB` or `Gi`/`GiB`.
+  The CLI and daemon both use them.
+- `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
+  (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
+  (`$XDG_STATE_HOME/firebrick`), the SSH directory
+  (`$XDG_DATA_HOME/firebrick/ssh`) and the secrets file
+  (`$XDG_DATA_HOME/firebrick/secrets.yml`).
 
 The image, init and resources apply when a sandbox is created. Changing them in
-`.anvil.yml` doesn't change an existing sandbox; remove it with `anvil rm` and
+`.firebrick.yml` doesn't change an existing sandbox; remove it with `fbk rm` and
 start it again.
 
 ## Base image
@@ -254,18 +258,19 @@ images. It builds on `ubuntu:26.04` and adds:
   default. The `ubuntu` user that the base image ships with UID 1000 is removed.
 - `/sbin/init` - a script that disables guest IPv6 with the settings in
   `/etc/sysctl.d/99-disable-ipv6.conf` and then hands PID 1 to `tini`, which
-  reaps zombie processes. `anvild` runs it as PID 1 unless the spec sets `init:
+  reaps zombie processes. `fbkd` runs it as PID 1 unless the spec sets `init:
   false`. See
   [ADR 0007](decisions/0007-disable-guest-ipv6-in-the-base-image.md).
 
-The release workflow publishes the image as `ghcr.io/wmeints/anvil-base:<tag>`
-(see [Deployment view](07-deployment-view.md)), and anvil uses it as the default
+The release workflow publishes the image as
+`ghcr.io/wmeints/firebrick-base:<tag>` (see
+[Deployment view](07-deployment-view.md)), and firebrick uses it as the default
 image. The default tag is the workspace version with a `v` prefix, so each
-release of `anvil` and `anvild` runs the image from the same release. Builds of
-a version that has no release yet, such as a development build, can't pull the
-default image; set `image` in `.anvil.yml` to use them.
+release of `fbk` and `fbkd` runs the image from the same release. Builds of a
+version that has no release yet, such as a development build, can't pull the
+default image; set `image` in `.firebrick.yml` to use them.
 
 Every sandbox image must provide an `agent` user with UID and GID `1000` and run
-as it. The generated SSH config logs in as `agent`, `anvil run` runs commands as
+as it. The generated SSH config logs in as `agent`, `fbk run` runs commands as
 the image's user, and the workspace is mounted with owner `1000:1000`. See
 [ADR 0006](decisions/0006-run-sandboxes-as-the-agent-user.md).

@@ -6,9 +6,9 @@ Accepted
 
 ## Context
 
-`anvil ls` printed each sandbox as tab-separated name, status and host name.
-Tabs don't line up when names differ in length and the output had no header, so
-it was hard to read. Scripts that want the list need a stable, machine-readable
+`fbk ls` printed each sandbox as tab-separated name, status and host name. Tabs
+don't line up when names differ in length and the output had no header, so it
+was hard to read. Scripts that want the list need a stable, machine-readable
 format instead.
 
 ## Decision
@@ -20,7 +20,7 @@ plain text lines. That works the same for a terminal and a pipe. `Table` draws
 no lines between columns or below the header, so the CLI leaves room for them
 and draws them onto the buffer, joined to the border.
 
-`anvil ls --format json` prints the list as a JSON array of objects with `name`,
+`fbk ls --format json` prints the list as a JSON array of objects with `name`,
 `status` (lowercase) and `hostname`, serialized with `serde_json`.
 
 We didn't write the alignment by hand: borders, header and column widths are

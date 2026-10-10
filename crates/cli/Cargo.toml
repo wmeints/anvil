@@ -1,5 +1,5 @@
 [package]
-name = "anvil-cli"
+name = "firebrick-cli"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -9,7 +9,7 @@ license.workspace = true
 workspace = true
 
 [[bin]]
-name = "anvil"
+name = "fbk"
 path = "src/main.rs"
 
 [dependencies]
@@ -21,10 +21,10 @@ tonic = "0.14.6"
 tonic-prost = "0.14.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-anvil-utils = { workspace = true }
+firebrick-utils = { workspace = true }
 tower = "0.5.3"
 hyper-util = { version = "0.1.21", features = ["tokio"] }
-anvil-spec = { path = "../spec" }
+firebrick-spec = { path = "../spec" }
 crossterm = "0.29"
 ratatui = { version = "0.30.2", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }

@@ -234,7 +234,7 @@ impl SandboxManager {
             SandboxError::internal("failed to store secret")
         })?;
 
-        let failed_sandboxes = update_anvil_sandboxes(SecretChange::Add(&secret))
+        let failed_sandboxes = update_firebrick_sandboxes(SecretChange::Add(&secret))
             .await
             .map_err(|_| {
                 SandboxError::internal(
@@ -266,7 +266,7 @@ impl SandboxManager {
 
         // Remove the secret from the store last, so it can be removed again when a sandbox
         // fails.
-        let failed_sandboxes = update_anvil_sandboxes(SecretChange::Remove(name)).await?;
+        let failed_sandboxes = update_firebrick_sandboxes(SecretChange::Remove(name)).await?;
 
         if !failed_sandboxes.is_empty() {
             return Ok(failed_sandboxes);
@@ -501,9 +501,9 @@ impl fmt::Display for SecretChange<'_> {
     }
 }
 
-/// Applies a secret change to every sandbox anvil created, which are the ones with a host
+/// Applies a secret change to every sandbox firebrick created, which are the ones with a host
 /// name. Returns the names of the sandboxes the change failed for.
-async fn update_anvil_sandboxes(change: SecretChange<'_>) -> Result<Vec<String>, SandboxError> {
+async fn update_firebrick_sandboxes(change: SecretChange<'_>) -> Result<Vec<String>, SandboxError> {
     let mut failed = vec![];
 
     for handle in list_all_sandboxes().await? {
@@ -617,7 +617,7 @@ fn workspace_mount_path(workspace: &str) -> Result<String, SandboxError> {
 /// Returns the requested image, or the default image when the request doesn't name one.
 fn sandbox_image(image: &str) -> &str {
     if image.is_empty() {
-        anvil_spec::DEFAULT_IMAGE
+        firebrick_spec::DEFAULT_IMAGE
     } else {
         image
     }
@@ -656,7 +656,7 @@ fn create_error(message: &str) -> SandboxError {
     if message.contains("handoff failed") {
         SandboxError::failed_precondition(
             "failed to create sandbox: the image has no /sbin/init; add one or set init: false \
-             in .anvil.yml",
+             in .firebrick.yml",
         )
     } else {
         SandboxError::internal("failed to create sandbox")
@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn sandbox_image_falls_back_to_default() {
         assert_eq!(sandbox_image("alpine:3.22"), "alpine:3.22");
-        assert_eq!(sandbox_image(""), anvil_spec::DEFAULT_IMAGE);
+        assert_eq!(sandbox_image(""), firebrick_spec::DEFAULT_IMAGE);
     }
 
     #[test]

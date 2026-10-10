@@ -11,13 +11,13 @@ use tokio::time::{Instant, sleep};
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 
-const DAEMON_BINARY: &str = "anvild";
+const DAEMON_BINARY: &str = "fbkd";
 const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(5);
 const DAEMON_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Connects to the daemon over its unix socket, starting the daemon when needed.
 pub async fn connect() -> Result<SandboxManagementServiceClient<Channel>> {
-    let path = anvil_utils::socket_path();
+    let path = firebrick_utils::socket_path();
 
     // Note: the HTTP endpoint isn't actually used. It will only show up in the authority header.
     let channel = Endpoint::try_from("http://localhost")
@@ -53,7 +53,7 @@ pub async fn ensure_daemon(socket_path: &Path) -> Result<UnixStream> {
         .stderr(Stdio::null())
         .process_group(0)
         .spawn()
-        .context("failed to start the anvil daemon")?;
+        .context("failed to start the firebrick daemon")?;
 
     wait_for_daemon(socket_path, child).await
 }
@@ -68,12 +68,12 @@ async fn wait_for_daemon(socket_path: &Path, mut child: Child) -> Result<UnixStr
         }
 
         if let Some(status) = child.try_wait()? {
-            bail!("the anvil daemon exited unexpectedly ({status})");
+            bail!("the firebrick daemon exited unexpectedly ({status})");
         }
 
         if Instant::now() >= deadline {
             bail!(
-                "timed out waiting for the anvil daemon to listen on {}",
+                "timed out waiting for the firebrick daemon to listen on {}",
                 socket_path.display()
             );
         }

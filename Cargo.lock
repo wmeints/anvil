@@ -157,72 +157,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anvil-cli"
-version = "0.2.1"
-dependencies = [
- "anvil-spec",
- "anvil-utils",
- "anyhow",
- "clap",
- "crossterm",
- "hyper-util",
- "prost",
- "ratatui",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
- "tower",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "anvil-daemon"
-version = "0.2.1"
-dependencies = [
- "anvil-spec",
- "anvil-utils",
- "anyhow",
- "async-trait",
- "clap",
- "hyper-util",
- "jsonc-parser",
- "microsandbox",
- "prost",
- "russh",
- "serde",
- "serde_yaml",
- "tempfile",
- "thiserror",
- "tokio",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
- "tower",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "anvil-spec"
-version = "0.2.1"
-dependencies = [
- "serde",
- "serde_yaml",
- "tempfile",
- "thiserror",
-]
-
-[[package]]
-name = "anvil-utils"
-version = "0.2.1"
-
-[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2025,6 +1959,72 @@ name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
+
+[[package]]
+name = "firebrick-cli"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "firebrick-spec",
+ "firebrick-utils",
+ "hyper-util",
+ "prost",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "firebrick-daemon"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "firebrick-spec",
+ "firebrick-utils",
+ "hyper-util",
+ "jsonc-parser",
+ "microsandbox",
+ "prost",
+ "russh",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tower",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "firebrick-spec"
+version = "0.2.1"
+dependencies = [
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "firebrick-utils"
+version = "0.2.1"
 
 [[package]]
 name = "fixedbitset"

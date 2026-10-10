@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn set_stores_secrets_readable_by_owner_only() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("anvil/secrets.yml");
+        let path = dir.path().join("firebrick/secrets.yml");
         let store = SecretStore::new(&path);
 
         store.set(secret("GH_TOKEN", &[]).unwrap()).unwrap();

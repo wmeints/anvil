@@ -26,7 +26,7 @@ pub fn validate_spec(working_dir: &Path) -> Result<bool> {
 
 /// Loads the spec, formatting a parse problem as `file:line:column: error: message`.
 fn check_spec(spec_path: &Path) -> Result<(), String> {
-    let Err(err) = anvil_spec::from_file(spec_path) else {
+    let Err(err) = firebrick_spec::from_file(spec_path) else {
         return Ok(());
     };
 
@@ -80,7 +80,7 @@ mod tests {
 
         assert_eq!(
             report,
-            ".anvil.yml:4:3: error: resources: unknown field `memroy`, expected `cpu` or `memory`"
+            ".firebrick.yml:4:3: error: resources: unknown field `memroy`, expected `cpu` or `memory`"
         );
     }
 }

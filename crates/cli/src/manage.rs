@@ -1,6 +1,6 @@
-use anvil_spec::SandboxSpec;
 use anyhow::{Result, anyhow, bail};
 use clap::ValueEnum;
+use firebrick_spec::SandboxSpec;
 use serde::Serialize;
 use std::ops::ControlFlow;
 use std::path::Path;
@@ -16,7 +16,7 @@ use crate::api::{
 };
 use crate::table;
 
-pub(crate) const SPEC_FILE_NAME: &str = ".anvil.yml";
+pub(crate) const SPEC_FILE_NAME: &str = ".firebrick.yml";
 
 /// Starts the named sandbox, or the sandbox for the working directory without a name. Does
 /// nothing when it's already running, and waits for it when it's starting. Only the sandbox for
@@ -64,9 +64,7 @@ async fn start_named_sandbox(
 ) -> Result<String> {
     // The daemon falls back to the sandbox name for the host name when the workspace is empty.
     if !start_if_exists(&name, Path::new(""), client).await? {
-        bail!(
-            "sandbox {name} doesn't exist; run anvil start in its project directory to create it"
-        );
+        bail!("sandbox {name} doesn't exist; run fbk start in its project directory to create it");
     }
 
     Ok(name)
@@ -194,7 +192,7 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> StartSandboxReque
         name: spec.name,
         image: spec
             .image
-            .unwrap_or_else(|| anvil_spec::DEFAULT_IMAGE.to_string()),
+            .unwrap_or_else(|| firebrick_spec::DEFAULT_IMAGE.to_string()),
         resources: Some(SandboxResources {
             cpu: resources.cpu.into(),
             memory: resources.memory,
@@ -264,7 +262,7 @@ fn describe_status(name: &str, status: tonic::Status) -> anyhow::Error {
 fn describe_remove_status(name: &str, status: tonic::Status) -> anyhow::Error {
     if status.code() == Code::FailedPrecondition {
         return anyhow!(
-            "sandbox {name} is running. Stop it with `anvil stop`, or remove it with `anvil rm --force`."
+            "sandbox {name} is running. Stop it with `fbk stop`, or remove it with `fbk rm --force`."
         );
     }
 
@@ -345,10 +343,10 @@ pub(crate) fn resolve_spec(working_dir: &Path) -> Result<SandboxSpec> {
     let spec_path = working_dir.join(SPEC_FILE_NAME);
 
     if spec_path.is_file() {
-        return Ok(anvil_spec::from_file(&spec_path)?);
+        return Ok(firebrick_spec::from_file(&spec_path)?);
     }
 
-    Ok(anvil_spec::default_spec(derive_name_from_path(
+    Ok(firebrick_spec::default_spec(derive_name_from_path(
         working_dir,
     )?))
 }
@@ -417,19 +415,19 @@ mod tests {
     #[test]
     fn connect_instructions_include_editor_commands() {
         assert_eq!(
-            connect_instructions(&sandbox("project.anvil", "/workspaces/project")),
-            "Connect with: ssh project.anvil\n\
+            connect_instructions(&sandbox("project.fbk", "/workspaces/project")),
+            "Connect with: ssh project.fbk\n\
              Open in VS Code: code --folder-uri \
-             vscode-remote://ssh-remote+project.anvil/workspaces/project\n\
-             Open in Zed: zed ssh://project.anvil/workspaces/project\n"
+             vscode-remote://ssh-remote+project.fbk/workspaces/project\n\
+             Open in Zed: zed ssh://project.fbk/workspaces/project\n"
         );
     }
 
     #[test]
     fn connect_instructions_skip_editors_without_workspace_path() {
         assert_eq!(
-            connect_instructions(&sandbox("project.anvil", "")),
-            "Connect with: ssh project.anvil\n"
+            connect_instructions(&sandbox("project.fbk", "")),
+            "Connect with: ssh project.fbk\n"
         );
     }
 
@@ -444,7 +442,7 @@ mod tests {
     #[test]
     fn table_aligns_sandboxes_under_header() {
         let sandboxes = [
-            summary("dev", SandboxStatus::Running, "dev.anvil"),
+            summary("dev", SandboxStatus::Running, "dev.fbk"),
             summary("long_project_name", SandboxStatus::Stopped, ""),
         ];
 
@@ -452,12 +450,12 @@ mod tests {
 
         assert_eq!(
             table,
-            "┌───────────────────┬─────────┬───────────┐\n\
-             │ NAME              │ STATUS  │ HOSTNAME  │\n\
-             ├───────────────────┼─────────┼───────────┤\n\
-             │ dev               │ Running │ dev.anvil │\n\
-             │ long_project_name │ Stopped │           │\n\
-             └───────────────────┴─────────┴───────────┘\n"
+            "┌───────────────────┬─────────┬──────────┐\n\
+             │ NAME              │ STATUS  │ HOSTNAME │\n\
+             ├───────────────────┼─────────┼──────────┤\n\
+             │ dev               │ Running │ dev.fbk  │\n\
+             │ long_project_name │ Stopped │          │\n\
+             └───────────────────┴─────────┴──────────┘\n"
         );
     }
 
@@ -489,14 +487,14 @@ mod tests {
 
     #[test]
     fn json_lists_sandboxes() {
-        let sandboxes = [summary("dev", SandboxStatus::Running, "dev.anvil")];
+        let sandboxes = [summary("dev", SandboxStatus::Running, "dev.fbk")];
 
         let json = render_sandbox_json(&sandboxes).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert_eq!(
             value,
-            serde_json::json!([{ "name": "dev", "status": "running", "hostname": "dev.anvil" }])
+            serde_json::json!([{ "name": "dev", "status": "running", "hostname": "dev.fbk" }])
         );
     }
 
@@ -568,7 +566,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "sandbox dev is running. Stop it with `anvil stop`, or remove it with `anvil rm --force`."
+            "sandbox dev is running. Stop it with `fbk stop`, or remove it with `fbk rm --force`."
         );
     }
 
@@ -610,7 +608,7 @@ mod tests {
 
     #[test]
     fn start_request_carries_workspace() {
-        let spec = anvil_spec::default_spec("dev".to_string());
+        let spec = firebrick_spec::default_spec("dev".to_string());
 
         let request = build_start_request(spec, Path::new("/home/user/project"));
 
@@ -641,9 +639,9 @@ mod tests {
 
         let request = build_start_request(resolve_spec(dir.path()).unwrap(), dir.path());
         let resources = request.resources.unwrap();
-        let defaults = anvil_spec::SandboxResourcesSpec::default();
+        let defaults = firebrick_spec::SandboxResourcesSpec::default();
 
-        assert_eq!(request.image, anvil_spec::DEFAULT_IMAGE);
+        assert_eq!(request.image, firebrick_spec::DEFAULT_IMAGE);
         assert_eq!(request.init, Some(true));
         assert_eq!(resources.cpu, u32::from(defaults.cpu));
         assert_eq!(resources.memory, defaults.memory);

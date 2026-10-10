@@ -1,5 +1,5 @@
 [package]
-name = "anvil-daemon"
+name = "firebrick-daemon"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -9,7 +9,7 @@ license.workspace = true
 workspace = true
 
 [[bin]]
-name = "anvild"
+name = "fbkd"
 path = "src/main.rs"
 
 [features]
@@ -30,11 +30,11 @@ tonic = { version = "0.14.6", features = ["server"] }
 tonic-prost = "0.14.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-anvil-utils = { workspace = true }
+firebrick-utils = { workspace = true }
 tracing-appender = "0.2.5"
 microsandbox = { version = "0.7.6", features = ["ssh", "embed-binaries"] }
 russh = "0.63.1"
-anvil-spec = {
+firebrick-spec = {
     path = "../spec"
 }
 async-trait = "0.1.92"

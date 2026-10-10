@@ -10,15 +10,16 @@
   `secrets.yml` and in microsandbox's database, readable by every process that
   runs as the user. When the host may be compromised, rotate the secrets at
   their issuers ([ADR 0004](decisions/0004-store-secrets-in-a-private-file.md)).
-- **Secrets only work in HTTP headers:** Anvil keeps microsandbox's default
+- **Secrets only work in HTTP headers:** Firebrick keeps microsandbox's default
   substitution scope, which replaces secret placeholders in headers, including
   decoded Basic auth credentials, but not in URLs or request bodies. Tools that
   send a token elsewhere can't use secrets.
 - **Unreleased builds have no default image:** the default image is the
-  `anvil-base` image tagged with the workspace version, which only exists after
-  that version is released. Development builds need an `image` in `.anvil.yml`
+  `firebrick-base` image tagged with the workspace version, which only exists
+  after that version is released. Development builds need an `image` in
+  `.firebrick.yml`
   ([ADR 0005](decisions/0005-default-to-the-anvil-base-image-of-the-same-release.md)).
-- **No IPv6 in the default image:** `anvil-base` disables guest IPv6 to work
+- **No IPv6 in the default image:** `firebrick-base` disables guest IPv6 to work
   around a microsandbox bug that resets IPv6 connections on hosts without IPv6
   egress. Images with `init: false` keep guest IPv6 and the bug, so downloads
   from servers with IPv6 addresses fail there on such hosts. The hint for images

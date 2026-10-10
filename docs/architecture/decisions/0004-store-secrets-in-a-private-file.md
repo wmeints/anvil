@@ -23,27 +23,27 @@ in two ways:
   sandbox database, `~/.microsandbox/db/msb.db`.
 - **Source reference** - `.source(SecretSource::Env { var })`. The database
   stores only the reference, and microsandbox resolves it from the environment
-  of the process that boots the sandbox, which is `anvild`.
-  `SecretSource::Store`, for a host-side secret store, isn't implemented yet.
+  of the process that boots the sandbox, which is `fbkd`. `SecretSource::Store`,
+  for a host-side secret store, isn't implemented yet.
 
 We considered two options:
 
-- **A: inline values in private files** - `anvild` keeps the secrets in
-  `$XDG_DATA_HOME/anvil/secrets.yml` (mode `0600`), passes the values inline,
-  and makes microsandbox's `db` directory `0700`.
-- **B: OS keyring with an environment source** - `anvild` keeps the secrets in
-  the keyring (Secret Service), loads them into namespaced environment variables
-  such as `ANVIL_SECRET_GH_TOKEN` before its tokio runtime starts, and passes
-  `SecretSource::Env` references. `set_var` is only sound before other threads
-  exist, so setting a secret has to restart `anvild`.
+- **A: inline values in private files** - `fbkd` keeps the secrets in
+  `$XDG_DATA_HOME/firebrick/secrets.yml` (mode `0600`), passes the values
+  inline, and makes microsandbox's `db` directory `0700`.
+- **B: OS keyring with an environment source** - `fbkd` keeps the secrets in the
+  keyring (Secret Service), loads them into namespaced environment variables
+  such as `FIREBRICK_SECRET_GH_TOKEN` before its tokio runtime starts, and
+  passes `SecretSource::Env` references. `set_var` is only sound before other
+  threads exist, so setting a secret has to restart `fbkd`.
 
 |                                    | A: inline value, private files                                      | B: keyring + environment source                                                    |
 | ---------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | At rest                            | Plaintext in `secrets.yml` (`0600`) and `msb.db` (`db/` is `0700`). | Encrypted in the keyring. No plaintext on disk.                                    |
 | Other users on the host            | Blocked by file permissions.                                        | Blocked.                                                                           |
-| Malware running as the user        | Can read both files.                                                | Can query the unlocked keyring, or read `/proc/<pid>/environ` of `anvild`.         |
+| Malware running as the user        | Can read both files.                                                | Can query the unlocked keyring, or read `/proc/<pid>/environ` of `fbkd`.           |
 | Backups, a stolen unencrypted disk | Exposed.                                                            | Protected.                                                                         |
-| Changing a secret                  | `anvild` updates each sandbox through `modify()`.                   | `anvild` restarts and drops open `anvil run` and SSH sessions.                     |
+| Changing a secret                  | `fbkd` updates each sandbox through `modify()`.                     | `fbkd` restarts and drops open `fbk run` and SSH sessions.                         |
 | Cost                               | No new dependency.                                                  | The `keyring` crate, a desktop keyring, `unsafe` `set_var` and a restart protocol. |
 
 Both options keep the value out of the VM equally well. They differ only in how
@@ -56,9 +56,9 @@ We use option A. The keyring adds complexity without protecting against the
 threat that matters, malware running as the user. With full-disk encryption, the
 remaining gain of option B, protection at rest, is small.
 
-- `anvil secret set <name> [<value>] [--from-stdin] [--allow-host <host>]...`
-  sends the secret to `anvild` through the `SetSecret` RPC.
-- `anvild` validates the name (an environment variable name that doesn't start
+- `fbk secret set <name> [<value>] [--from-stdin] [--allow-host <host>]...`
+  sends the secret to `fbkd` through the `SetSecret` RPC.
+- `fbkd` validates the name (an environment variable name that doesn't start
   with `MSB_`), the value (not empty) and the allowed hosts (host names,
   optionally `*.`-prefixed; `*` isn't allowed). Without `--allow-host`, it uses
   defaults for well-known names:
@@ -69,17 +69,17 @@ remaining gain of option B, protection at rest, is small.
   | `COPILOT_GITHUB_TOKEN`                         | `github.com`, `api.github.com`, `*.githubcopilot.com` |
   | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` | `api.anthropic.com`                                   |
 
-- `anvild` stores the secret in `secrets.yml`, writing a `0600` temporary file
-  and renaming it, and adds it to every sandbox it created (the ones with an
-  `anvil.hostname` label) with `modify().secret(..).next_start()`. New sandboxes
-  get all stored secrets when they're created. microsandbox enables TLS
-  interception for sandboxes with secrets.
-- `anvil secret ls` lists the names and allowed hosts, never the values. `anvil
+- `fbkd` stores the secret in `secrets.yml`, writing a `0600` temporary file and
+  renaming it, and adds it to every sandbox it created (the ones with an
+  `firebrick.hostname` label) with `modify().secret(..).next_start()`. New
+  sandboxes get all stored secrets when they're created. microsandbox enables
+  TLS interception for sandboxes with secrets.
+- `fbk secret ls` lists the names and allowed hosts, never the values. `fbk
   secret rm` removes a secret from the sandboxes with
   `modify().remove_secret(..).next_start()`, and then from `secrets.yml`. When a
-  sandbox fails, the secret stays in `secrets.yml`, so running `anvil secret rm`
+  sandbox fails, the secret stays in `secrets.yml`, so running `fbk secret rm`
   again retries it.
-- On startup, `anvild` sets the microsandbox `db` directory to `0700`.
+- On startup, `fbkd` sets the microsandbox `db` directory to `0700`.
 
 ## Consequences
 
@@ -88,9 +88,9 @@ remaining gain of option B, protection at rest, is small.
   until it restarts, because microsandbox can't reconfigure secrets live yet.
 - The values are in plaintext at rest, readable by every process that runs as
   the user. **When the host may be compromised, rotate the secrets** at their
-  issuers (GitHub, Anthropic) and set the new values with `anvil secret set`.
-  Changing them in anvil alone doesn't help, because the old values may already
-  have been copied.
+  issuers (GitHub, Anthropic) and set the new values with `fbk secret set`.
+  Changing them in firebrick alone doesn't help, because the old values may
+  already have been copied.
 - microsandbox only substitutes placeholders in HTTP headers. Tools that send
   the token in a header (`gh`, the GitHub and Anthropic APIs) work. `git` over
   HTTPS works too: microsandbox decodes Basic auth credentials, replaces the

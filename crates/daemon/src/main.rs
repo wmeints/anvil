@@ -3,16 +3,16 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
-use anvil_daemon::secrets::{self, SecretStore};
-use anvil_daemon::{runtime, sandboxes, server, ssh};
+use firebrick_daemon::secrets::{self, SecretStore};
+use firebrick_daemon::{runtime, sandboxes, server, ssh};
 
 /// Sets up logging and runs the daemon on its unix socket until shutdown.
 #[tokio::main]
 async fn main() -> Result<()> {
-    let log_dir = anvil_utils::log_dir();
+    let log_dir = firebrick_utils::log_dir();
     std::fs::create_dir_all(&log_dir)?;
     let (log_writer, _log_guard) =
-        tracing_appender::non_blocking(tracing_appender::rolling::daily(&log_dir, "anvild.log"));
+        tracing_appender::non_blocking(tracing_appender::rolling::daily(&log_dir, "fbkd.log"));
 
     tracing_subscriber::registry()
         .with(fmt::layer())
@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
 
     // Check the socket before touching the runtime, so a second daemon can't replace the
     // runtime under the one that is already serving.
-    let socket_path = anvil_utils::socket_path();
+    let socket_path = firebrick_utils::socket_path();
     if socket_path.exists() {
         bail!(server::ServerError::SocketAlreadyInUse());
     }
@@ -40,5 +40,9 @@ async fn main() -> Result<()> {
         path = socket_path.to_str().unwrap(),
         "listening on unix socket"
     );
-    Ok(server::run(&socket_path, SecretStore::new(anvil_utils::secrets_path())).await?)
+    Ok(server::run(
+        &socket_path,
+        SecretStore::new(firebrick_utils::secrets_path()),
+    )
+    .await?)
 }
