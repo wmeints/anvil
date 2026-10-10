@@ -219,6 +219,10 @@ another sandbox from any directory.
 | `fbk secret set <name> [<value>]` | Set a secret for all sandboxes. See [Secrets](#secrets).                                                                           |
 | `fbk secret ls [--format json]`   | List the secrets and their allowed hosts, without their values.                                                                    |
 | `fbk secret rm <name>`            | Remove a secret from all sandboxes.                                                                                                |
+| `fbk network allow <rule>...`     | Allow destinations in `.firebrick.yml` and apply the rules to the sandbox. See [Network](#network).                                |
+| `fbk network deny <rule>...`      | Deny destinations in `.firebrick.yml` and apply the rules to the sandbox.                                                          |
+| `fbk network policy enable`       | Turn on enforcement of the network rules (`network.enforce: true`).                                                                |
+| `fbk network policy disable`      | Turn off enforcement of the network rules; the rules are kept.                                                                     |
 
 For example, to open a shell in the sandbox:
 
@@ -321,9 +325,11 @@ when the sandbox stops, and `fbk rm` deletes it with the sandbox.
 
 The image, init, mise setting, resources, volumes, network rules and mounts
 apply when the sandbox is created. To change them for an existing sandbox, run
-`fbk rm` and start it again. `ports` is the exception: `fbk start` applies it to
-an existing sandbox, also while it runs. Sandboxes created by an older version
-have no Docker data disk until you recreate them.
+`fbk rm` and start it again. There are two exceptions: `fbk start` applies
+`ports` to an existing sandbox, also while it runs, and `fbk network` changes
+the network rules without removing the sandbox (see [Network](#network)).
+Sandboxes created by an older version have no Docker data disk until you
+recreate them.
 
 ### Network
 
@@ -361,8 +367,40 @@ $ curl -s https://example.org
 firebrick blocked the connection to example.org: the network policy of this sandbox doesn't allow it. To allow it, run `fbk network allow example.org` on the host, outside the sandbox.
 ```
 
-`fbk network allow` doesn't exist yet. Until it does, add the host to `allow`,
-then run `fbk rm` and `fbk start` to recreate the sandbox.
+Change the rules with `fbk network` in the project directory. It writes the
+change to `.firebrick.yml`, so the file and the sandbox always have the same
+rules, and applies it to the sandbox:
+
+```sh
+$ fbk network allow example.org "*.npmjs.org"
+updated the network rules of my-project
+$ fbk network deny gist.github.com
+updated the network rules of my-project
+$ fbk network policy enable
+updated the network rules of my-project
+```
+
+- `fbk network allow <rule>...` adds the rules to `allow` and removes them from
+  `deny`; `fbk network deny <rule>...` does the opposite. A rule that's already
+  there isn't added twice. When neither the file nor the sandbox changes, the
+  command prints `network rules are already up to date`.
+- When applying the rules to the sandbox fails, run the command again: it
+  applies the rules from `.firebrick.yml` to a sandbox that doesn't have them
+  yet, also after you edit the file by hand.
+- `fbk network policy enable` and `fbk network policy disable` set `enforce`.
+- When there's no `.firebrick.yml` yet, the command creates one with the
+  defaults and the name `fbk start` uses, plus the change.
+- `allow` and `deny` warn when `enforce` is off, because the rules don't protect
+  anything until you run `fbk network policy enable`.
+- When the sandbox doesn't exist yet, only the file changes and the rules apply
+  when it starts.
+- The sandbox keeps its files, installed packages and Docker data, but it
+  restarts: running processes stop, as after `fbk stop` and `fbk start`. A
+  stopped sandbox stays stopped. A sandbox that already has the rules, or whose
+  rules aren't enforced, doesn't restart. A paused sandbox has to be resumed
+  first.
+- `fbk network` rewrites `.firebrick.yml`, which drops its comments and
+  formatting.
 
 Keep in mind that:
 

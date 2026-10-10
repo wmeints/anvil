@@ -4,16 +4,144 @@
 
 use firebrick_spec::{NetworkRule, NetworkSpec};
 use microsandbox::MicrosandboxError;
-use microsandbox::sandbox::SandboxBuilder;
+use microsandbox::sandbox::{SandboxBuilder, SandboxSpec};
 use microsandbox_network::policy::{
     Action, NetworkPolicy, Rule, RuleBuilder, RuleDestinationBuilder,
 };
+use std::net::IpAddr;
+use url::Host;
 
 /// Body of the `403 Forbidden` response to a denied HTTP or HTTPS request. microsandbox
 /// replaces `{host}` with the denied host.
 pub const DENY_MESSAGE: &str = "firebrick blocked the connection to {host}: the network policy \
      of this sandbox doesn't allow it. To allow it, run `fbk network allow {host}` on the host, \
      outside the sandbox.";
+
+/// Label that records the egress rules a sandbox was created with, so an update that doesn't
+/// change them can leave the sandbox alone.
+pub const RULES_LABEL: &str = "firebrick.network";
+
+/// Returns the value of [`RULES_LABEL`] for the rules. Rules that aren't enforced don't change
+/// the sandbox, so they are all recorded as `off`.
+pub fn rules_label(network: &NetworkSpec) -> String {
+    if !network.enforce {
+        return "off".to_string();
+    }
+
+    let join = |rules: &[NetworkRule]| {
+        rules
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    format!(
+        "allow={};deny={}",
+        join(&network.allow),
+        join(&network.deny)
+    )
+}
+
+/// Returns the egress rules of a sandbox from its stored config. A sandbox whose label can't be
+/// parsed, or one created before [`RULES_LABEL`] existed that has a network policy, counts as
+/// enforced without allow rules, so callers that check a host against the rules fail closed.
+pub fn rules_of(spec: &SandboxSpec) -> NetworkSpec {
+    let unknown = || NetworkSpec {
+        enforce: true,
+        ..NetworkSpec::default()
+    };
+
+    match spec.labels.get(RULES_LABEL) {
+        Some(label) => rules_from_label(label).unwrap_or_else(unknown),
+        None if spec.network.policy.is_some() => unknown(),
+        None => NetworkSpec::default(),
+    }
+}
+
+/// Parses a value of [`RULES_LABEL`] back into rules. Returns `None` for a value that
+/// [`rules_label`] can't have written.
+pub fn rules_from_label(value: &str) -> Option<NetworkSpec> {
+    if value == "off" {
+        return Some(NetworkSpec::default());
+    }
+
+    let (allow, deny) = value.strip_prefix("allow=")?.split_once(";deny=")?;
+
+    Some(NetworkSpec {
+        enforce: true,
+        allow: parse_rules(allow)?,
+        deny: parse_rules(deny)?,
+    })
+}
+
+/// Parses a comma-separated list of rules, which may be empty.
+fn parse_rules(value: &str) -> Option<Vec<NetworkRule>> {
+    value
+        .split(',')
+        .filter(|rule| !rule.is_empty())
+        .map(|rule| rule.parse().ok())
+        .collect()
+}
+
+/// Whether the rules let the sandbox connect to the host, matched like [`policy`]: a matching
+/// deny rule wins, then a matching allow rule, and anything else is denied. Rules that aren't
+/// enforced allow every host. Domain rules only match host names and IP and CIDR rules only IP
+/// addresses, because fbkd doesn't resolve names.
+pub fn allows_host(network: &NetworkSpec, host: &Host<&str>) -> bool {
+    let matches = |rule: &NetworkRule| rule_matches(rule, host);
+
+    !network.enforce || (!network.deny.iter().any(matches) && network.allow.iter().any(matches))
+}
+
+/// Whether the rule's destination is the host.
+fn rule_matches(rule: &NetworkRule, host: &Host<&str>) -> bool {
+    match (rule, host) {
+        (NetworkRule::Domain(domain), Host::Domain(name)) => {
+            name.trim_end_matches('.').eq_ignore_ascii_case(domain)
+        }
+        (NetworkRule::DomainSuffix(suffix), Host::Domain(name)) => {
+            is_same_or_subdomain(name.trim_end_matches('.'), suffix)
+        }
+        (NetworkRule::Ip(address), Host::Ipv4(ip)) => *address == IpAddr::V4(*ip),
+        (NetworkRule::Ip(address), Host::Ipv6(ip)) => *address == IpAddr::V6(*ip),
+        (NetworkRule::Cidr { address, prefix }, Host::Ipv4(ip)) => {
+            in_cidr(*address, *prefix, IpAddr::V4(*ip))
+        }
+        (NetworkRule::Cidr { address, prefix }, Host::Ipv6(ip)) => {
+            in_cidr(*address, *prefix, IpAddr::V6(*ip))
+        }
+        _ => false,
+    }
+}
+
+/// Whether the name is the domain or one of its subdomains.
+fn is_same_or_subdomain(name: &str, domain: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    let domain = domain.to_ascii_lowercase();
+
+    name == domain || name.ends_with(&format!(".{domain}"))
+}
+
+/// Whether the IP address is in the network `address/prefix` of the same family.
+fn in_cidr(address: IpAddr, prefix: u8, ip: IpAddr) -> bool {
+    match (address, ip) {
+        (IpAddr::V4(network), IpAddr::V4(ip)) => {
+            same_prefix(network.to_bits().into(), ip.to_bits().into(), prefix, 32)
+        }
+        (IpAddr::V6(network), IpAddr::V6(ip)) => {
+            same_prefix(network.to_bits(), ip.to_bits(), prefix, 128)
+        }
+        _ => false,
+    }
+}
+
+/// Whether the first `prefix` of the `width` bits of both addresses are equal.
+fn same_prefix(network: u128, ip: u128, prefix: u8, width: u32) -> bool {
+    let shift = width.saturating_sub(u32::from(prefix));
+
+    network.checked_shr(shift).unwrap_or(0) == ip.checked_shr(shift).unwrap_or(0)
+}
 
 /// Adds the egress rules to a sandbox that is being created. Without `enforce`, the sandbox
 /// keeps microsandbox's default policy and no TLS interception.
@@ -81,6 +209,10 @@ mod tests {
         values.iter().map(|value| value.parse().unwrap()).collect()
     }
 
+    fn enforced_without_rules() -> NetworkSpec {
+        enforced(&[], &[])
+    }
+
     fn enforced(allow: &[&str], deny: &[&str]) -> NetworkSpec {
         NetworkSpec {
             enforce: true,
@@ -105,6 +237,86 @@ mod tests {
         };
 
         format!("{action} {destination}")
+    }
+
+    fn allows(network: &NetworkSpec, host: &str) -> bool {
+        let url = url::Url::parse(&format!("http://{host}/")).unwrap();
+        allows_host(network, &url.host().unwrap())
+    }
+
+    #[test]
+    fn rules_from_label_reads_what_rules_label_writes() {
+        let enforced = enforced(&["github.com", "*.npmjs.org", "10.0.0.0/8"], &["1.2.3.4"]);
+        let no_rules = enforced_without_rules();
+
+        for network in [enforced, no_rules, NetworkSpec::default()] {
+            assert_eq!(rules_from_label(&rules_label(&network)), Some(network));
+        }
+    }
+
+    #[test]
+    fn rules_from_label_rejects_other_values() {
+        assert_eq!(rules_from_label(""), None);
+        assert_eq!(rules_from_label("allow=github.com"), None);
+        assert_eq!(rules_from_label("allow=not a rule;deny="), None);
+    }
+
+    #[test]
+    fn allows_every_host_when_not_enforced() {
+        assert!(allows(&NetworkSpec::default(), "anything.example"));
+        assert!(allows(&NetworkSpec::default(), "10.1.2.3"));
+    }
+
+    #[test]
+    fn allows_hosts_that_match_an_allow_rule_only() {
+        let network = enforced(&["github.com", "*.npmjs.org"], &[]);
+
+        assert!(allows(&network, "github.com"));
+        assert!(allows(&network, "GitHub.com."));
+        assert!(allows(&network, "npmjs.org"));
+        assert!(allows(&network, "registry.npmjs.org"));
+        assert!(!allows(&network, "api.github.com"));
+        assert!(!allows(&network, "evilnpmjs.org"));
+        assert!(!allows(&network, "attacker.example"));
+    }
+
+    #[test]
+    fn deny_rules_win_over_allow_rules() {
+        let network = enforced(&["*.github.com"], &["gist.github.com"]);
+
+        assert!(allows(&network, "api.github.com"));
+        assert!(!allows(&network, "gist.github.com"));
+    }
+
+    #[test]
+    fn ip_rules_match_ip_hosts_only() {
+        let network = enforced(&["140.82.112.0/20", "2001:db8::1"], &["140.82.112.4"]);
+
+        assert!(allows(&network, "140.82.113.1"));
+        assert!(!allows(&network, "140.82.112.4"));
+        assert!(!allows(&network, "140.82.128.1"));
+        assert!(allows(&network, "[2001:db8::1]"));
+        assert!(!allows(&network, "[2001:db8::2]"));
+    }
+
+    #[test]
+    fn rules_label_lists_enforced_rules() {
+        assert_eq!(
+            rules_label(&enforced(&["github.com", "*.npmjs.org"], &["10.0.0.0/8"])),
+            "allow=github.com,*.npmjs.org;deny=10.0.0.0/8"
+        );
+        assert_eq!(rules_label(&enforced(&[], &[])), "allow=;deny=");
+    }
+
+    #[test]
+    fn rules_label_ignores_rules_that_are_not_enforced() {
+        let off = NetworkSpec {
+            enforce: false,
+            ..enforced(&["github.com"], &[])
+        };
+
+        assert_eq!(rules_label(&off), "off");
+        assert_eq!(rules_label(&NetworkSpec::default()), "off");
     }
 
     #[test]

@@ -484,6 +484,91 @@ retries them. microsandbox can't change the secrets of a running sandbox, so a
 running sandbox keeps the placeholder, and its proxy keeps putting in the real
 value, until it restarts.
 
+## Updating the network rules
+
+`fbk network allow <rule>...`, `fbk network deny <rule>...` and `fbk network
+policy enable|disable` change the network section of `.firebrick.yml` and apply
+it to the sandbox of the working directory. The file is written first, so it
+always holds the rules the sandbox gets. microsandbox fixes the network policy
+when it creates a sandbox, so `fbkd` recreates the sandbox from a disk snapshot.
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer
+    participant CLI as fbk
+    participant F as .firebrick.yml
+    participant D as fbkd
+    participant MS as microsandbox
+
+    Dev->>CLI: fbk network allow example.org
+    CLI->>CLI: Validate the rules
+    alt Invalid rule or invalid .firebrick.yml
+        CLI-->>Dev: Error, nothing changes
+    end
+    CLI->>F: Read, or start from default_spec without a file
+    CLI->>CLI: Add to allow, remove from deny
+    opt Changed or new
+        CLI->>F: Write the spec
+    end
+    CLI->>D: UpdateNetwork(name, network)
+    D->>D: Lock the sandbox
+    D->>MS: Read cpus, memory, labels, workspace, mounts, init
+    alt firebrick.network label matches the rules
+        D-->>CLI: updated: false
+        CLI-->>Dev: network rules are already up to date
+    else Paused
+        D-->>CLI: FAILED_PRECONDITION
+        CLI-->>Dev: Error
+    end
+    opt Running
+        D->>MS: Stop (kill after 30s)
+        D->>D: Close its port forwards
+    end
+    D->>MS: Disk snapshot of the sandbox
+    D->>MS: Remove the sandbox
+    alt Snapshot or remove fails
+        D->>MS: Start it again when it was running
+        D-->>CLI: INTERNAL, keeps its old rules
+        CLI-->>Dev: Error
+    end
+    D->>MS: Create it from the snapshot with the same settings,<br/>the stored secrets, the new rules and their label
+    alt Recreate fails
+        D->>MS: Remove what was created
+        D-->>CLI: INTERNAL, names the kept snapshot
+        CLI-->>Dev: Error
+    end
+    D->>MS: Delete the snapshot
+    opt Was stopped
+        D->>MS: Stop the recreated sandbox
+    end
+    D->>D: Sync SSH config and editor settings
+    opt Runs now
+        D->>D: Open the forwards from firebrick.ports
+    end
+    D-->>CLI: updated: true
+    CLI-->>Dev: updated the network rules of my-project
+    opt enforce is off after allow or deny
+        CLI-->>Dev: Warning: the rules aren't enforced
+    end
+```
+
+The snapshot holds the root disk's writable layer and the Docker disk, so files
+outside the workspace, installed packages and Docker images survive. Running
+processes don't: the sandbox cold-boots, like after `fbk stop` and `fbk start`.
+The new sandbox gets the same name, labels (and so the same SSH host name and
+mise setting and the stored ports), workspace mount, extra mounts, resources and
+`init` setting. When the sandbox doesn't exist, `fbkd` returns `NOT_FOUND` and
+the CLI reports that the rules apply when the sandbox starts. The CLI calls the
+daemon even when the file didn't change, so running the command again applies
+rules that an earlier, failed update or a hand edit left in the file only. The
+`firebrick.network` label makes that cheap: a sandbox that already has the rules
+isn't recreated, and neither is one whose rules aren't enforced, because they
+don't change it.
+
+Between removing and creating the sandbox, it briefly doesn't exist, so an SSH
+connection to its host name fails during that time. Other requests for the
+sandbox wait for the lock.
+
 ## Connecting via SSH
 
 `ssh <leaf>.fbk`, `scp` and IDEs reach a sandbox through the SSH config the
@@ -597,18 +682,26 @@ sequenceDiagram
     end
     O-->>A: Exit 0
     R-->>D: Echo the line on stdout
-    D->>D: Validate the URL again, plus the 8 KiB limit
-    alt Invalid
-        D->>D: Log "ignoring invalid URL from sandbox <name>"
-    else Valid
+    D->>D: Validate the URL again, plus the 8 KiB limit, and parse it
+    alt Invalid, local host, host the egress rules deny, or over the rate limit
+        D->>D: Log a warning with the reason, without the URL
+    else Allowed
         D->>B: xdg-open <url> (Linux) or open <url> (macOS)
     end
 ```
 
+`fbkd` doesn't open URLs whose host is `localhost` or an address of the host's
+local network, so a sandbox can't make the browser send requests to services on
+the host or the LAN. When the sandbox enforces egress rules, the host must also
+be one the rules allow, so the browser can't carry data to a host the sandbox
+itself can't reach. At most 5 URLs per sandbox open within 10 seconds.
+
 The relay keeps running after the session or SSH connection that started it
-closes, and a sandbox never has more than one. When the sandbox stops, its exec
-stream ends and `fbkd` forgets the relay; the next `StartSandbox`, `Attach` or
-`SshTunnel` starts a new one. A sandbox that keeps running while `fbkd` restarts
-gets its relay back on the next such call. When the relay can't start, for
-example in an image without `sh`, or when the host has no `xdg-open`, `fbkd`
-logs a warning and the request still succeeds.
+closes, and a sandbox never has more than one. `UpdateNetwork` recreates a
+running sandbox, so `fbkd` starts a new relay for it that checks URLs against
+the new rules. When the sandbox stops, its exec stream ends and `fbkd` forgets
+the relay; the next `StartSandbox`, `Attach` or `SshTunnel` starts a new one. A
+sandbox that keeps running while `fbkd` restarts gets its relay back on the next
+such call. When the relay can't start, for example in an image without `sh`, or
+when the host has no `xdg-open`, `fbkd` logs a warning and the request still
+succeeds.

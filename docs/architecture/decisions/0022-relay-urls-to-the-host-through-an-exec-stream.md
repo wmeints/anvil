@@ -30,26 +30,42 @@ output with `exec_stream_with`, the same way `fbk run` sessions work.
   line written to it. Because the script is inline, it also works in images that
   don't ship the stand-in, and the relay doesn't need root.
 - The relay starts on `StartSandbox`, `Attach` and `SshTunnel`, the calls that
-  show the sandbox is in use. A registry in `SandboxManager` keyed by sandbox
-  name keeps it to one relay per sandbox; an entry goes away when its exec
-  stream ends or the sandbox stops.
+  show the sandbox is in use, and after `UpdateNetwork` recreates a running
+  sandbox. A registry in `SandboxManager` keyed by sandbox name keeps it to one
+  relay per sandbox; an entry goes away when its exec stream ends or the sandbox
+  stops or is recreated.
 - The `firebrick-base` image installs `firebrick-open` as `xdg-open` and
   `BROWSER`. It writes a URL to the FIFO and gives up after 5 seconds when no
   relay reads it, printing the URL so the user can open it.
 - The stand-in and `fbkd` both accept only one `http://` or `https://` URL
-  without whitespace or control characters; `fbkd` also limits it to 8 KiB. It
-  opens the URL with `xdg-open` or `open` through `std::process::Command`,
-  without a shell. The check is a few lines of string handling, so no URL
-  parsing crate is added.
+  without whitespace or control characters; `fbkd` also limits it to 8 KiB.
+- The browser runs outside the sandbox, so opening a URL is a way out of it.
+  `fbkd` parses each URL with the `url` crate, which follows the WHATWG URL
+  standard that browsers implement, so it sees the host the browser will see
+  (`http://2130706433/` and `http://127.1/` are `127.0.0.1`). It refuses
+  `localhost` and loopback, private, shared, link-local and unique local
+  addresses, so a sandbox can't make the browser send requests, with the user's
+  cookies, to services on the host or its LAN. When the sandbox enforces egress
+  rules, the host must also be one the rules allow, so the browser can't carry
+  data to a host the sandbox can't reach itself. `fbkd` reads the rules from the
+  sandbox's `firebrick.network` label and opens nothing when it can't.
+- `fbkd` opens at most 5 URLs per sandbox within 10 seconds, so a loop in the
+  sandbox can't flood the host with browser processes.
+- It opens the URL as the `url` crate serializes it, with `xdg-open` or `open`
+  through `tokio::process`, without a shell.
 
 ## Consequences
 
 - `xdg-open https://...` works in the sandbox without any change to the network
   policy or to existing sandboxes, once they run the new image.
 - Any process in the sandbox can make the host open an http or https URL in the
-  browser, without asking. The browser is no more exposed than when the user
-  clicks a link, but a misbehaving agent can open tabs. Asking first and
-  allow-lists are left for later.
+  browser without asking, as long as its host isn't local and, in an enforced
+  sandbox, is allowed. The check is on the host name, not on the addresses it
+  resolves to, so a public name that resolves to a private address still opens.
+  Data can still leave through an allowed host, for example in a query string.
+  Asking first is left for later.
+- `fbkd` depends on the `url` crate directly. It was already in `Cargo.lock`
+  through other dependencies, so no new third-party code is added.
 - The relay is one extra `sh` process per running sandbox and holds an agent
   connection while the sandbox runs.
 - A sandbox that is running while `fbkd` restarts has no relay until the next

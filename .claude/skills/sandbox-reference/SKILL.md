@@ -78,6 +78,10 @@ build on it when `Cargo.lock` has a newer version.
   `MicrosandboxError::SandboxStillRunning`. `connect_or_start_detached()`
   connects to a running sandbox, waits for a starting one, starts a stopped one,
   absorbs that race, and rejects draining and paused sandboxes.
+- `SandboxHandle::pause()` suspends a running VM without a snapshot and its
+  status becomes `Paused`; `resume()` continues the same processes
+  (`$M/sandbox/pause.rs`). firebrick never pauses sandboxes itself, but `msb`
+  can, so code that stops or recreates a sandbox has to expect `Paused`.
 - `Sandbox::list_with` rejects an empty cursor. Only call `.cursor(..)` with the
   cursor of the previous page.
 - `.init(path)` hands PID 1 to an init binary in the image after agentd's setup.
@@ -109,7 +113,8 @@ build on it when `Cargo.lock` has a newer version.
 - `modify()` changes cpus, memory, disk size, env, labels, workdir and secrets.
   Use `.next_start()` or `.restart()` to choose when changes apply.
 - The network policy has no `modify()` setting: it's fixed when the sandbox is
-  created. Changing rules means recreating the sandbox.
+  created. Changing rules means recreating the sandbox, which `fbkd` does from a
+  disk snapshot (ADR 0021).
 - A label change on a running sandbox is "restart-required": `apply()` without a
   policy fails with `cannot apply modification: label requires restart`. With
   `.next_start()` it's stored right away and visible through `Sandbox::get(..)
@@ -118,6 +123,27 @@ build on it when `Cargo.lock` has a newer version.
 - Published ports (`SandboxBuilder::port`) are fixed at create time and target
   the guest's interface IP, not its loopback, so `fbkd` forwards ports through
   SSH `direct-tcpip` instead (ADR 0019).
+
+**Snapshots**
+
+- `Snapshot::builder(name).from_sandbox(sb).create()` takes a disk snapshot: the
+  root disk's writable layer and the sandbox-owned volumes, such as the Docker
+  disk. Stop the sandbox first. `.full()` also captures memory and devices;
+  firebrick doesn't use it.
+- The snapshot is filed in a group named after the source sandbox. A bare name
+  selects a group head, not the snapshot, so `Snapshot::open`,
+  `Snapshot::remove` and `override_snapshot` with the snapshot's own name fail
+  with `SnapshotNotFound`. Use the path from `Snapshot::path()`.
+- `SandboxBuilder::override_snapshot(snapshot)` (public, `#[doc(hidden)]`) takes
+  the root filesystem from the snapshot and keeps every other builder setting:
+  labels, init, workdir, mounts, resources, secrets and network. The snapshot's
+  owned volumes replace builder mounts at the same guest path, so a
+  `.volume(..owned..)` at the same path gets the captured disk back. Calling
+  `.image(..)` afterwards drops the pending snapshot. The new sandbox copies the
+  snapshot's payloads, so the snapshot can be removed right after it boots.
+- `RestoreBuilder` also restores a snapshot, but has no setters for init,
+  labels, env, workdir or secrets.
+- `Sandbox::remove()` doesn't remove the sandbox's snapshots.
 
 **Secrets**
 

@@ -69,7 +69,7 @@ COPY --chmod=755 <<'EOF' /usr/local/bin/firebrick-open
 fifo=/tmp/.firebrick/open.fifo
 
 invalid() {
-    echo "firebrick-open: only http and https URLs can be opened on the host" >&2
+    printf '%s\n' "firebrick-open: only http and https URLs can be opened on the host" >&2
     exit 2
 }
 
@@ -87,7 +87,7 @@ esac
 
 # Writing to a missing FIFO would create a regular file, so check that the relay made it.
 if [ ! -p "$fifo" ] || ! timeout 5 sh -c 'printf "%s\n" "$1" > "$2"' _ "$url" "$fifo" 2>/dev/null; then
-    echo "firebrick-open: couldn't reach the host; open this URL yourself: $url" >&2
+    printf "firebrick-open: couldn't reach the host; open this URL yourself: %s\n" "$url" >&2
     exit 1
 fi
 EOF
