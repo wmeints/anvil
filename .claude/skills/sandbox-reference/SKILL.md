@@ -84,6 +84,24 @@ build on it when `Cargo.lock` has a newer version.
   `.init("auto")` probes common init paths and refuses to boot an image that has
   none, so firebrick passes an explicit path (ADR 0007).
 
+**Image pull progress**
+
+- `SandboxBuilder::create_detached_with_pull_progress()` returns a
+  `PullProgressHandle` and a `JoinHandle` of the create. Events are sent with
+  `try_send` into a channel of 1024, so they can be dropped. A pull from cached
+  image metadata sends only `Resolving`, `Resolved` and `Complete`; a layer
+  whose tarball is cached sends `LayerDownloadComplete` with its full size and
+  no `LayerDownloadProgress`. `Resolved.total_download_bytes` is `None` when the
+  manifest has no layer sizes. `fbkd` turns them into progress in `pull.rs` (ADR
+  0024).
+- A failed pull returns `MicrosandboxError::Image(ImageError::Registry(..))`
+  with an `oci_client::errors::OciDistributionError`. Docker Hub and GHCR answer
+  an unknown repository with `UnauthorizedError`, an unknown tag with
+  `RegistryError` whose envelope has `ManifestUnknown`, and an unreachable host
+  gives `RequestError`. Neither type is re-exported by `microsandbox`, so the
+  daemon depends on `microsandbox-image` and `oci-client` directly (ADR 0025). A
+  failed pull leaves no sandbox behind.
+
 **Volumes**
 
 - `.volume(path, |m| m.owned_with(|v| v.disk().size(mib)))` attaches a

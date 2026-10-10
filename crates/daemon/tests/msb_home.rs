@@ -204,10 +204,7 @@ fn start_request(workspace: &Path) -> StartSandboxRequest {
 async fn start_and_check(root: PathBuf, mut client: SandboxManagementServiceClient<Channel>) {
     let workspace = root.join("ws");
     std::fs::create_dir_all(&workspace).unwrap();
-    client
-        .start_sandbox(start_request(&workspace))
-        .await
-        .expect("failed to start sandbox");
+    start(&mut client, start_request(&workspace)).await;
     wait_until_running(&mut client).await;
 
     let args = ["-4", "-sS", "-m", "30", "https://example.com"];
@@ -215,6 +212,23 @@ async fn start_and_check(root: PathBuf, mut client: SandboxManagementServiceClie
     assert_eq!(code, 0, "curl through TLS interception failed");
 
     assert_in_firebrick_home(&root);
+}
+
+/// Sends the start request and reads its stream to the end, failing on the status a failed
+/// start ends it with.
+async fn start(client: &mut SandboxManagementServiceClient<Channel>, request: StartSandboxRequest) {
+    let mut stream = client
+        .start_sandbox(request)
+        .await
+        .expect("failed to start sandbox")
+        .into_inner();
+
+    while stream
+        .message()
+        .await
+        .expect("failed to start sandbox")
+        .is_some()
+    {}
 }
 
 /// Checks that microsandbox keeps its state in firebrick's home under `root`, not in
