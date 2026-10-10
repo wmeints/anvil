@@ -63,8 +63,11 @@ that fits from the start:
 - Don't `unwrap()` or `expect()` outside tests unless the invariant is
   documented next to the call. Bound integer conversions with `try_from` instead
   of `as`.
-- Don't suppress lints with `#[allow(...)]`; fix the code. If a finding is a
-  false positive, ask the user before adding an `allow`.
+- Don't suppress lints with `#[allow(...)]` or `#[expect(...)]`; fix the code.
+  If a finding is a false positive, ask the user, and add the attribute only
+  with a `// HUMAN-APPROVED: <reason>` comment on the line directly above it.
+- Don't write `unsafe` code without the same `// HUMAN-APPROVED: <reason>`
+  comment on the line directly above it.
 
 ## Testing
 
@@ -106,9 +109,12 @@ A change is done when:
 - Use the `sandbox-reference` skill before relying on how the `microsandbox`
   crate behaves. It shows where to find the source of the locked version and
   lists the behavior and limits we already know.
-- Use the `submit-pr` skill to open a PR. It runs the checks and asks the
-  `reviewer` agent and the `test-reviewer` agent to review the branch, so don't
-  run the review agents before each commit.
+- Use the `submit-pr` skill to open a PR. It runs the checks and the
+  `review-branch` workflow (`.claude/workflows/review-branch.js`), so don't run
+  the review agents before each commit. The workflow runs the
+  `implementation-reviewer` agent once per category and the `test-reviewer`
+  agent in parallel, and the `reviewer` agent merges their findings with its own
+  review into one summary.
 
 ## Automated checks
 
