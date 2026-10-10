@@ -77,6 +77,9 @@ message NetworkPolicy {
   repeated string allow = 2;
   // Deny rules win over allow rules.
   repeated string deny = 3;
+  // Whether the sandbox gets a network device. Unset means enabled. When false, the sandbox
+  // has no network at all and the other fields are validated but ignored.
+  optional bool enabled = 4;
 }
 
 message SandboxResources {

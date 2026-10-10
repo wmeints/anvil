@@ -1,6 +1,7 @@
-//! Egress rules of sandboxes: turns the network section of a spec into microsandbox's network
-//! policy, with TLS interception and an HTTP deny response that tells the user how to allow a
-//! blocked host.
+//! Network settings of sandboxes: removes the network device of a sandbox whose network is
+//! disabled, and otherwise turns the egress rules of a spec into microsandbox's network policy,
+//! with TLS interception and an HTTP deny response that tells the user how to allow a blocked
+//! host.
 
 use firebrick_spec::{NetworkRule, NetworkSpec};
 use microsandbox::MicrosandboxError;
@@ -15,13 +16,18 @@ pub const DENY_MESSAGE: &str = "firebrick blocked the connection to {host}: the 
      of this sandbox doesn't allow it. To allow it, run `fbk network allow {host}` on the host, \
      outside the sandbox.";
 
-/// Label that records the egress rules a sandbox was created with, so an update that doesn't
-/// change them can leave the sandbox alone.
+/// Label that records the network settings a sandbox was created with, so an update that
+/// doesn't change them can leave the sandbox alone.
 pub const RULES_LABEL: &str = "firebrick.network";
 
-/// Returns the value of [`RULES_LABEL`] for the rules. Rules that aren't enforced don't change
-/// the sandbox, so they are all recorded as `off`.
+/// Returns the value of [`RULES_LABEL`] for the network settings. A disabled network ignores
+/// its rules, so it is recorded as `disabled`. Rules that aren't enforced don't change the
+/// sandbox, so they are all recorded as `off`.
 pub fn rules_label(network: &NetworkSpec) -> String {
+    if !network.is_enabled() {
+        return "disabled".to_string();
+    }
+
     if !network.enforce {
         return "off".to_string();
     }
@@ -41,12 +47,17 @@ pub fn rules_label(network: &NetworkSpec) -> String {
     )
 }
 
-/// Adds the egress rules to a sandbox that is being created. Without `enforce`, the sandbox
-/// keeps microsandbox's default policy and no TLS interception.
+/// Adds the network settings to a sandbox that is being created. A disabled network removes
+/// the sandbox's network device and ignores the rules. Without `enforce`, the sandbox keeps
+/// microsandbox's default policy and no TLS interception.
 pub fn add_to_builder(
     builder: SandboxBuilder,
     network: &NetworkSpec,
 ) -> Result<SandboxBuilder, MicrosandboxError> {
+    if !network.is_enabled() {
+        return Ok(builder.disable_network());
+    }
+
     if !network.enforce {
         return Ok(builder);
     }
@@ -101,6 +112,8 @@ fn add_rule<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secrets::Secret;
+    use microsandbox::sandbox::{Sandbox, SandboxConfig};
     use microsandbox_network::policy::{Destination, Direction};
 
     fn rules(values: &[&str]) -> Vec<NetworkRule> {
@@ -112,7 +125,27 @@ mod tests {
             enforce: true,
             allow: rules(allow),
             deny: rules(deny),
+            ..NetworkSpec::default()
         }
+    }
+
+    fn disabled(network: NetworkSpec) -> NetworkSpec {
+        NetworkSpec {
+            enabled: Some(false),
+            ..network
+        }
+    }
+
+    /// Returns the config microsandbox would create a sandbox with after `add_to_builder` and the
+    /// secrets.
+    async fn config_with(network: &NetworkSpec, secrets: &[Secret]) -> SandboxConfig {
+        let builder = Sandbox::builder("fbk-unit-network").image("alpine");
+        let builder = add_to_builder(builder, network).unwrap();
+
+        crate::secrets::add_to_builder(builder, secrets)
+            .build()
+            .await
+            .unwrap()
     }
 
     /// Describes an egress rule as `<action> <destination>`.
@@ -151,6 +184,52 @@ mod tests {
 
         assert_eq!(rules_label(&off), "off");
         assert_eq!(rules_label(&NetworkSpec::default()), "off");
+    }
+
+    #[test]
+    fn rules_label_records_a_disabled_network_without_rules() {
+        assert_eq!(
+            rules_label(&disabled(enforced(&["github.com"], &[]))),
+            "disabled"
+        );
+        assert_eq!(rules_label(&disabled(NetworkSpec::default())), "disabled");
+    }
+
+    #[test]
+    fn rules_label_of_an_explicitly_enabled_network_matches_the_default() {
+        let enabled = |network: NetworkSpec| NetworkSpec {
+            enabled: Some(true),
+            ..network
+        };
+
+        assert_eq!(rules_label(&enabled(NetworkSpec::default())), "off");
+        assert_eq!(
+            rules_label(&enabled(enforced(&["github.com"], &[]))),
+            "allow=github.com;deny="
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_network_removes_the_device_and_ignores_the_rules() {
+        let config = config_with(&disabled(enforced(&["github.com"], &[])), &[]).await;
+
+        assert!(!config.spec.network.enabled);
+    }
+
+    #[tokio::test]
+    async fn secrets_do_not_enable_a_disabled_network() {
+        let secret = Secret::new("GH_TOKEN".to_string(), "abc".to_string(), vec![]).unwrap();
+
+        let config = config_with(&disabled(NetworkSpec::default()), &[secret]).await;
+
+        assert!(!config.spec.network.enabled);
+    }
+
+    #[tokio::test]
+    async fn enabled_network_keeps_the_device() {
+        let config = config_with(&enforced(&["github.com"], &[]), &[]).await;
+
+        assert!(config.spec.network.enabled);
     }
 
     #[test]

@@ -173,11 +173,15 @@ impl Default for VolumesSpec {
     }
 }
 
-/// Egress rules of a sandbox. The rules only apply when `enforce` is `true`, but they are
-/// always validated.
+/// Network settings of a sandbox. The rules only apply when the network is enabled and
+/// `enforce` is `true`, but they are always validated.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkSpec {
+    /// Whether the sandbox gets a network device at all. Defaults to `true`; see
+    /// [`NetworkSpec::is_enabled`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// Whether outgoing traffic is denied unless a rule allows it. Defaults to `false`.
     #[serde(default)]
     pub enforce: bool,
@@ -190,6 +194,12 @@ pub struct NetworkSpec {
 }
 
 impl NetworkSpec {
+    /// Returns whether the sandbox gets a network device, which it does unless `enabled` is
+    /// `false`.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
     /// Adds the rules to `allow` that aren't in it yet, and removes them from `deny`. Returns
     /// whether the rules changed.
     pub fn allow(&mut self, rules: &[NetworkRule]) -> bool {
@@ -1212,6 +1222,33 @@ pub mod tests {
 
         assert_eq!(spec.network, Some(NetworkSpec::default()));
         assert!(!NetworkSpec::default().enforce);
+        assert!(NetworkSpec::default().is_enabled());
+    }
+
+    #[test]
+    fn parses_network_enabled() {
+        for (value, expected) in [("false", false), ("true", true)] {
+            let file = write_spec(&format!("name: dev\nnetwork:\n  enabled: {value}\n"));
+
+            let network = from_file(file.path()).unwrap().network.unwrap();
+
+            assert_eq!(network.enabled, Some(expected));
+            assert_eq!(network.is_enabled(), expected);
+        }
+    }
+
+    #[test]
+    fn diagnostic_reports_position_of_non_boolean_network_enabled() {
+        let file = write_spec("name: dev\nnetwork:\n  enabled: maybe\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (3, 12));
+        assert!(
+            diagnostic.message.starts_with("network.enabled: "),
+            "{}",
+            diagnostic.message
+        );
     }
 
     #[test]
@@ -1765,6 +1802,7 @@ pub mod tests {
             enforce: false,
             allow: rules(allow),
             deny: rules(deny),
+            ..NetworkSpec::default()
         }
     }
 
@@ -1816,6 +1854,7 @@ pub mod tests {
         let path = dir.path().join(".firebrick.yml");
         let mut spec = default_spec("dev".to_string());
         spec.network = Some(NetworkSpec {
+            enabled: Some(false),
             enforce: true,
             ..network(
                 &["github.com", "*.npmjs.org", "10.0.0.0/8"],

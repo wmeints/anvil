@@ -179,6 +179,13 @@ build on it when `Cargo.lock` has a newer version.
 - Domain rules also match DNS queries to the sandbox's resolver: a domain deny
   rule makes the name return NXDOMAIN. `Rule::allow_dns()` allows UDP/TCP 53 to
   the gateway; without it, a default-deny policy resolves nothing.
+- `SandboxBuilder::disable_network()` removes the guest's network device
+  (`spec.network.enabled = false`) and sets `NetworkPolicy::none()`. Nothing in
+  the guest resolves or connects. `builder.secret(..)` afterwards only turns TLS
+  interception on and doesn't bring the device back, so creating such a sandbox
+  with secrets works. Exec sessions, the SSH server and its `direct-tcpip`
+  forwards still work, because they go through agentd, not the guest network.
+  `fbkd` uses it for `network.enabled: false`.
 - `builder.network(..)` starts from the network config set so far, so it can be
   combined with `builder.secret(..)`. `.tls(|t| t)` replaces the TLS settings
   with interception on port 443 enabled. Secrets turn interception on too.

@@ -435,6 +435,7 @@ pub(crate) fn network_policy(network: NetworkSpec) -> NetworkPolicy {
     let rules = |rules: Vec<NetworkRule>| rules.iter().map(ToString::to_string).collect();
 
     NetworkPolicy {
+        enabled: network.enabled,
         enforce: network.enforce,
         allow: rules(network.allow),
         deny: rules(network.deny),
@@ -1019,7 +1020,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(
             dir.path().join(SPEC_FILE_NAME),
-            "name: dev\nnetwork:\n  enforce: true\n  allow: [github.com, \"*.example.com\", 10.0.0.1, 10.0.0.0/8]\n  deny: [gist.github.com]\n",
+            "name: dev\nnetwork:\n  enabled: false\n  enforce: true\n  allow: [github.com, \"*.example.com\", 10.0.0.1, 10.0.0.0/8]\n  deny: [gist.github.com]\n",
         )
         .unwrap();
 
@@ -1037,6 +1038,7 @@ mod tests {
                     "10.0.0.0/8".to_string(),
                 ],
                 deny: vec!["gist.github.com".to_string()],
+                enabled: Some(false),
             })
         );
     }

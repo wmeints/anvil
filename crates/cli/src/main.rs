@@ -59,7 +59,7 @@ enum Commands {
     /// Manage the secrets sandboxes use without seeing their values
     #[command(subcommand)]
     Secret(SecretCommands),
-    /// Change the network rules in .firebrick.yml and apply them to the sandbox
+    /// Change the network settings in .firebrick.yml and apply them to the sandbox
     #[command(subcommand)]
     Network(NetworkCommands),
     /// Forward host ports to the working directory's sandbox and record them in .firebrick.yml
@@ -111,6 +111,10 @@ enum NetworkCommands {
     /// Turn enforcement of the network rules on or off
     #[command(subcommand)]
     Policy(PolicyCommands),
+    /// Give the sandbox a network device again
+    Enable,
+    /// Remove the sandbox's network device, so it works fully offline
+    Disable,
 }
 
 #[derive(Subcommand, Debug)]
@@ -300,6 +304,8 @@ fn network_change(command: NetworkCommands) -> Result<NetworkChange> {
         NetworkCommands::Deny { rules } => NetworkChange::deny(&rules)?,
         NetworkCommands::Policy(PolicyCommands::Enable) => NetworkChange::Enforce(true),
         NetworkCommands::Policy(PolicyCommands::Disable) => NetworkChange::Enforce(false),
+        NetworkCommands::Enable => NetworkChange::Enable(true),
+        NetworkCommands::Disable => NetworkChange::Enable(false),
     })
 }
 
@@ -583,9 +589,17 @@ mod tests {
     }
 
     #[test]
-    fn network_enable_and_disable_are_not_commands() {
-        assert!(parse_network(&["enable"]).is_err());
-        assert!(parse_network(&["disable"]).is_err());
+    fn network_takes_enable_and_disable_without_arguments() {
+        assert!(matches!(
+            parse_network(&["enable"]).unwrap(),
+            NetworkCommands::Enable
+        ));
+        assert!(matches!(
+            parse_network(&["disable"]).unwrap(),
+            NetworkCommands::Disable
+        ));
+        assert!(parse_network(&["enable", "example.org"]).is_err());
+        assert!(parse_network(&["disable", "example.org"]).is_err());
     }
 
     #[test]
@@ -605,6 +619,14 @@ mod tests {
         assert_eq!(
             network_change(NetworkCommands::Policy(PolicyCommands::Disable)).unwrap(),
             NetworkChange::Enforce(false)
+        );
+        assert_eq!(
+            network_change(NetworkCommands::Enable).unwrap(),
+            NetworkChange::Enable(true)
+        );
+        assert_eq!(
+            network_change(NetworkCommands::Disable).unwrap(),
+            NetworkChange::Enable(false)
         );
     }
 

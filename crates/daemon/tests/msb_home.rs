@@ -193,7 +193,7 @@ fn start_request(workspace: &Path) -> StartSandboxRequest {
         network: Some(NetworkPolicy {
             enforce: true,
             allow: vec!["example.com".to_string()],
-            deny: vec![],
+            ..Default::default()
         }),
         ..Default::default()
     }
