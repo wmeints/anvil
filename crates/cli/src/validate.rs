@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use firebrick_spec::SandboxSpecError;
+use firebrick_spec::{SandboxSpec, SandboxSpecError};
 use std::path::Path;
 
 use crate::manage::SPEC_FILE_NAME;
@@ -27,14 +27,17 @@ pub fn validate_spec(working_dir: &Path) -> Result<bool> {
 
 /// Loads the spec, formatting a parse problem as `file:line:column: error: message`.
 fn check_spec(spec_path: &Path) -> Result<(), String> {
-    firebrick_spec::from_file(spec_path)
-        .map(drop)
-        .map_err(|err| describe_spec_error(&err))
+    load_spec(spec_path).map(|_| ())
 }
 
-/// Formats a problem with the spec file as `file:line:column: error: message`, or as
-/// `file: error: message` when it has no position.
-pub(crate) fn describe_spec_error(err: &SandboxSpecError) -> String {
+/// Loads the spec, formatting a problem the way `fbk validate` reports it:
+/// `file:line:column: error: message`.
+pub(crate) fn load_spec(spec_path: &Path) -> Result<SandboxSpec, String> {
+    firebrick_spec::from_file(spec_path).map_err(|err| report(&err))
+}
+
+/// Formats a problem with the spec file, with its position when it has one.
+pub(crate) fn report(err: &SandboxSpecError) -> String {
     match err.diagnostic() {
         Some(diagnostic) => format!(
             "{SPEC_FILE_NAME}:{}:{}: error: {}",

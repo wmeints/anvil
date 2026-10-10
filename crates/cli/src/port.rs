@@ -12,7 +12,7 @@ use tonic::transport::Channel;
 use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use crate::api::{ForwardPortRequest, PortForward, RemovePortRequest};
 use crate::manage::{self, SPEC_FILE_NAME};
-use crate::validate::describe_spec_error;
+use crate::validate;
 
 /// Forwards the host port to the guest port of the working directory's sandbox, replacing the
 /// forward of the same host port, and records it in the spec file. The spec file only changes
@@ -127,7 +127,7 @@ fn print_outcome(name: &str, running: Option<bool>, applied: impl FnOnce() -> St
 
 /// Turns an invalid spec into the diagnostic `fbk validate` prints.
 fn spec_error(err: firebrick_spec::SandboxSpecError) -> anyhow::Error {
-    anyhow!(describe_spec_error(&err))
+    anyhow!(validate::report(&err))
 }
 
 /// The spec file of the working directory and the name of its sandbox. Without a spec file,
