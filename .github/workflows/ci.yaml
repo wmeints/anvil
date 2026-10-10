@@ -25,10 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      # Installs the Rust toolchain pinned in mise.toml.
+      # Installs the Rust toolchain, protoc and the other tools pinned in mise.toml.
       - uses: jdx/mise-action@v2
 
       - uses: Swatinem/rust-cache@v2
@@ -65,9 +62,6 @@ jobs:
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - uses: jdx/mise-action@v2
 
