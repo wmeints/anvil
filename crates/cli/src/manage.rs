@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
 use firebrick_spec::SandboxSpec;
 use serde::Serialize;
@@ -353,13 +353,26 @@ pub(crate) async fn resolve_spec(
         return Ok(spec);
     }
 
-    let existing_legacy_name = match legacy_name(working_dir) {
-        Some(name) if sandbox_status(client, &name).await?.is_some() => Some(name),
-        _ => None,
+    let legacy_exists = match legacy_name(working_dir) {
+        Some(name) => sandbox_status(client, &name)
+            .await
+            .with_context(|| format!("failed to check for existing sandbox {name}"))?
+            .is_some(),
+        None => false,
     };
-    let name = existing_legacy_name.unwrap_or_else(|| hashed_name(working_dir));
 
-    Ok(firebrick_spec::default_spec(name))
+    Ok(firebrick_spec::default_spec(default_name(
+        working_dir,
+        legacy_exists,
+    )))
+}
+
+/// Returns the legacy name when a sandbox with it exists, and the hashed name otherwise.
+fn default_name(working_dir: &Path, legacy_exists: bool) -> String {
+    match legacy_name(working_dir) {
+        Some(name) if legacy_exists => name,
+        _ => hashed_name(working_dir),
+    }
 }
 
 /// Loads the spec file from the working directory, or returns `None` when there isn't one.
@@ -663,6 +676,36 @@ mod tests {
         let name = legacy_name(Path::new("//home//user/--project--/"));
 
         assert_eq!(name.as_deref(), Some("home_user_project"));
+    }
+
+    #[test]
+    fn default_name_keeps_existing_legacy_name() {
+        let name = default_name(Path::new("/home/user/my-project.v2"), true);
+
+        assert_eq!(name, "home_user_my_project_v2");
+    }
+
+    #[test]
+    fn default_name_hashes_path_without_legacy_sandbox() {
+        let name = default_name(Path::new("/home/user/my-project.v2"), false);
+
+        assert_eq!(name, "firebrick-d9f287");
+    }
+
+    #[tokio::test]
+    async fn failed_legacy_lookup_names_the_sandbox() {
+        let dir = TempDir::new().unwrap();
+
+        let error = resolve_spec(dir.path(), &mut unreachable_client())
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .starts_with("failed to check for existing sandbox "),
+            "{error}"
+        );
     }
 
     #[test]
