@@ -17,7 +17,8 @@ supported.
 
 The steps below install both binaries in `~/.local/bin`, which doesn't need root
 permissions. Keep `fbk` and `fbkd` in the same directory, because the CLI starts
-the daemon from its own directory.
+the daemon from its own directory. To build them with Cargo instead, see
+[Installing with Cargo](#installing-with-cargo).
 
 ## 1. Download and install the binaries
 
@@ -124,6 +125,27 @@ To uninstall, stop the daemon and remove the binaries:
 pkill -TERM -x fbkd
 rm ~/.local/bin/fbk ~/.local/bin/fbkd
 ```
+
+## Installing with Cargo
+
+Each release is also published to crates.io. Instead of downloading an archive,
+build and install both binaries with Cargo. This needs a
+[Rust toolchain](https://rustup.rs/) and `protoc` 3.15 or newer, the Protocol
+Buffers compiler, on your `PATH`. The `protobuf-compiler` package of Ubuntu
+22.04 is too old; install a current release from the
+[protobuf releases](https://github.com/protocolbuffers/protobuf/releases)
+instead:
+
+```sh
+cargo install firebrick-cli firebrick-daemon
+fbk --version
+```
+
+Cargo installs `fbk` and `fbkd` in `~/.cargo/bin`, so both binaries end up in
+the same directory, as the CLI requires. Install both crates with the same
+version. To upgrade, run the same command again and stop the running daemon with
+`pkill -TERM -x fbkd`. To uninstall, stop the daemon and run `cargo uninstall
+firebrick-cli firebrick-daemon`.
 
 ## Building from source
 

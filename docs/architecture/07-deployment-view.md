@@ -21,8 +21,34 @@ exists already. Pushing a tag by hand runs `release.yaml` as well.
   archive has built. GHCR makes a package private when it's first published, so
   make `firebrick-base` public once in its package settings before sandboxes can
   pull it without logging in.
+- The five workspace crates on crates.io, at the tag's version, so users can run
+  `cargo install firebrick-cli firebrick-daemon`. The `publish` job publishes
+  them once the archives and the image succeed, and `cargo publish` orders them
+  by their dependencies: `firebrick-proto`, `firebrick-spec`, `firebrick-utils`,
+  then `firebrick-cli` and `firebrick-daemon`. It skips the crates whose version
+  is on crates.io already, so rerunning the job after a partial publish
+  publishes only the rest.
 
-Tags with a suffix, such as `v0.2.0-rc.1`, publish a pre-release.
+The jobs run in this order: `package` for each target, then `image`, then
+`publish`, then `release`, which creates the GitHub release. A failed job stops
+the jobs after it, so the GitHub release only appears once crates.io has the
+version.
+
+The `publish` job authenticates with crates.io
+[Trusted Publishing](https://crates.io/docs/trusted-publishing): it exchanges
+the workflow's OIDC token for a short-lived crates.io token, so the release
+needs no stored secret. It needs the `id-token: write` permission, and
+`tag-release.yaml` grants it to the job that calls `release.yaml`, because a
+called workflow gets no more permissions than its caller. crates.io matches the
+workflow file configured for each crate against the token's `workflow_ref`
+claim, which names the top-level workflow. A release from a merged version bump
+therefore authenticates as `tag-release.yaml`, and a tag pushed by hand as
+`release.yaml`. Each crate's Trusted Publishing configuration on crates.io must
+list a workflow for a release to publish through it.
+
+Tags with a suffix, such as `v0.2.0-rc.1`, publish a pre-release, on GitHub and
+on crates.io. `cargo install` skips pre-releases unless asked for one with
+`--version`.
 
 | Target                      | Runner             |
 | --------------------------- | ------------------ |
@@ -90,4 +116,4 @@ from `main`. Its `check` job uploads `website/dist` as a Pages artifact once the
 checks and end-to-end tests pass, and its `deploy` job deploys it with
 `actions/deploy-pages`. Pull requests only check the site. The repository's
 Pages source must be set to "GitHub Actions" before the first deployment. See
-[ADR 0031](decisions/0031-publish-the-website-on-github-pages.md).
+[ADR 0032](decisions/0032-publish-the-website-on-github-pages.md).

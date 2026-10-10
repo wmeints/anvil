@@ -1,4 +1,4 @@
-# 31. Publish the website on GitHub Pages
+# 32. Publish the website on GitHub Pages
 
 ## Status
 
