@@ -268,6 +268,17 @@ Without `.firebrick.yml`, Firebrick uses the defaults and names the sandbox
 path of the working directory, such as `firebrick-d9f287`. A sandbox created by
 an older version keeps its name, such as `home_user_my_project`.
 
+Two directories can, rarely, hash to the same name. `fbk start` and `fbk run`
+then refuse to use the first directory's sandbox from the second one, so an
+agent can't reach the other project's files:
+
+```text
+Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; add a .firebrick.yml with its own name to give this directory a separate sandbox
+```
+
+Add a `.firebrick.yml` with its own `name` to the second directory to give it a
+separate sandbox.
+
 Every sandbox gets a private ext4 disk mounted at `/var/lib/docker`, so Docker
 can store images and containers inside the sandbox; Docker's storage doesn't
 work on the sandbox's overlayfs root filesystem. The disk keeps its contents

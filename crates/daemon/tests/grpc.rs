@@ -341,6 +341,10 @@ async fn get_sandbox_returns_name_status_and_workspace_path() {
         sandbox.workspace_path,
         guest_workspace(&workspace_path(NAME))
     );
+    assert_eq!(
+        Path::new(&sandbox.workspace_host_path),
+        std::fs::canonicalize(workspace_path(NAME)).unwrap()
+    );
 
     stop_sandbox(&mut client, NAME).await;
 

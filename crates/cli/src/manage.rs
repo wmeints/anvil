@@ -88,12 +88,15 @@ async fn start_working_dir_sandbox(
 const STARTING_TIMEOUT: Duration = Duration::from_secs(120);
 const STARTING_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Makes sure the sandbox exists and is running, creating or starting it when needed.
+/// Makes sure the sandbox exists and is running, creating or starting it when needed. Fails
+/// when an existing sandbox mounts another directory than the workspace.
 pub(crate) async fn ensure_running(
     spec: SandboxSpec,
     workspace: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
+    check_workspace_owner(&spec.name, workspace, client).await?;
+
     if start_if_exists(&spec.name, workspace, client).await? {
         return Ok(());
     }
@@ -104,6 +107,52 @@ pub(crate) async fn ensure_running(
         .await?;
 
     Ok(())
+}
+
+/// Fails when the sandbox exists and mounts another host directory than the workspace, so two
+/// directories whose names collide can't share a sandbox. Does nothing when the sandbox doesn't
+/// exist or has no workspace mount.
+async fn check_workspace_owner(
+    name: &str,
+    workspace: &Path,
+    client: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<()> {
+    let request = GetSandboxRequest {
+        name: name.to_string(),
+    };
+
+    let host_path = match client.get_sandbox(request).await {
+        Ok(response) => response.into_inner().workspace_host_path,
+        Err(status) if status.code() == Code::NotFound => return Ok(()),
+        Err(status) => return Err(status.into()),
+    };
+
+    if host_path.is_empty() {
+        return Ok(());
+    }
+
+    // microsandbox stores the mounted host path canonicalized, so compare it canonicalized.
+    let working_dir = std::fs::canonicalize(workspace).with_context(|| {
+        format!(
+            "failed to resolve working directory {}",
+            workspace.display()
+        )
+    })?;
+
+    ensure_same_workspace(name, &host_path, &working_dir)
+}
+
+/// Fails when the sandbox mounts a host directory other than the canonical working directory.
+/// An empty host path means the sandbox has no workspace mount and always passes.
+fn ensure_same_workspace(name: &str, host_path: &str, working_dir: &Path) -> Result<()> {
+    if host_path.is_empty() || Path::new(host_path) == working_dir {
+        return Ok(());
+    }
+
+    bail!(
+        "sandbox {name} belongs to {host_path}; add a {SPEC_FILE_NAME} with its own name to give \
+         this directory a separate sandbox"
+    )
 }
 
 /// Starts the sandbox when it exists, waiting while it's starting. Returns `false` when the
@@ -717,6 +766,40 @@ mod tests {
     #[test]
     fn root_path_has_no_legacy_name() {
         assert_eq!(legacy_name(Path::new("/")), None);
+    }
+
+    #[test]
+    fn same_workspace_passes() {
+        let result = ensure_same_workspace(
+            "dev",
+            "/home/user/my-project",
+            Path::new("/home/user/my-project"),
+        );
+
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn other_workspace_is_refused() {
+        let error = ensure_same_workspace(
+            "firebrick-d9f287",
+            "/home/user/my-project",
+            Path::new("/home/user/other-project"),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "sandbox firebrick-d9f287 belongs to /home/user/my-project; add a .firebrick.yml with \
+             its own name to give this directory a separate sandbox"
+        );
+    }
+
+    #[test]
+    fn sandbox_without_workspace_mount_passes() {
+        let result = ensure_same_workspace("dev", "", Path::new("/home/user/other-project"));
+
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]
