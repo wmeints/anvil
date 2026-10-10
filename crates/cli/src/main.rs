@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use firebrick_cli::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use firebrick_cli::manage::OutputFormat;
-use firebrick_cli::{client, manage, secret, session, ssh, validate};
+use firebrick_cli::{client, init, manage, secret, session, ssh, validate};
 use tonic::transport::Channel;
 
 /// Firebrick - Run coding agents safely in a sandbox.
@@ -47,6 +47,12 @@ enum Commands {
     Run(RunArgs),
     /// Validate the .firebrick.yml file in the working directory
     Validate,
+    /// Write a .firebrick.yml with the default settings to the working directory
+    Init {
+        /// Overwrite an existing .firebrick.yml
+        #[arg(long)]
+        force: bool,
+    },
     /// Manage the secrets sandboxes use without seeing their values
     #[command(subcommand)]
     Secret(SecretCommands),
@@ -110,8 +116,9 @@ async fn main() -> Result<()> {
     let working_dir = env::current_dir()?;
 
     match cli.command {
-        // Validating the spec doesn't need the daemon.
+        // Validating and creating the spec don't need the daemon.
         Commands::Validate => validate_spec(&working_dir),
+        Commands::Init { force } => init_spec(&working_dir, force),
         Commands::Secret(SecretCommands::Set(args)) => set_secret(args).await,
         command => run_with_daemon(command, working_dir).await,
     }
@@ -122,6 +129,14 @@ fn validate_spec(working_dir: &Path) -> Result<()> {
     if !validate::validate_spec(working_dir)? {
         std::process::exit(1);
     }
+
+    Ok(())
+}
+
+/// Writes the default spec to the working directory.
+fn init_spec(working_dir: &Path, force: bool) -> Result<()> {
+    init::init_spec(working_dir, force)?;
+    println!("Created {}", manage::SPEC_FILE_NAME);
 
     Ok(())
 }
@@ -157,7 +172,7 @@ async fn run_with_daemon(command: Commands, working_dir: PathBuf) -> Result<()> 
         Commands::Secret(SecretCommands::Rm { name }) => {
             secret::remove(name, client_instance).await
         }
-        Commands::Validate | Commands::Secret(SecretCommands::Set(_)) => {
+        Commands::Validate | Commands::Init { .. } | Commands::Secret(SecretCommands::Set(_)) => {
             unreachable!("handled before connecting to the daemon")
         }
     }
@@ -276,6 +291,20 @@ mod tests {
         assert!(matches!(
             parse(&["rm", "--force", "dev"]).command,
             Commands::Rm { name: Some(name), force: true } if name == "dev"
+        ));
+    }
+
+    #[test]
+    fn init_takes_force_flag() {
+        let parse = |args: &[&str]| Cli::try_parse_from(["fbk"].iter().chain(args)).unwrap();
+
+        assert!(matches!(
+            parse(&["init"]).command,
+            Commands::Init { force: false }
+        ));
+        assert!(matches!(
+            parse(&["init", "--force"]).command,
+            Commands::Init { force: true }
         ));
     }
 

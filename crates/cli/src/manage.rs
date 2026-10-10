@@ -18,7 +18,8 @@ use crate::api::{
 };
 use crate::table;
 
-pub(crate) const SPEC_FILE_NAME: &str = ".firebrick.yml";
+/// Name of the spec file `fbk` looks for in the working directory.
+pub const SPEC_FILE_NAME: &str = ".firebrick.yml";
 
 /// Starts the named sandbox, or the sandbox for the working directory without a name. Does
 /// nothing when it's already running, and waits for it when it's starting. Only the sandbox for
