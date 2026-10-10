@@ -172,8 +172,8 @@ C4Component
   with the requested vCPUs and memory, mounts the workspace read/write at
   `/workspaces/<leaf>`, bind mounts the extra `mounts` of the request the same
   way (owner `1000:1000`, host permissions mirrored, read-only when asked) after
-  rejecting a relative host path, a guest path that isn't absolute or is `/`, or
-  one that equals the workspace path with `INVALID_ARGUMENT`, attaches a
+  rejecting a relative host path, an invalid guest path, or one that equals the
+  workspace path or `/var/lib/docker` with `INVALID_ARGUMENT`, attaches a
   sandbox-owned ext4 disk of the requested size at `/var/lib/docker` (see
   [ADR 0015](decisions/0015-give-each-sandbox-a-docker-data-disk.md)), applies
   the egress rules with the `network` module and adds the stored secrets. The
@@ -280,13 +280,15 @@ C4Component
   of the Docker data disk) and an optional `network` section (`enforce`, default
   `false`, and the `allow` and `deny` rules) and optional `mounts` (`host`,
   `guest` and `readonly`, default `false`), rejects unknown fields and reports
-  the line and column of a problem. A mount's `guest` must be an absolute path
-  other than `/`, and appear only once. The CLI resolves each mount's `host`
-  against the spec file's directory, expanding `~` to `$HOME`, to the canonical
-  path of an existing directory before it sends `StartSandbox`. `NetworkRule`
-  parses a rule: a host name, `*.` plus a domain of at least two labels, an IPv4
-  or IPv6 address or a CIDR range. `*` alone, other wildcards, URLs, ports and
-  paths are invalid. It owns the defaults
+  the line and column of a problem. `guest_mount_path` checks a mount's `guest`
+  the way microsandbox does: an absolute path other than `/`, without `..`, `:`,
+  `;` or `,`. It normalizes the path (no `.` parts or trailing slash), and each
+  normalized path may appear only once. The daemon uses the same check. The CLI
+  resolves each mount's `host` against the spec file's directory, expanding `~`
+  to `$HOME`, to the canonical path of an existing directory before it sends
+  `StartSandbox`. `NetworkRule` parses a rule: a host name, `*.` plus a domain
+  of at least two labels, an IPv4 or IPv6 address or a CIDR range. `*` alone,
+  other wildcards, URLs, ports and paths are invalid. It owns the defaults
   (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, `mise: true`, 2
   vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
   `VolumesSpec::default()`) and `parse_size_mib`, which reads memory and volume

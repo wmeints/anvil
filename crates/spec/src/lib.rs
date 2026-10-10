@@ -103,7 +103,7 @@ pub struct MountSpec {
     /// The host directory: absolute, starting with `~`, or relative to the spec file's
     /// directory.
     pub host: String,
-    /// Absolute guest path the directory shows up at. Never `/`.
+    /// Absolute guest path the directory shows up at, normalized by [`guest_mount_path`].
     #[serde(deserialize_with = "deserialize_guest_path")]
     pub guest: String,
     /// Whether the directory is mounted read-only. Defaults to `false`.
@@ -405,14 +405,47 @@ impl Visitor<'_> for GuestPathVisitor {
     }
 
     fn visit_str<E: de::Error>(self, value: &str) -> Result<String, E> {
-        if !value.starts_with('/') || value == "/" {
-            return Err(E::custom(
-                "guest path must be an absolute path other than /",
-            ));
-        }
-
-        Ok(value.to_string())
+        guest_mount_path(value).map_err(E::custom)
     }
+}
+
+/// A guest mount path that microsandbox can't mount a directory at.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum InvalidGuestPath {
+    #[error("guest path must be an absolute path other than /")]
+    NotAbsolute,
+    #[error("guest path must not contain ..")]
+    ParentDir,
+    #[error("guest path must not contain ':', ';' or ','")]
+    Separator,
+}
+
+/// Checks a guest mount path and returns it normalized the way microsandbox stores it: without
+/// `.` parts, repeated slashes or a trailing slash. Rejects a relative path, `/`, a path with
+/// `..`, and a path with `:`, `;` or `,`, which microsandbox refuses.
+pub fn guest_mount_path(guest: &str) -> Result<String, InvalidGuestPath> {
+    if !guest.starts_with('/') {
+        return Err(InvalidGuestPath::NotAbsolute);
+    }
+
+    if guest.contains([':', ';', ',']) {
+        return Err(InvalidGuestPath::Separator);
+    }
+
+    let parts: Vec<&str> = guest
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+
+    if parts.contains(&"..") {
+        return Err(InvalidGuestPath::ParentDir);
+    }
+
+    if parts.is_empty() {
+        return Err(InvalidGuestPath::NotAbsolute);
+    }
+
+    Ok(format!("/{}", parts.join("/")))
 }
 
 /// Loads and parses a sandbox spec from a YAML file.
@@ -977,6 +1010,74 @@ pub mod tests {
                 "mounts[0].guest: guest path must be an absolute path other than /"
             );
         }
+    }
+
+    #[test]
+    fn guest_mount_path_normalizes_the_path() {
+        let cases = [
+            ("/data", "/data"),
+            ("/data/", "/data"),
+            ("/data/./images", "/data/images"),
+            ("//data//images/.", "/data/images"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                guest_mount_path(input).as_deref(),
+                Ok(expected),
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn guest_mount_path_rejects_paths_microsandbox_refuses() {
+        let cases = [
+            ("data", InvalidGuestPath::NotAbsolute),
+            ("", InvalidGuestPath::NotAbsolute),
+            ("/", InvalidGuestPath::NotAbsolute),
+            ("/./", InvalidGuestPath::NotAbsolute),
+            ("/data/../etc", InvalidGuestPath::ParentDir),
+            ("/data:v1", InvalidGuestPath::Separator),
+            ("/data;v1", InvalidGuestPath::Separator),
+            ("/data,v1", InvalidGuestPath::Separator),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(guest_mount_path(input), Err(expected), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn duplicate_guest_path_ignores_trailing_slash() {
+        let file = write_spec(concat!(
+            "name: dev\n",
+            "mounts:\n",
+            "  - host: ../a\n",
+            "    guest: /data/images\n",
+            "  - host: ../b\n",
+            "    guest: /data/images/\n",
+        ));
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!(
+            diagnostic.message,
+            "mounts: guest path /data/images is mounted more than once"
+        );
+    }
+
+    #[test]
+    fn invalid_guest_path_reports_parent_dir() {
+        let file = write_spec("name: dev\nmounts:\n  - host: ../a\n    guest: /data/../etc\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (4, 12));
+        assert_eq!(
+            diagnostic.message,
+            "mounts[0].guest: guest path must not contain .."
+        );
     }
 
     #[test]

@@ -277,8 +277,9 @@ mounts:
 A relative `host` resolves against the directory that holds `.firebrick.yml`,
 and `~` expands to `$HOME`. `fbk start` and `fbk run` refuse to create the
 sandbox when a `host` isn't an existing directory, or when a `guest` is the
-workspace path (`/workspaces/<leaf-name>`). The agent user owns the mounted
-files, like the workspace.
+workspace path (`/workspaces/<leaf-name>`) or `/var/lib/docker`. A `guest` must
+not contain `..`, `:`, `;` or `,`. The agent user owns the mounted files, like
+the workspace.
 
 | Field               | Description                                                             | Default                                     |
 | ------------------- | ----------------------------------------------------------------------- | ------------------------------------------- |

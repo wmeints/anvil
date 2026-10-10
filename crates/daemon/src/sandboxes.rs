@@ -713,30 +713,37 @@ fn workspace_mount_path(workspace: &str) -> Result<String, SandboxError> {
     Ok(format!("/workspaces/{}", leaf.to_string_lossy()))
 }
 
-/// Fails with `InvalidArgument` when a mount has a relative host path, a guest path that isn't
-/// an absolute path other than `/`, or the guest path of the workspace mount.
+/// Fails with `InvalidArgument` when a mount has a relative host path, an invalid guest path
+/// (see [`firebrick_spec::guest_mount_path`]), or the guest path of the workspace or the Docker
+/// data volume.
 fn check_mounts(mounts: &[MountSpec], workspace_guest_path: &str) -> Result<(), SandboxError> {
-    for mount in mounts {
-        if !Path::new(&mount.host).is_absolute() {
-            return Err(SandboxError::invalid_argument(format!(
-                "mount host path {} must be an absolute path",
-                mount.host
-            )));
-        }
+    mounts
+        .iter()
+        .try_for_each(|mount| check_mount(mount, workspace_guest_path))
+}
 
-        if !mount.guest.starts_with('/') || mount.guest == "/" {
-            return Err(SandboxError::invalid_argument(format!(
-                "mount guest path {} must be an absolute path other than /",
-                mount.guest
-            )));
-        }
+/// Checks the paths of one extra mount, see [`check_mounts`].
+fn check_mount(mount: &MountSpec, workspace_guest_path: &str) -> Result<(), SandboxError> {
+    if !Path::new(&mount.host).is_absolute() {
+        return Err(SandboxError::invalid_argument(format!(
+            "mount host path {} must be an absolute path",
+            mount.host
+        )));
+    }
 
-        if mount.guest == workspace_guest_path {
-            return Err(SandboxError::invalid_argument(format!(
-                "mount {} conflicts with the workspace mount",
-                mount.guest
-            )));
-        }
+    let guest = firebrick_spec::guest_mount_path(&mount.guest)
+        .map_err(|err| SandboxError::invalid_argument(format!("mount {}: {err}", mount.guest)))?;
+
+    if guest == workspace_guest_path {
+        return Err(SandboxError::invalid_argument(format!(
+            "mount {guest} conflicts with the workspace mount"
+        )));
+    }
+
+    if guest == DOCKER_DATA_PATH {
+        return Err(SandboxError::invalid_argument(format!(
+            "mount {guest} conflicts with the Docker data volume"
+        )));
     }
 
     Ok(())
@@ -922,11 +929,37 @@ mod tests {
     }
 
     #[test]
-    fn check_mounts_rejects_relative_and_root_paths() {
+    fn check_mounts_rejects_the_workspace_guest_path_in_another_form() {
+        let mounts = [mount("/home/user/lib", "/workspaces/project/.")];
+
+        assert_eq!(
+            check_mounts(&mounts, "/workspaces/project"),
+            Err(SandboxError::InvalidArgument(
+                "mount /workspaces/project conflicts with the workspace mount".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn check_mounts_rejects_the_docker_data_path() {
+        let mounts = [mount("/home/user/docker", "/var/lib/docker/")];
+
+        assert_eq!(
+            check_mounts(&mounts, "/workspaces/project"),
+            Err(SandboxError::InvalidArgument(
+                "mount /var/lib/docker conflicts with the Docker data volume".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn check_mounts_rejects_relative_and_invalid_paths() {
         for mounts in [
             [mount("../lib", "/lib")],
             [mount("/home/user/lib", "lib")],
             [mount("/home/user/lib", "/")],
+            [mount("/home/user/lib", "/lib/../etc")],
+            [mount("/home/user/lib", "/lib:v1")],
         ] {
             assert!(
                 matches!(
