@@ -107,8 +107,8 @@ A change is done when:
   crate behaves. It shows where to find the source of the locked version and
   lists the behavior and limits we already know.
 - Use the `submit-pr` skill to open a PR. It runs the checks and asks the
-  `reviewer` agent to review the branch, so don't run the reviewer before each
-  commit.
+  `reviewer` agent and the `test-reviewer` agent to review the branch, so don't
+  run the review agents before each commit.
 
 ## Automated checks
 
