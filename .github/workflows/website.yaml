@@ -29,8 +29,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Installs the Node and pnpm versions pinned in mise.toml.
+      # Installs only the Node and pnpm versions pinned in mise.toml.
       - uses: jdx/mise-action@v2
+        with:
+          install_args: node pnpm
 
       # Fails when a dependency wants to run an install script that
       # pnpm-workspace.yaml doesn't allow.

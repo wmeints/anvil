@@ -2,50 +2,91 @@ import { expect, test, type Page } from "@playwright/test";
 
 const base = "/firebrick/";
 
-// Visits every page reachable from the home page and returns their paths.
-// Fails on the first internal link that doesn't resolve.
-async function crawl(page: Page): Promise<string[]> {
-  const visited = new Set<string>();
+/** What the crawl found on one page or asset. */
+interface Visit {
+  path: string;
+  status: number | undefined;
+  /** Pixels the page scrolls horizontally; undefined for non-HTML responses. */
+  overflow?: number;
+}
+
+// Visits every page reachable from the home page on a 375px wide screen, and
+// requests every asset those pages reference. Crawls once for all tests.
+async function crawl(page: Page): Promise<Visit[]> {
+  await page.setViewportSize({ width: 375, height: 812 });
+  const visits = new Map<string, Visit>();
   const queue = [base];
   while (queue.length > 0) {
     const path = queue.shift() as string;
-    if (visited.has(path)) continue;
-    visited.add(path);
+    if (visits.has(path)) continue;
     const response = await page.goto(path);
-    expect(response?.status(), `status of ${path}`).toBe(200);
+    const visit: Visit = { path, status: response?.status() };
+    visits.set(path, visit);
     if (!response?.headers()["content-type"]?.includes("text/html")) continue;
-    queue.push(...(await internalLinks(page)));
+    visit.overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    );
+    queue.push(...(await internalUrls(page, "a[href]", "href")));
+    for (const asset of await assetUrls(page)) {
+      if (visits.has(asset)) continue;
+      const assetResponse = await page.request.get(asset);
+      visits.set(asset, { path: asset, status: assetResponse.status() });
+    }
   }
-  return [...visited];
+  return [...visits.values()];
 }
 
-// Returns the paths of the links on the page that stay on the site.
-async function internalLinks(page: Page): Promise<string[]> {
-  const hrefs = await page
-    .locator("a[href]")
-    .evaluateAll((links) => links.map((a) => (a as HTMLAnchorElement).href));
+// Returns the paths of the stylesheets, icons, scripts and images on the page.
+async function assetUrls(page: Page): Promise<string[]> {
+  return [
+    ...(await internalUrls(page, "link[href]", "href")),
+    ...(await internalUrls(page, "[src]", "src")),
+  ];
+}
+
+// Returns the paths in `attribute` of the elements matching `selector` that
+// stay on the site.
+async function internalUrls(
+  page: Page,
+  selector: string,
+  attribute: "href" | "src",
+): Promise<string[]> {
+  const urls = await page
+    .locator(selector)
+    .evaluateAll(
+      (elements, name) =>
+        elements.map(
+          (element) =>
+            new URL(element.getAttribute(name) ?? "", document.baseURI).href,
+        ),
+      attribute,
+    );
   const origin = new URL(page.url()).origin;
-  return hrefs
-    .map((href) => new URL(href))
+  return urls
+    .map((url) => new URL(url))
     .filter((url) => url.origin === origin)
     .map((url) => url.pathname);
 }
 
-test("every internal link resolves under the base path", async ({ page }) => {
-  const paths = await crawl(page);
+let visits: Visit[] = [];
 
-  expect(paths).toContain(`${base}docs/`);
+test.beforeAll(async ({ browser }) => {
+  const page = await browser.newPage();
+  visits = await crawl(page);
+  await page.close();
 });
 
-test("no page scrolls horizontally on a 375px wide screen", async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 375, height: 812 });
-  for (const path of await crawl(page)) {
-    await page.goto(path);
-    const overflow = await page.evaluate(
-      () => document.documentElement.scrollWidth - window.innerWidth,
-    );
-    expect(overflow, `horizontal overflow of ${path}`).toBeLessThanOrEqual(0);
-  }
+test("every internal link and asset resolves under the base path", () => {
+  const broken = visits.filter((visit) => visit.status !== 200);
+
+  expect(broken).toEqual([]);
+  expect(visits.map((visit) => visit.path)).toEqual(
+    expect.arrayContaining([`${base}docs/`, `${base}favicon.svg`]),
+  );
+});
+
+test("no page scrolls horizontally on a 375px wide screen", () => {
+  const overflowing = visits.filter((visit) => (visit.overflow ?? 0) > 0);
+
+  expect(overflowing).toEqual([]);
 });

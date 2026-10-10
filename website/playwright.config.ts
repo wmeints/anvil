@@ -6,7 +6,7 @@ const port = 4321;
 // under the same base path as on GitHub Pages. Run `pnpm run build` first.
 export default defineConfig({
   testDir: "tests/e2e",
-  forbidOnly: !!process.env.CI,
+  forbidOnly: true,
   reporter: process.env.CI ? "github" : "list",
   use: { baseURL: `http://localhost:${port}/firebrick/` },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],

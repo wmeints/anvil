@@ -19,7 +19,8 @@ pre-commit:
     # The website's end-to-end tests need a browser, so they run in CI and in
     # the Claude Code stop hook instead.
     website:
-      glob: "website/**"
+      # mise.toml pins Node and pnpm.
+      glob: ["website/**", "mise.toml"]
       run: >-
         pnpm --dir website install --frozen-lockfile &&
         pnpm --dir website run format:check &&

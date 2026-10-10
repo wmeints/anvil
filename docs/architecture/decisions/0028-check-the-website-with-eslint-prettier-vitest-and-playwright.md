@@ -30,13 +30,14 @@ mistakes in hand-written markup.
 - `build`: the Astro build, which fails on broken docs links.
 - `test:e2e`: Playwright end-to-end tests in `tests/e2e/` against the built
   site, served by `astro preview` under the base path. They crawl every page
-  reachable from `/`, fail on a link that doesn't resolve, and fail when a page
-  scrolls horizontally at 375px.
+  reachable from `/` once, fail on a link or asset (stylesheet, icon, script,
+  image) that doesn't resolve, and fail when a page scrolls horizontally at
+  375px. `test.only` is rejected, so a focused test can't skip the others.
 
 The stop hook runs all of them when `website/` or `mise.toml` has uncommitted
 changes, lefthook runs all but the end-to-end tests before a commit that touches
-`website/`, and `.github/workflows/website.yaml` runs all of them on pull
-requests and pushes to `main`. A `website-reviewer` agent joins the
+`website/` or `mise.toml`, and `.github/workflows/website.yaml` runs all of them
+on pull requests and pushes to `main`. A `website-reviewer` agent joins the
 `review-branch` workflow for what the tools can't check.
 
 ## Consequences

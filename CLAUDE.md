@@ -124,8 +124,8 @@ The website follows the same rules where they apply:
 - The website's unit tests live in `website/tests/unit/` and render components
   with Astro's container API. Its end-to-end tests live in `website/tests/e2e/`
   and drive the built site with Playwright under the GitHub Pages base path;
-  they check that every internal link resolves and that no page scrolls
-  horizontally at 375px.
+  they check that every internal link and asset resolves and that no page
+  scrolls horizontally at 375px.
 
 ## Definition of done
 
@@ -192,8 +192,8 @@ These checks enforce the rules above, so don't try to bypass them:
   the user and lets the turn end instead of looping.
 - Lefthook runs the format checks for Rust and Markdown, `actionlint` on the
   GitHub workflows, clippy and the unit tests before each commit, and for
-  commits that touch `website/` the website's install, format check, lint, type
-  check, unit tests and build.
+  commits that touch `website/` or `mise.toml` the website's install, format
+  check, lint, type check, unit tests and build.
 - GitHub Actions (`.github/workflows/ci.yaml`) runs the format checks,
   `actionlint`, build, clippy, unit tests and the `vm-tests` integration tests
   on every pull request and every push to `main`.
