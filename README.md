@@ -62,7 +62,7 @@ first and run them in that shell.
 Set the release to install and pick the target for your machine:
 
 ```sh
-VERSION=v0.2.1
+VERSION=v0.3.0
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)  TARGET=x86_64-unknown-linux-gnu ;;
   Linux-aarch64) TARGET=aarch64-unknown-linux-gnu ;;
@@ -380,7 +380,7 @@ rm` and `fbk start`, or connect with `ssh root@<name>.fbk`.
 The simplest way to meet these requirements is to build on the base image:
 
 ```dockerfile
-FROM ghcr.io/wmeints/firebrick-base:v0.2.1
+FROM ghcr.io/wmeints/firebrick-base:v0.3.0
 
 USER root
 RUN apt-get update \
