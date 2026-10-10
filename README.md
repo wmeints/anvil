@@ -14,8 +14,7 @@ Firebrick supports two ways of working:
   sandbox over SSH.
 
 > [!NOTE]
-> Firebrick is early in development. Egress control is planned but not available
-> yet.
+> Firebrick is early in development.
 
 ## How it works
 
@@ -251,17 +250,24 @@ resources:
   memory: 4 GiB
 volumes:
   docker: 20 GiB
+network:
+  enforce: true
+  allow:
+    - github.com
 ```
 
-| Field              | Description                                                     | Default                                     |
-| ------------------ | --------------------------------------------------------------- | ------------------------------------------- |
-| `name`             | Name of the sandbox.                                            | Required                                    |
-| `image`            | OCI image the sandbox runs.                                     | `ghcr.io/wmeints/firebrick-base:v<version>` |
-| `init`             | Run the image's `/sbin/init` as PID 1. See below.               | `true`                                      |
-| `mise`             | Trust and install the project's mise tools when it starts.      | `true`                                      |
-| `resources.cpu`    | Number of vCPUs.                                                | `2`                                         |
-| `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`. | `4 GiB`                                     |
-| `volumes.docker`   | Size of the Docker data disk, in the same units as `memory`.    | `20 GiB`                                    |
+| Field              | Description                                                             | Default                                     |
+| ------------------ | ----------------------------------------------------------------------- | ------------------------------------------- |
+| `name`             | Name of the sandbox.                                                    | Required                                    |
+| `image`            | OCI image the sandbox runs.                                             | `ghcr.io/wmeints/firebrick-base:v<version>` |
+| `init`             | Run the image's `/sbin/init` as PID 1. See below.                       | `true`                                      |
+| `mise`             | Trust and install the project's mise tools when it starts.              | `true`                                      |
+| `resources.cpu`    | Number of vCPUs.                                                        | `2`                                         |
+| `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`.         | `4 GiB`                                     |
+| `volumes.docker`   | Size of the Docker data disk, in the same units as `memory`.            | `20 GiB`                                    |
+| `network.enforce`  | Deny outgoing traffic unless a rule allows it. See [Network](#network). | `false`                                     |
+| `network.allow`    | Destinations the sandbox may connect to.                                | Empty                                       |
+| `network.deny`     | Destinations the sandbox may not connect to, even if allowed.           | Empty                                       |
 
 Without `.firebrick.yml`, Firebrick uses the defaults and names the sandbox
 `firebrick-` followed by the first 6 characters of the SHA-256 hash of the full
@@ -273,10 +279,65 @@ can store images and containers inside the sandbox; Docker's storage doesn't
 work on the sandbox's overlayfs root filesystem. The disk keeps its contents
 when the sandbox stops, and `fbk rm` deletes it with the sandbox.
 
-The image, init, mise setting, resources and volumes apply when the sandbox is
-created. To change them for an existing sandbox, run `fbk rm` and start it
-again. Sandboxes created by an older version have no Docker data disk until you
-recreate them.
+The image, init, mise setting, resources, volumes and network rules apply when
+the sandbox is created. To change them for an existing sandbox, run `fbk rm` and
+start it again. Sandboxes created by an older version have no Docker data disk
+until you recreate them.
+
+### Network
+
+By default a sandbox can reach the public internet, but not your private
+networks. To restrict it to the hosts you trust, turn on `enforce` and list
+them:
+
+```yaml
+name: my-project
+network:
+  enforce: true
+  allow:
+    - api.anthropic.com # exactly this host name
+    - "*.github.com" # github.com and every subdomain
+    - 140.82.112.4 # one IPv4 or IPv6 address
+    - 192.168.10.0/24 # a CIDR range
+  deny:
+    - gist.github.com
+```
+
+With `enforce: true`, the sandbox can only connect to destinations an `allow`
+rule matches: TCP and UDP on any port, and ICMP. A `deny` rule wins over an
+`allow` rule, so in the example `gist.github.com` is blocked although
+`*.github.com` allows it. Every name resolves, except names a domain `deny` rule
+matches. `fbk validate` and `fbk start` reject entries that aren't a host name,
+`*.` plus a domain, an IP address or a CIDR range, such as `*`,
+`https://github.com` or `github.com:443`. With `enforce: false`, the rules are
+only validated.
+
+An HTTP or HTTPS request to a host that isn't allowed gets `403 Forbidden` with
+a message that names the host:
+
+```sh
+$ curl -s https://example.org
+firebrick blocked the connection to example.org: the network policy of this sandbox doesn't allow it. To allow it, run `fbk network allow example.org` on the host, outside the sandbox.
+```
+
+`fbk network allow` doesn't exist yet. Until it does, add the host to `allow`,
+then run `fbk rm` and `fbk start` to recreate the sandbox.
+
+Keep in mind that:
+
+- Only HTTP/1.x requests get the message, and only while there are no domain
+  `deny` rules. With a domain `deny` rule, and for IP or CIDR `deny` rules and
+  other protocols, the connection is reset or closed instead, and a host denied
+  by a domain rule doesn't resolve.
+- A host allowed by a host name or `*.domain` rule is only reachable over HTTP
+  and HTTPS on ports 80 and 443. For SSH to `github.com:22` or HTTPS on another
+  port, allow its IP address or CIDR range.
+- Firebrick intercepts HTTPS to check the host name, with a certificate
+  authority that the sandbox trusts. Tools that pin certificates or bring their
+  own CA store fail. HTTP/3 is blocked, so clients fall back to HTTP/2 or 1.1.
+- A secret's allowed hosts must be allowed by the network rules too.
+- `mise install` downloads its tools when the sandbox starts, so allow the hosts
+  it needs, or set `mise: false`.
 
 ### Secrets
 

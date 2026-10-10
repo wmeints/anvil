@@ -27,6 +27,18 @@ message StartSandboxRequest {
   optional SandboxVolumes volumes = 6;
   // Whether fbkd trusts and installs the workspace's mise tools on start. Unset means true.
   optional bool mise = 7;
+  // Egress rules, applied when the sandbox is created. Unset means microsandbox's default policy.
+  optional NetworkPolicy network = 8;
+}
+
+message NetworkPolicy {
+  // Whether outgoing traffic is denied unless an allow rule matches. When false, the rules are
+  // validated but not applied.
+  bool enforce = 1;
+  // Each rule is a host name, *.domain, an IP address or a CIDR range.
+  repeated string allow = 2;
+  // Deny rules win over allow rules.
+  repeated string deny = 3;
 }
 
 message SandboxResources {

@@ -1,3 +1,6 @@
+use std::fmt;
+use std::net::IpAddr;
+use std::str::FromStr;
 use std::{fs, path::Path};
 
 use serde::de::{self, Visitor};
@@ -85,6 +88,8 @@ pub struct SandboxSpec {
     /// Sizes of the volumes the sandbox gets. Missing fields use their defaults.
     #[serde(default)]
     pub volumes: VolumesSpec,
+    /// Egress rules of the sandbox. Without it, the sandbox gets microsandbox's default policy.
+    pub network: Option<NetworkSpec>,
 }
 
 /// CPU and memory resources assigned to a sandbox.
@@ -126,6 +131,134 @@ impl Default for VolumesSpec {
             docker: default_docker_volume(),
         }
     }
+}
+
+/// Egress rules of a sandbox. The rules only apply when `enforce` is `true`, but they are
+/// always validated.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkSpec {
+    /// Whether outgoing traffic is denied unless a rule allows it. Defaults to `false`.
+    #[serde(default)]
+    pub enforce: bool,
+    /// Destinations the sandbox may connect to.
+    #[serde(default)]
+    pub allow: Vec<NetworkRule>,
+    /// Destinations the sandbox may not connect to, even when an `allow` rule matches them.
+    #[serde(default)]
+    pub deny: Vec<NetworkRule>,
+}
+
+/// The destination of a network rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetworkRule {
+    /// Exactly this host name, such as `github.com`.
+    Domain(String),
+    /// The domain and every subdomain, written as `*.example.com`.
+    DomainSuffix(String),
+    /// A single IPv4 or IPv6 address.
+    Ip(IpAddr),
+    /// A CIDR range, such as `192.168.10.0/24`.
+    Cidr {
+        /// Address of the range.
+        address: IpAddr,
+        /// Number of leading bits of the address that the range fixes.
+        prefix: u8,
+    },
+}
+
+/// A network rule that isn't a host name, `*.domain`, IP address or CIDR range.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[error("invalid network rule \"{0}\": use a host name, *.domain, an IP address or a CIDR range")]
+pub struct InvalidNetworkRule(pub String);
+
+impl FromStr for NetworkRule {
+    type Err = InvalidNetworkRule;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        parse_rule(value).ok_or_else(|| InvalidNetworkRule(value.to_string()))
+    }
+}
+
+impl fmt::Display for NetworkRule {
+    /// Writes the rule the way it is written in the spec.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NetworkRule::Domain(domain) => f.write_str(domain),
+            NetworkRule::DomainSuffix(domain) => write!(f, "*.{domain}"),
+            NetworkRule::Ip(address) => write!(f, "{address}"),
+            NetworkRule::Cidr { address, prefix } => write!(f, "{address}/{prefix}"),
+        }
+    }
+}
+
+impl Serialize for NetworkRule {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for NetworkRule {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_str(NetworkRuleVisitor)
+    }
+}
+
+/// Parses the rule while the parser still points at it, so a problem is reported at the
+/// rule's line and column.
+struct NetworkRuleVisitor;
+
+impl Visitor<'_> for NetworkRuleVisitor {
+    type Value = NetworkRule;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a host name, *.domain, an IP address or a CIDR range")
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<NetworkRule, E> {
+        value.parse().map_err(E::custom)
+    }
+}
+
+/// Parses a rule, or returns `None` when it has none of the supported forms.
+fn parse_rule(value: &str) -> Option<NetworkRule> {
+    if let Some(domain) = value.strip_prefix("*.") {
+        // A single label such as `*.com` would match a whole top-level domain.
+        return (is_host_name(domain) && domain.contains('.'))
+            .then(|| NetworkRule::DomainSuffix(domain.to_string()));
+    }
+
+    if let Ok(address) = value.parse() {
+        return Some(NetworkRule::Ip(address));
+    }
+
+    if let Some((address, prefix)) = value.split_once('/') {
+        return parse_cidr(address, prefix);
+    }
+
+    is_host_name(value).then(|| NetworkRule::Domain(value.to_string()))
+}
+
+/// Parses the address and prefix length of a CIDR range.
+fn parse_cidr(address: &str, prefix: &str) -> Option<NetworkRule> {
+    let address: IpAddr = address.parse().ok()?;
+    let prefix: u8 = prefix.parse().ok()?;
+    let max_prefix = if address.is_ipv4() { 32 } else { 128 };
+
+    (prefix <= max_prefix).then_some(NetworkRule::Cidr { address, prefix })
+}
+
+/// Whether the value is a DNS host name: dot-separated labels of letters, digits and hyphens.
+fn is_host_name(value: &str) -> bool {
+    value.len() <= 253 && value.split('.').all(is_host_label)
+}
+
+/// Whether the value is one label of a host name, such as `github` in `github.com`.
+fn is_host_label(label: &str) -> bool {
+    (1..=63).contains(&label.len())
+        && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !label.starts_with('-')
+        && !label.ends_with('-')
 }
 
 /// Size of the Docker volume when the spec doesn't set one.
@@ -206,6 +339,7 @@ pub fn default_spec(name: String) -> SandboxSpec {
         init: Some(true),
         mise: Some(true),
         volumes: VolumesSpec::default(),
+        network: None,
     }
 }
 
@@ -449,6 +583,7 @@ pub mod tests {
         assert_eq!(spec.init, Some(true));
         assert_eq!(spec.mise, Some(true));
         assert_eq!(spec.volumes, VolumesSpec::default());
+        assert!(spec.network.is_none());
     }
 
     #[test]
@@ -513,6 +648,151 @@ pub mod tests {
             "{}",
             diagnostic.message
         );
+    }
+
+    #[test]
+    fn network_is_optional() {
+        let file = write_spec("name: dev\n");
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert!(spec.network.is_none());
+    }
+
+    #[test]
+    fn network_fields_have_defaults() {
+        let file = write_spec("name: dev\nnetwork: {}\n");
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert_eq!(spec.network, Some(NetworkSpec::default()));
+        assert!(!NetworkSpec::default().enforce);
+    }
+
+    #[test]
+    fn parses_network() {
+        let file = write_spec(concat!(
+            "name: dev\n",
+            "network:\n",
+            "  enforce: true\n",
+            "  allow:\n",
+            "    - github.com\n",
+            "    - \"*.githubusercontent.com\"\n",
+            "  deny:\n",
+            "    - gist.github.com\n",
+        ));
+
+        let network = from_file(file.path()).unwrap().network.unwrap();
+
+        assert!(network.enforce);
+        assert_eq!(
+            network.allow,
+            [
+                NetworkRule::Domain("github.com".to_string()),
+                NetworkRule::DomainSuffix("githubusercontent.com".to_string()),
+            ]
+        );
+        assert_eq!(
+            network.deny,
+            [NetworkRule::Domain("gist.github.com".to_string())]
+        );
+    }
+
+    #[test]
+    fn parses_addresses_and_ranges() {
+        let ip = |value: &str| value.parse::<IpAddr>().unwrap();
+        let cases = [
+            ("140.82.112.4", NetworkRule::Ip(ip("140.82.112.4"))),
+            ("2001:db8::1", NetworkRule::Ip(ip("2001:db8::1"))),
+            (
+                "192.168.10.0/24",
+                NetworkRule::Cidr {
+                    address: ip("192.168.10.0"),
+                    prefix: 24,
+                },
+            ),
+            (
+                "2001:db8::/32",
+                NetworkRule::Cidr {
+                    address: ip("2001:db8::"),
+                    prefix: 32,
+                },
+            ),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(input.parse(), Ok(expected), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn network_rule_displays_as_written() {
+        for rule in [
+            "github.com",
+            "*.example.com",
+            "10.0.0.1",
+            "10.0.0.0/8",
+            "::1",
+            "fd00::/8",
+        ] {
+            assert_eq!(rule.parse::<NetworkRule>().unwrap().to_string(), rule);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_network_rules() {
+        for rule in [
+            "",
+            "*",
+            "*.",
+            "*.com",
+            "foo.*.com",
+            "github.*",
+            "https://github.com",
+            "github.com:443",
+            "github.com/path",
+            "10.0.0.0/33",
+            "::/129",
+            "10.0.0/8",
+            "10.0.0.0/",
+            "-github.com",
+            "github..com",
+            "git hub.com",
+        ] {
+            assert_eq!(
+                rule.parse::<NetworkRule>(),
+                Err(InvalidNetworkRule(rule.to_string())),
+                "{rule:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_network_rule_returns_diagnostic() {
+        let file = write_spec(
+            "name: dev\nnetwork:\n  allow:\n    - github.com\n    - https://github.com\n",
+        );
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (5, 7));
+        assert!(
+            diagnostic.message.ends_with(
+                "invalid network rule \"https://github.com\": use a host name, *.domain, \
+                 an IP address or a CIDR range"
+            ),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn unknown_network_field_returns_invalid_spec() {
+        let file = write_spec("name: dev\nnetwork:\n  enfroce: true\n");
+
+        let result = from_file(file.path());
+
+        assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
     }
 
     #[test]

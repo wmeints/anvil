@@ -107,6 +107,7 @@ C4Component
         Component(zed, "zed", "jsonc-parser", "Zed remote projects")
         Component(runtime, "runtime", "Rust", "Runtime installation")
         Component(secrets, "secrets", "serde_yaml", "Secrets")
+        Component(network, "network", "microsandbox-network", "Egress rules")
     }
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
@@ -124,6 +125,7 @@ C4Component
     Rel(server, tunnel, "Serves SSH tunnels")
     Rel(server, utils, "Finds socket")
     Rel(sandboxes, secrets, "Loads, stores and applies secrets")
+    Rel(sandboxes, network, "Applies egress rules")
     Rel(sandboxes, ssh, "Host names, SSH config")
     Rel(sandboxes, vscode, "Syncs Remote-SSH platforms")
     Rel(sandboxes, zed, "Syncs remote projects")
@@ -148,26 +150,30 @@ C4Component
   converts the result into a response. It converts requested resources and
   volumes to vCPUs and MiB, falling back to the defaults from `firebrick-spec`
   (for the Docker volume also when the request's `docker` size is empty), and
-  rejects invalid values with `INVALID_ARGUMENT`. It maps the `SandboxError` of
-  `sandboxes` to gRPC status codes in one place. It refuses to start when the
-  socket already exists, gives the socket mode `0600` after binding it and
-  removes it on shutdown. It only hands a connection to tonic when the peer's
-  UID, read with `SO_PEERCRED`, is the daemon's own UID or root (see
+  rejects invalid values with `INVALID_ARGUMENT`. It parses the network rules of
+  a request with `firebrick-spec` and rejects an invalid rule with
+  `INVALID_ARGUMENT`, also when the sandbox already exists. It maps the
+  `SandboxError` of `sandboxes` to gRPC status codes in one place. It refuses to
+  start when the socket already exists, gives the socket mode `0600` after
+  binding it and removes it on shutdown. It only hands a connection to tonic
+  when the peer's UID, read with `SO_PEERCRED`, is the daemon's own UID or root
+  (see
   [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
   with the requested vCPUs and memory, mounts the workspace read/write at
   `/workspaces/<leaf>`, attaches a sandbox-owned ext4 disk of the requested size
   at `/var/lib/docker` (see
-  [ADR 0015](decisions/0015-give-each-sandbox-a-docker-data-disk.md)) and adds
-  the stored secrets. The disk survives stops and restarts, and microsandbox
-  deletes it when the sandbox is removed. With `init` on, it hands PID 1 to the
-  image's `/sbin/init`. When that fails because the image has no init, it
-  removes the half-created sandbox and returns `FAILED_PRECONDITION` with a hint
-  to set `init: false`. Invalid values are rejected before it creates anything.
-  When it creates or starts a sandbox, it uses the `mise` module to trust the
-  mise config files at the workspace root and run `mise install`, unless the
-  sandbox's `firebrick.mise` label, stored at create time, turns mise off (see
+  [ADR 0015](decisions/0015-give-each-sandbox-a-docker-data-disk.md)), applies
+  the egress rules with the `network` module and adds the stored secrets. The
+  disk survives stops and restarts, and microsandbox deletes it when the sandbox
+  is removed. With `init` on, it hands PID 1 to the image's `/sbin/init`. When
+  that fails because the image has no init, it removes the half-created sandbox
+  and returns `FAILED_PRECONDITION` with a hint to set `init: false`. Invalid
+  values are rejected before it creates anything. When it creates or starts a
+  sandbox, it uses the `mise` module to trust the mise config files at the
+  workspace root and run `mise install`, unless the sandbox's `firebrick.mise`
+  label, stored at create time, turns mise off (see
   [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It starts,
   stops, gets, lists and removes sandboxes, gives each sandbox a unique SSH host
   name, regenerates the SSH config, the editor settings and Zed's remote
@@ -201,6 +207,15 @@ C4Component
   real value in requests to the secret's allowed hosts. It knows the default
   allowed hosts for well-known names such as `GH_TOKEN` and `ANTHROPIC_API_KEY`
   ([ADR 0004](decisions/0004-store-secrets-in-a-private-file.md)).
+- `network` - Turns the `network` section of a spec into the network settings of
+  a sandbox that is being created. Without `enforce`, it leaves the sandbox with
+  microsandbox's default policy. With `enforce`, it builds a policy of all deny
+  rules, then all allow rules, then microsandbox's DNS rule, with deny as the
+  default for egress. Host names map to a `Domain`, `*.domain` to a
+  `DomainSuffix`, and IP addresses and CIDR ranges to a `Cidr`. It also turns on
+  TLS interception for port 443 and microsandbox's HTTP deny response, whose
+  body names the host and `fbk network allow <host>`
+  ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
 - `ssh` - Creates the ed25519 client and host keys, pins the host key for
   `*.fbk` in a `known_hosts` file, picks a unique `<leaf>.fbk` host name per
   sandbox (stored in the `firebrick.hostname` label), and writes the generated
@@ -246,11 +261,14 @@ C4Component
   CLI and daemon re-export it as their `api` module.
 - `firebrick-spec` (`crates/spec`) - Parses `.firebrick.yml` into a
   `SandboxSpec` with a `name`, an optional `image`, optional `init` and `mise`
-  flags and optional `resources` (`cpu`, `memory`) and `volumes` (`docker`, the
-  size of the Docker data disk), rejects unknown fields and reports the line and
-  column of a problem. It owns the defaults
-  (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, `mise: true`, 2
-  vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
+  flags, optional `resources` (`cpu`, `memory`), `volumes` (`docker`, the size
+  of the Docker data disk) and an optional `network` section (`enforce`, default
+  `false`, and the `allow` and `deny` rules), rejects unknown fields and reports
+  the line and column of a problem. `NetworkRule` parses a rule: a host name,
+  `*.` plus a domain of at least two labels, an IPv4 or IPv6 address or a CIDR
+  range. `*` alone, other wildcards, URLs, ports and paths are invalid. It owns
+  the defaults (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`,
+  `mise: true`, 2 vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
   `VolumesSpec::default()`) and `parse_size_mib`, which reads memory and volume
   sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both use them.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
@@ -259,9 +277,9 @@ C4Component
   (`$XDG_DATA_HOME/firebrick/ssh`) and the secrets file
   (`$XDG_DATA_HOME/firebrick/secrets.yml`).
 
-The image, init, mise setting and resources apply when a sandbox is created.
-Changing them in `.firebrick.yml` doesn't change an existing sandbox; remove it
-with `fbk rm` and start it again.
+The image, init, mise setting, resources and network rules apply when a sandbox
+is created. Changing them in `.firebrick.yml` doesn't change an existing
+sandbox; remove it with `fbk rm` and start it again.
 
 ## Base image
 

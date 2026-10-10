@@ -3,10 +3,12 @@
 //! Remote-SSH settings and Zed's remote projects.
 
 use crate::mise::{self, MiseError};
+use crate::network;
 use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
 use crate::vscode;
 use crate::zed;
+use firebrick_spec::NetworkSpec;
 use microsandbox::sandbox::{HostPermissions, SandboxBuilder, SandboxHandle, SandboxStatus};
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::HashSet;
@@ -81,6 +83,8 @@ pub struct StartSandbox<'a> {
     /// Whether the sandbox trusts and installs its workspace's mise tools on start. Stored when
     /// the sandbox is created.
     pub mise: bool,
+    /// Egress rules of the sandbox, applied when it is created.
+    pub network: &'a NetworkSpec,
 }
 
 /// The name, status, SSH host name and workspace path of a sandbox.
@@ -360,7 +364,7 @@ impl SandboxManager {
             .detached(true);
         let builder = with_init(with_resources(builder, resources), request.init);
 
-        let sb = match secrets::add_to_builder(builder, &secrets).create().await {
+        let sb = match create_with(builder, &secrets, request.network).await {
             Ok(sb) => sb,
             Err(err) => {
                 tracing::error!(error = ?err, "failed to create sandbox {}", request.name);
@@ -372,6 +376,18 @@ impl SandboxManager {
 
         Ok((sb, guest_path))
     }
+}
+
+/// Adds the egress rules and the secrets to the builder and creates the sandbox. The rules go
+/// first, because they replace the TLS settings that the secrets turn on.
+async fn create_with(
+    builder: SandboxBuilder,
+    secrets: &[Secret],
+    network: &NetworkSpec,
+) -> Result<Sandbox, MicrosandboxError> {
+    let builder = network::add_to_builder(builder, network)?;
+
+    secrets::add_to_builder(builder, secrets).create().await
 }
 
 /// Returns the sandbox with the name.
