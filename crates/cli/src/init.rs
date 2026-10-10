@@ -69,6 +69,17 @@ mod tests {
         assert_eq!(spec.init, Some(true));
         assert_eq!(spec.mise, Some(true));
         assert_eq!(spec.volumes, firebrick_spec::VolumesSpec::default());
+        assert!(spec.mounts.is_none());
+    }
+
+    #[test]
+    fn default_spec_leaves_out_mounts() {
+        let (_root, dir) = project_dir("project");
+
+        let spec_path = init_spec(&dir, false).unwrap();
+
+        let content = fs::read_to_string(spec_path).unwrap();
+        assert!(!content.contains("mounts"), "{content}");
     }
 
     #[test]

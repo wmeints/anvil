@@ -285,10 +285,12 @@ C4Component
   `;` or `,`. It normalizes the path (no `.` parts or trailing slash), and each
   normalized path may appear only once. The daemon uses the same check. The CLI
   resolves each mount's `host` against the spec file's directory, expanding `~`
-  to `$HOME`, to the canonical path of an existing directory before it sends
-  `StartSandbox`. `NetworkRule` parses a rule: a host name, `*.` plus a domain
-  of at least two labels, an IPv4 or IPv6 address or a CIDR range. `*` alone,
-  other wildcards, URLs, ports and paths are invalid. It owns the defaults
+  to `$HOME` and `~user` to that user's home directory
+  ([ADR 0021](decisions/0021-look-up-user-home-directories-with-nix.md)), to the
+  canonical path of an existing directory before it sends `StartSandbox`.
+  `NetworkRule` parses a rule: a host name, `*.` plus a domain of at least two
+  labels, an IPv4 or IPv6 address or a CIDR range. `*` alone, other wildcards,
+  URLs, ports and paths are invalid. It owns the defaults
   (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, `mise: true`, 2
   vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
   `VolumesSpec::default()`) and `parse_size_mib`, which reads memory and volume

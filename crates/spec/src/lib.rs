@@ -92,7 +92,11 @@ pub struct SandboxSpec {
     /// Egress rules of the sandbox. Without it, the sandbox gets microsandbox's default policy.
     pub network: Option<NetworkSpec>,
     /// Extra host directories to bind mount into the sandbox, besides the workspace.
-    #[serde(default, deserialize_with = "deserialize_mounts")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_mounts",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub mounts: Option<Vec<MountSpec>>,
 }
 

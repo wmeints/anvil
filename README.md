@@ -275,11 +275,11 @@ mounts:
 ```
 
 A relative `host` resolves against the directory that holds `.firebrick.yml`,
-and `~` expands to `$HOME`. `fbk start` and `fbk run` refuse to create the
-sandbox when a `host` isn't an existing directory, or when a `guest` is the
-workspace path (`/workspaces/<leaf-name>`) or `/var/lib/docker`. A `guest` must
-not contain `..`, `:`, `;` or `,`. The agent user owns the mounted files, like
-the workspace.
+`~` expands to `$HOME`, and `~user` to that user's home directory. `fbk start`
+and `fbk run` refuse to create the sandbox when a `host` isn't an existing
+directory, or when a `guest` is the workspace path (`/workspaces/<leaf-name>`)
+or `/var/lib/docker`. A `guest` must not contain `..`, `:`, `;` or `,`. The
+agent user owns the mounted files, like the workspace.
 
 | Field               | Description                                                             | Default                                     |
 | ------------------- | ----------------------------------------------------------------------- | ------------------------------------------- |
@@ -293,7 +293,7 @@ the workspace.
 | `network.enforce`   | Deny outgoing traffic unless a rule allows it. See [Network](#network). | `false`                                     |
 | `network.allow`     | Destinations the sandbox may connect to.                                | Empty                                       |
 | `network.deny`      | Destinations the sandbox may not connect to, even if allowed.           | Empty                                       |
-| `mounts[].host`     | Host directory to mount: absolute, `~/...` or relative to the spec.     | Required per mount                          |
+| `mounts[].host`     | Host directory: absolute, `~/...`, `~user/...` or relative to the spec. | Required per mount                          |
 | `mounts[].guest`    | Absolute guest path to mount it at. Each path may appear only once.     | Required per mount                          |
 | `mounts[].readonly` | Mount the directory read-only.                                          | `false`                                     |
 

@@ -291,20 +291,16 @@ fn resolve_mounts(
 }
 
 /// Resolves a mount host path to the canonical path of an existing directory. A leading `~`
-/// expands to the home directory and a relative path resolves against the spec file's
-/// directory.
+/// expands to the home directory, `~user` to the home directory of that user, and a relative
+/// path resolves against the spec file's directory.
 fn resolve_host_path(
     host: &str,
     spec_dir: &Path,
     home: Option<&std::ffi::OsStr>,
 ) -> Result<PathBuf> {
     let path = match host.strip_prefix('~') {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
-            let home =
-                home.with_context(|| format!("can't expand ~ in {host}: $HOME isn't set"))?;
-            Path::new(home).join(rest.trim_start_matches('/'))
-        }
-        _ => spec_dir.join(host),
+        Some(rest) => expand_tilde(host, rest, home)?,
+        None => spec_dir.join(host),
     };
 
     let canonical = std::fs::canonicalize(&path).map_err(|err| mount_error(&path, &err))?;
@@ -314,6 +310,29 @@ fn resolve_host_path(
     }
 
     Ok(canonical)
+}
+
+/// Expands `~` or `~user` at the start of a host path, the way a shell does. `rest` is the
+/// host path without its `~`.
+fn expand_tilde(host: &str, rest: &str, home: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
+    let (user, tail) = rest.split_once('/').unwrap_or((rest, ""));
+
+    let home = if user.is_empty() {
+        PathBuf::from(home.with_context(|| format!("can't expand ~ in {host}: $HOME isn't set"))?)
+    } else {
+        user_home(host, user)?
+    };
+
+    Ok(home.join(tail))
+}
+
+/// Looks up the home directory of the user in the user database.
+fn user_home(host: &str, user: &str) -> Result<PathBuf> {
+    let entry = nix::unistd::User::from_name(user)
+        .with_context(|| format!("can't expand ~{user} in {host}"))?
+        .ok_or_else(|| anyhow!("can't expand {host}: user {user} doesn't exist"))?;
+
+    Ok(entry.dir)
 }
 
 /// Describes why the host path can't be mounted, without the OS error code.
@@ -1039,6 +1058,27 @@ mod tests {
             fs::canonicalize(dir.path().join("datasets")).unwrap()
         );
         assert_eq!(home_only, fs::canonicalize(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn host_path_expands_other_users_home() {
+        // root exists on every Linux and macOS host; its home differs between them.
+        let root_home = nix::unistd::User::from_name("root").unwrap().unwrap().dir;
+
+        let resolved = resolve_host_path("~root", Path::new("/elsewhere"), None).unwrap();
+
+        assert_eq!(resolved, fs::canonicalize(root_home).unwrap());
+    }
+
+    #[test]
+    fn host_path_with_unknown_user_is_refused() {
+        let error =
+            resolve_host_path("~fbk-no-such-user/data", Path::new("/elsewhere"), None).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "can't expand ~fbk-no-such-user/data: user fbk-no-such-user doesn't exist"
+        );
     }
 
     #[test]

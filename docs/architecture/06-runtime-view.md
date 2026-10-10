@@ -235,14 +235,14 @@ limits. Without enforcement the sandbox gets microsandbox's default policy
 With enforcement on, `mise install` only reaches the hosts the rules allow.
 
 Before the CLI creates a sandbox, it resolves the `host` of each entry in
-`mounts` against the directory of `.firebrick.yml`, expanding `~` to `$HOME`,
-and canonicalizes it. It fails with `can't mount <path>: No such file or
-directory` or `can't mount <path>: not a directory` without calling the daemon.
-The daemon rejects a mount whose guest path equals the workspace path with
-`INVALID_ARGUMENT` before it creates anything, and otherwise bind mounts each
-directory like the workspace: owned by `1000:1000`, with host permissions
-mirrored, and read-only when `readonly` is set. Starting an existing sandbox
-sends no mounts.
+`mounts` against the directory of `.firebrick.yml`, expanding `~` to `$HOME` and
+`~user` to that user's home directory, and canonicalizes it. It fails with
+`can't mount <path>: No such file or directory` or `can't mount <path>: not a
+directory` without calling the daemon. The daemon rejects a mount whose guest
+path equals the workspace path with `INVALID_ARGUMENT` before it creates
+anything, and otherwise bind mounts each directory like the workspace: owned by
+`1000:1000`, with host permissions mirrored, and read-only when `readonly` is
+set. Starting an existing sandbox sends no mounts.
 
 When `StartSandbox` creates a sandbox, or starts one that was stopped or
 crashed, fbkd installs the workspace's mise tools before it returns. It looks
