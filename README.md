@@ -370,10 +370,20 @@ dialog.
 ### Base image
 
 The [`Dockerfile`](Dockerfile) describes a base image for sandboxes with `git`,
-`curl`, `sudo`, [mise](https://mise.jdx.dev) and an unprivileged `agent` user.
-Releases publish it as `ghcr.io/wmeints/firebrick-base:<tag>`, and sandboxes run
-the image that matches the installed firebrick version unless the `image` field
-in `.firebrick.yml` names another one, such as an image built on top of it.
+`curl`, `sudo`, [mise](https://mise.jdx.dev), the Docker engine and an
+unprivileged `agent` user. Releases publish it as
+`ghcr.io/wmeints/firebrick-base:<tag>`, and sandboxes run the image that matches
+the installed firebrick version unless the `image` field in `.firebrick.yml`
+names another one, such as an image built on top of it.
+
+The image's init starts `dockerd` when the sandbox boots, and `agent` is in the
+`docker` group, so agents can run `docker`, `docker compose` and `docker buildx`
+without `sudo`. Docker runs directly on the sandbox VM and keeps its images and
+containers on the sandbox's own disk at `/var/lib/docker`, so they survive `fbk
+stop` and `fbk start`. When `dockerd` fails to start, the reason is in
+`/var/log/dockerd.log`. With `init: false`, nothing starts `dockerd` and
+`docker` reports `Cannot connect to the Docker daemon`; start it in the
+background with `sudo sh -c 'dockerd >/var/log/dockerd.log 2>&1 &'`.
 
 ### Bringing your own image
 
@@ -389,12 +399,18 @@ Firebrick runs everything in a sandbox as the `agent` user. A custom image must:
 - Provide an executable `/sbin/init`, or set `init: false` in `.firebrick.yml`.
   With `init` on, which is the default, Firebrick runs `/sbin/init` as PID 1,
   and `fbk start` fails with a hint when the image has none. The base image's
-  init disables guest IPv6 and then runs [tini](https://github.com/krallin/tini)
-  to reap zombie processes. It works around a microsandbox bug that resets IPv6
-  connections on hosts without IPv6 internet access
+  init disables guest IPv6, starts `dockerd` in the background, and then runs
+  [tini](https://github.com/krallin/tini) to reap zombie processes. It works
+  around a microsandbox bug that resets IPv6 connections on hosts without IPv6
+  internet access
   ([microsandbox#1226](https://github.com/superradcompany/microsandbox/issues/1226)).
   Images built on the base image inherit it; with `init: false`, such hosts
-  can't download from servers that have an IPv6 address.
+  can't download from servers that have an IPv6 address, and `dockerd` doesn't
+  run until you start it with `sudo sh -c 'dockerd >/var/log/dockerd.log 2>&1
+  &'`.
+- Add `agent` to the `docker` group and start `dockerd` from `/sbin/init`, if
+  agents should be able to run `docker` without `sudo`. Firebrick attaches a
+  disk for Docker's data at `/var/lib/docker` to every sandbox.
 
 The workspace is mounted at `/workspaces/<project>`, and its files show up as
 owned by `agent`, whatever the UID of your user on the host is.

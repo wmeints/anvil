@@ -15,3 +15,4 @@
 - [ADR 0013 - Share the gRPC code through a proto crate](decisions/0013-share-the-grpc-code-through-a-proto-crate.md)
 - [ADR 0014 - Name sandboxes after a hash of the working directory](decisions/0014-name-sandboxes-after-a-hash-of-the-working-directory.md)
 - [ADR 0015 - Give each sandbox a Docker data disk](decisions/0015-give-each-sandbox-a-docker-data-disk.md)
+- [ADR 0016 - Run Docker in the sandbox VM](decisions/0016-run-docker-in-the-sandbox-vm.md)

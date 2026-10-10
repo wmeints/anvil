@@ -86,6 +86,15 @@ build on it when `Cargo.lock` has a newer version.
   `OwnedVolumeStorage::Disk { capacity_mib }`. `fbkd` puts Docker's data on such
   a disk because the root filesystem is overlayfs (ADR 0015).
 
+**Guest filesystem**
+
+- `/run` isn't a tmpfs: it sits on the overlayfs root, whose upper layer
+  persists across `stop` and `start`. PID files, sockets and other runtime state
+  from the previous boot are still there after a restart, and a stale PID can
+  match an unrelated process in the new boot. An init that starts daemons must
+  remove their runtime state first; `firebrick-base` removes `/run/docker.pid`,
+  `/run/docker` and `/run/containerd` before it starts `dockerd` (ADR 0016).
+
 **Changing existing sandboxes**
 
 - `modify()` changes cpus, memory, disk size, env, labels, workdir and secrets.

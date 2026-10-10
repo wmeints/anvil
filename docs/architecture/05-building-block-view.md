@@ -275,13 +275,24 @@ images. It builds on `ubuntu:26.04` and adds:
   compile without installing anything first.
 - `mise` - installed from the mise apt repository. It's activated in `.bashrc`
   for interactive shells, and its shims are on `PATH` for everything else.
+- Docker - `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin`
+  and `docker-compose-plugin` from Docker's apt repository. `dockerd` runs
+  directly on the sandbox VM and keeps its data on the ext4 disk that `fbkd`
+  attaches at `/var/lib/docker`. See
+  [ADR 0016](decisions/0016-run-docker-in-the-sandbox-vm.md).
 - `agent` - an unprivileged user (UID/GID `1000`, home `/home/agent`) with
-  passwordless `sudo`. The image runs as this user and starts `/bin/bash` by
-  default. The `ubuntu` user that the base image ships with UID 1000 is removed.
+  passwordless `sudo`, in the `docker` group so it can run `docker` without
+  `sudo`. The image runs as this user and starts `/bin/bash` by default. The
+  `ubuntu` user that the base image ships with UID 1000 is removed.
 - `/sbin/init` - a script that disables guest IPv6 with the settings in
-  `/etc/sysctl.d/99-disable-ipv6.conf` and then hands PID 1 to `tini`, which
-  reaps zombie processes. `fbkd` runs it as PID 1 unless the spec sets `init:
-  false`. See
+  `/etc/sysctl.d/99-disable-ipv6.conf`, removes Docker's runtime state from the
+  previous boot, which survives in `/run` because it sits on the persistent
+  root, starts `dockerd` in the background with its output in
+  `/var/log/dockerd.log`, and then hands PID 1 to `tini`, which reaps zombie
+  processes. It doesn't wait for `dockerd` to be ready, and the sandbox boots
+  even when `dockerd` fails. `fbkd` runs it as PID 1 unless the spec sets `init:
+  false`; then nothing starts `dockerd`, and the agent can start it in the
+  background with `sudo sh -c 'dockerd >/var/log/dockerd.log 2>&1 &'`. See
   [ADR 0007](decisions/0007-disable-guest-ipv6-in-the-base-image.md).
 
 The release workflow publishes the image as
