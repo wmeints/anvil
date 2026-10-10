@@ -223,6 +223,8 @@ another sandbox from any directory.
 | `fbk network deny <rule>...`      | Deny destinations in `.firebrick.yml` and apply the rules to the sandbox.                                                          |
 | `fbk network policy enable`       | Turn on enforcement of the network rules (`network.enforce: true`).                                                                |
 | `fbk network policy disable`      | Turn off enforcement of the network rules; the rules are kept.                                                                     |
+| `fbk network disable`             | Remove the sandbox's network device (`network.enabled: false`), so it works fully offline. See [Offline](#offline).                |
+| `fbk network enable`              | Give the sandbox its network device back (`network.enabled: true`).                                                                |
 
 For example, to open a shell in the sandbox:
 
@@ -294,6 +296,7 @@ agent user owns the mounted files, like the workspace.
 | `resources.cpu`     | Number of vCPUs.                                                        | `2`                                         |
 | `resources.memory`  | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`.         | `4 GiB`                                     |
 | `volumes.docker`    | Size of the Docker data disk, in the same units as `memory`.            | `20 GiB`                                    |
+| `network.enabled`   | Give the sandbox a network device. See [Offline](#offline).             |                                             |
 | `network.enforce`   | Deny outgoing traffic unless a rule allows it. See [Network](#network). | `false`                                     |
 | `network.allow`     | Destinations the sandbox may connect to.                                | Empty                                       |
 | `network.deny`      | Destinations the sandbox may not connect to, even if allowed.           | Empty                                       |
@@ -417,6 +420,47 @@ Keep in mind that:
 - A secret's allowed hosts must be allowed by the network rules too.
 - `mise install` downloads its tools when the sandbox starts, so allow the hosts
   it needs, or set `mise: false`.
+
+#### Offline
+
+To keep an agent fully offline, for example for code that must not leave your
+machine, remove the sandbox's network device:
+
+```yaml
+name: my-project
+network:
+  enabled: false # default: true
+```
+
+Or run `fbk network disable` in the project directory, and `fbk network enable`
+to turn the network back on:
+
+```sh
+$ fbk network disable
+disabled the network of my-project
+$ fbk run -- curl -sI https://github.com
+curl: (6) Could not resolve host: github.com
+$ fbk network enable
+enabled the network of my-project
+```
+
+Without a network device, nothing in the sandbox resolves or connects, and
+`enforce`, `allow` and `deny` are validated but ignored. `fbk run`, `ssh
+<leaf>.fbk`, port forwards and the editor integrations keep working, because
+they don't use the sandbox's network. `mise install` can't download tools, so
+install them while the network is on, or set `mise: false`.
+
+This is different from `fbk network policy disable`: that keeps the network
+device and only stops enforcing the rules, so the sandbox can reach the internet
+again. `fbk network disable` takes the network away entirely, whatever the rules
+say.
+
+The commands work like the other `fbk network` commands: they create
+`.firebrick.yml` when it's missing, print `the network is already disabled` or
+`the network is already enabled` when nothing changes, restart an existing
+sandbox while keeping its disks, and only change the file when the sandbox
+doesn't exist yet (`updated .firebrick.yml; the change applies when my-project
+starts`).
 
 ### Ports
 

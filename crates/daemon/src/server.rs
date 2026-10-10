@@ -162,6 +162,7 @@ fn network_spec(network: Option<&NetworkPolicy>) -> Result<NetworkSpec, Status> 
     };
 
     Ok(NetworkSpec {
+        enabled: network.enabled,
         enforce: network.enforce,
         allow: parse_rules(&network.allow)?,
         deny: parse_rules(&network.deny)?,
@@ -778,11 +779,13 @@ mod tests {
             enforce: true,
             allow: vec!["*.github.com".to_string(), "10.0.0.0/8".to_string()],
             deny: vec!["gist.github.com".to_string()],
+            ..Default::default()
         };
 
         let spec = network_spec(Some(&network)).unwrap();
 
         assert!(spec.enforce);
+        assert!(spec.is_enabled());
         assert_eq!(
             spec.allow,
             [
@@ -797,6 +800,18 @@ mod tests {
             spec.deny,
             [NetworkRule::Domain("gist.github.com".to_string())]
         );
+    }
+
+    #[test]
+    fn network_spec_passes_on_the_network_switch() {
+        for enabled in [None, Some(true), Some(false)] {
+            let network = NetworkPolicy {
+                enabled,
+                ..Default::default()
+            };
+
+            assert_eq!(network_spec(Some(&network)).unwrap().enabled, enabled);
+        }
     }
 
     #[test]
@@ -1084,7 +1099,7 @@ mod tests {
                 network: Some(NetworkPolicy {
                     enforce: true,
                     allow: vec!["https://example.org".to_string()],
-                    deny: vec![],
+                    ..Default::default()
                 }),
             }))
             .await

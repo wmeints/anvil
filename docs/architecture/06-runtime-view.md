@@ -248,6 +248,15 @@ limits. Without enforcement the sandbox gets microsandbox's default policy
 ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
 With enforcement on, `mise install` only reaches the hosts the rules allow.
 
+With `enabled: false`, the daemon still validates the rules but creates the
+sandbox without a network device, through microsandbox's `disable_network()`.
+Nothing in the guest resolves or connects, whatever `enforce`, `allow` and
+`deny` say, and `mise install` can't download tools. `fbk run`, `ssh
+<leaf>.fbk`, port forwards and the editor integrations keep working: they use
+microsandbox's agent channel, not the guest network. This differs from `fbk
+network policy disable`, which keeps the network device and only stops enforcing
+the rules.
+
 Before the CLI creates a sandbox, it resolves the `host` of each entry in
 `mounts` against the directory of `.firebrick.yml`, expanding `~` to `$HOME` and
 `~user` to that user's home directory, and canonicalizes it. It fails with
@@ -486,11 +495,17 @@ value, until it restarts.
 
 ## Updating the network rules
 
-`fbk network allow <rule>...`, `fbk network deny <rule>...` and `fbk network
-policy enable|disable` change the network section of `.firebrick.yml` and apply
-it to the sandbox of the working directory. The file is written first, so it
-always holds the rules the sandbox gets. microsandbox fixes the network policy
-when it creates a sandbox, so `fbkd` recreates the sandbox from a disk snapshot.
+`fbk network allow <rule>...`, `fbk network deny <rule>...`, `fbk network policy
+enable|disable` and `fbk network enable|disable` change the network section of
+`.firebrick.yml` and apply it to the sandbox of the working directory. The file
+is written first, so it always holds the settings the sandbox gets. microsandbox
+fixes the network device and policy when it creates a sandbox, so `fbkd`
+recreates the sandbox from a disk snapshot. `fbk network disable` sets `enabled:
+false` and prints `disabled the network of my-project`, `fbk network enable`
+sets `enabled: true` and prints `enabled the network of my-project`; when the
+switch is already set, they print `the network is already disabled` or `the
+network is already enabled`, and for a sandbox that doesn't exist yet `updated
+.firebrick.yml; the change applies when my-project starts`.
 
 ```mermaid
 sequenceDiagram
@@ -558,12 +573,13 @@ processes don't: the sandbox cold-boots, like after `fbk stop` and `fbk start`.
 The new sandbox gets the same name, labels (and so the same SSH host name and
 mise setting and the stored ports), workspace mount, extra mounts, resources and
 `init` setting. When the sandbox doesn't exist, `fbkd` returns `NOT_FOUND` and
-the CLI reports that the rules apply when the sandbox starts. The CLI calls the
-daemon even when the file didn't change, so running the command again applies
-rules that an earlier, failed update or a hand edit left in the file only. The
-`firebrick.network` label makes that cheap: a sandbox that already has the rules
-isn't recreated, and neither is one whose rules aren't enforced, because they
-don't change it.
+the CLI reports that the rules or the change apply when the sandbox starts. The
+CLI calls the daemon even when the file didn't change, so running the command
+again applies rules that an earlier, failed update or a hand edit left in the
+file only. The `firebrick.network` label makes that cheap: a sandbox that
+already has the rules isn't recreated, and neither is one whose rules aren't
+enforced, because they don't change it, nor one without a network device whose
+rules change, because it ignores them.
 
 Between removing and creating the sandbox, it briefly doesn't exist, so an SSH
 connection to its host name fails during that time. Other requests for the

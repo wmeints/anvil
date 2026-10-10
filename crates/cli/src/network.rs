@@ -1,5 +1,6 @@
-//! Egress rules: `fbk network` changes the network section of `.firebrick.yml` and applies it to
-//! the sandbox of the working directory, so the file and the sandbox keep the same rules.
+//! Network settings: `fbk network` changes the network section of `.firebrick.yml` and applies it
+//! to the sandbox of the working directory, so the file and the sandbox keep the same network
+//! switch and rules.
 
 use anyhow::{Context, Result, anyhow};
 use firebrick_spec::{InvalidNetworkRule, NetworkRule, SandboxSpec};
@@ -19,6 +20,8 @@ pub enum NetworkChange {
     Deny(Vec<NetworkRule>),
     /// Turn enforcement of the rules on or off.
     Enforce(bool),
+    /// Give the sandbox a network device, or remove it.
+    Enable(bool),
 }
 
 impl NetworkChange {
@@ -50,7 +53,7 @@ pub async fn update(change: NetworkChange, working_dir: &Path) -> Result<()> {
         None => (new_spec(working_dir).await?, true),
     };
     let (spec, changed) = edit_spec(&spec_path, spec, &change, created)?;
-    let result = apply_to_sandbox(&spec, changed).await;
+    let result = apply_to_sandbox(&change, &spec, changed).await;
 
     if let Some(warning) = enforcement_warning(&change, &spec) {
         eprintln!("{warning}");
@@ -111,6 +114,11 @@ fn apply(change: &NetworkChange, spec: &mut SandboxSpec) -> bool {
         NetworkChange::Enforce(enforce) => {
             std::mem::replace(&mut network.enforce, *enforce) != *enforce
         }
+        NetworkChange::Enable(enable) => {
+            let changed = network.is_enabled() != *enable;
+            network.enabled = Some(*enable);
+            changed
+        }
     };
 
     added || changed
@@ -119,13 +127,17 @@ fn apply(change: &NetworkChange, spec: &mut SandboxSpec) -> bool {
 /// Sends the network section of the spec to the daemon, which applies it to the sandbox when
 /// the sandbox doesn't have it yet, and prints the outcome. `file_changed` tells whether the
 /// spec file was just written.
-async fn apply_to_sandbox(spec: &SandboxSpec, file_changed: bool) -> Result<()> {
+async fn apply_to_sandbox(
+    change: &NetworkChange,
+    spec: &SandboxSpec,
+    file_changed: bool,
+) -> Result<()> {
     let name = &spec.name;
     let mut client = client::connect().await.with_context(|| {
         if file_changed {
             format!(
                 "updated {SPEC_FILE_NAME}, but failed to connect to the daemon; run the command \
-                 again to apply the rules to {name}"
+                 again to apply the change to {name}"
             )
         } else {
             "failed to connect to the daemon".to_string()
@@ -143,14 +155,19 @@ async fn apply_to_sandbox(spec: &SandboxSpec, file_changed: bool) -> Result<()> 
         .await
         .map(|response| response.into_inner().updated);
 
-    println!("{}", outcome(name, file_changed, result)?);
+    println!("{}", outcome(change, name, file_changed, result)?);
 
     Ok(())
 }
 
 /// Returns the message for the daemon's answer, which tells whether the sandbox was recreated.
-/// A sandbox that doesn't exist gets the rules from the spec file when it starts.
-fn outcome(name: &str, file_changed: bool, result: Result<bool, Status>) -> Result<String> {
+/// A sandbox that doesn't exist gets the network settings from the spec file when it starts.
+fn outcome(
+    change: &NetworkChange,
+    name: &str,
+    file_changed: bool,
+    result: Result<bool, Status>,
+) -> Result<String> {
     let sandbox_updated = match result {
         Ok(updated) => Some(updated),
         Err(status) if status.code() == Code::NotFound => None,
@@ -158,11 +175,35 @@ fn outcome(name: &str, file_changed: bool, result: Result<bool, Status>) -> Resu
     };
 
     Ok(match (file_changed, sandbox_updated) {
-        (_, Some(true)) => format!("updated the network rules of {name}"),
-        (false, _) => "network rules are already up to date".to_string(),
+        (_, Some(true)) => updated_message(change, name),
+        (false, _) => unchanged_message(change),
         (true, Some(false)) => format!("updated {SPEC_FILE_NAME}; {name} is already up to date"),
-        (true, None) => format!("updated {SPEC_FILE_NAME}; the rules apply when {name} starts"),
+        (true, None) => format!(
+            "updated {SPEC_FILE_NAME}; the {} when {name} starts",
+            match change {
+                NetworkChange::Enable(_) => "change applies",
+                _ => "rules apply",
+            }
+        ),
     })
+}
+
+/// Returns the message for a sandbox that was recreated with the change.
+fn updated_message(change: &NetworkChange, name: &str) -> String {
+    match change {
+        NetworkChange::Enable(true) => format!("enabled the network of {name}"),
+        NetworkChange::Enable(false) => format!("disabled the network of {name}"),
+        _ => format!("updated the network rules of {name}"),
+    }
+}
+
+/// Returns the message for a change that neither the file nor the sandbox needed.
+fn unchanged_message(change: &NetworkChange) -> String {
+    match change {
+        NetworkChange::Enable(true) => "the network is already enabled".to_string(),
+        NetworkChange::Enable(false) => "the network is already disabled".to_string(),
+        _ => "network rules are already up to date".to_string(),
+    }
 }
 
 /// Returns a warning when the change adds rules to a spec that doesn't enforce them, so the
@@ -247,6 +288,7 @@ mod tests {
             enforce: true,
             allow: rules(&["github.com"]),
             deny: rules(&["example.org"]),
+            ..NetworkSpec::default()
         }));
 
         assert!(apply(
@@ -259,7 +301,7 @@ mod tests {
             NetworkSpec {
                 enforce: true,
                 allow: rules(&["github.com", "example.org"]),
-                deny: vec![],
+                ..NetworkSpec::default()
             }
         );
     }
@@ -270,6 +312,7 @@ mod tests {
             enforce: true,
             allow: rules(&["github.com"]),
             deny: rules(&["example.org"]),
+            ..NetworkSpec::default()
         }));
 
         assert!(!apply(
@@ -305,9 +348,8 @@ mod tests {
         assert_eq!(
             written.network.unwrap(),
             NetworkSpec {
-                enforce: false,
                 allow: rules(&["example.org"]),
-                deny: vec![],
+                ..NetworkSpec::default()
             }
         );
     }
@@ -358,9 +400,8 @@ mod tests {
         assert_eq!(
             written.network.unwrap(),
             NetworkSpec {
-                enforce: false,
                 allow: rules(&["example.org"]),
-                deny: vec![],
+                ..NetworkSpec::default()
             }
         );
     }
@@ -404,6 +445,117 @@ mod tests {
         );
     }
 
+    fn rules_change() -> NetworkChange {
+        NetworkChange::Allow(rules(&["example.org"]))
+    }
+
+    #[test]
+    fn apply_sets_the_network_switch() {
+        let mut spec = spec_with(None);
+
+        assert!(apply(&NetworkChange::Enable(false), &mut spec));
+        assert_eq!(spec.network.as_ref().unwrap().enabled, Some(false));
+        assert!(!apply(&NetworkChange::Enable(false), &mut spec));
+        assert!(apply(&NetworkChange::Enable(true), &mut spec));
+        assert!(spec.network.as_ref().unwrap().is_enabled());
+    }
+
+    #[test]
+    fn apply_treats_a_missing_switch_as_enabled() {
+        let mut spec = spec_with(enforced(true));
+
+        assert!(!apply(&NetworkChange::Enable(true), &mut spec));
+        assert!(apply(&NetworkChange::Enable(false), &mut spec));
+    }
+
+    #[test]
+    fn apply_keeps_the_rules_when_disabling_the_network() {
+        let rules_spec = NetworkSpec {
+            enforce: true,
+            allow: rules(&["github.com"]),
+            ..NetworkSpec::default()
+        };
+        let mut spec = spec_with(Some(rules_spec.clone()));
+
+        apply(&NetworkChange::Enable(false), &mut spec);
+
+        assert_eq!(
+            spec.network.unwrap(),
+            NetworkSpec {
+                enabled: Some(false),
+                ..rules_spec
+            }
+        );
+    }
+
+    #[test]
+    fn edit_spec_writes_the_network_switch() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(SPEC_FILE_NAME);
+        fs::write(&path, "name: my-project\n").unwrap();
+        let spec = firebrick_spec::from_file(&path).unwrap();
+
+        let (_, changed) = edit_spec(&path, spec, &NetworkChange::Enable(false), false).unwrap();
+        let written = firebrick_spec::from_file(&path).unwrap();
+
+        assert!(changed);
+        assert_eq!(written.network.unwrap().enabled, Some(false));
+    }
+
+    #[test]
+    fn outcome_reports_the_network_switch() {
+        let cases = [
+            (true, "enabled the network of my-project"),
+            (false, "disabled the network of my-project"),
+        ];
+
+        for (enable, expected) in cases {
+            assert_eq!(
+                outcome(&NetworkChange::Enable(enable), "my-project", true, Ok(true)).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn outcome_without_a_switch_change_says_the_network_already_has_it() {
+        let cases = [
+            (true, Ok(false), "the network is already enabled"),
+            (true, not_found(), "the network is already enabled"),
+            (false, Ok(false), "the network is already disabled"),
+            (false, not_found(), "the network is already disabled"),
+        ];
+
+        for (enable, result, expected) in cases {
+            assert_eq!(
+                outcome(&NetworkChange::Enable(enable), "my-project", false, result).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn outcome_of_a_switch_for_a_missing_sandbox_says_when_it_applies() {
+        assert_eq!(
+            outcome(
+                &NetworkChange::Enable(false),
+                "my-project",
+                true,
+                not_found()
+            )
+            .unwrap(),
+            "updated .firebrick.yml; the change applies when my-project starts"
+        );
+    }
+
+    #[test]
+    fn warning_is_not_shown_for_the_network_switch() {
+        assert_eq!(
+            enforcement_warning(&NetworkChange::Enable(false), &spec_with(enforced(false))),
+            None
+        );
+    }
+
     fn not_found() -> Result<bool, Status> {
         Err(Status::not_found("couldn't find specified sandbox"))
     }
@@ -412,7 +564,7 @@ mod tests {
     fn outcome_reports_the_updated_sandbox() {
         for file_changed in [true, false] {
             assert_eq!(
-                outcome("my-project", file_changed, Ok(true)).unwrap(),
+                outcome(&rules_change(), "my-project", file_changed, Ok(true)).unwrap(),
                 "updated the network rules of my-project"
             );
         }
@@ -421,7 +573,7 @@ mod tests {
     #[test]
     fn outcome_for_a_missing_sandbox_says_when_the_rules_apply() {
         assert_eq!(
-            outcome("my-project", true, not_found()).unwrap(),
+            outcome(&rules_change(), "my-project", true, not_found()).unwrap(),
             "updated .firebrick.yml; the rules apply when my-project starts"
         );
     }
@@ -429,7 +581,7 @@ mod tests {
     #[test]
     fn outcome_reports_a_sandbox_that_already_has_the_rules() {
         assert_eq!(
-            outcome("my-project", true, Ok(false)).unwrap(),
+            outcome(&rules_change(), "my-project", true, Ok(false)).unwrap(),
             "updated .firebrick.yml; my-project is already up to date"
         );
     }
@@ -438,7 +590,7 @@ mod tests {
     fn outcome_without_any_change_is_up_to_date() {
         for result in [Ok(false), not_found()] {
             assert_eq!(
-                outcome("my-project", false, result).unwrap(),
+                outcome(&rules_change(), "my-project", false, result).unwrap(),
                 "network rules are already up to date"
             );
         }
@@ -451,7 +603,9 @@ mod tests {
         ));
 
         assert_eq!(
-            outcome("my-project", true, result).unwrap_err().to_string(),
+            outcome(&rules_change(), "my-project", true, result)
+                .unwrap_err()
+                .to_string(),
             "failed to update the network rules of my-project"
         );
     }
