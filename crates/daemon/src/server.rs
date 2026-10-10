@@ -11,8 +11,8 @@ use crate::api::{
     RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse,
     SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary, SecretSummary,
     SetSecretRequest, SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
-    StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, attach_request,
-    ssh_tunnel_request, start_sandbox_response,
+    StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest,
+    UpdateNetworkResponse, attach_request, ssh_tunnel_request, start_sandbox_response,
 };
 use crate::forward::{ForwardFailure, ForwardReport};
 use crate::pull::PullUpdate;
@@ -268,6 +268,23 @@ impl SandboxManagementService for FirebrickServer {
         });
 
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
+    /// Replaces the egress rules of an existing sandbox, recreating it from a disk snapshot
+    /// unless it already has them.
+    async fn update_network(
+        &self,
+        request: Request<UpdateNetworkRequest>,
+    ) -> Result<Response<UpdateNetworkResponse>, Status> {
+        let request_data = request.into_inner();
+        let network = network_spec(request_data.network.as_ref())?;
+
+        let updated = self
+            .sandboxes
+            .update_network(&request_data.name, &network)
+            .await?;
+
+        Ok(Response::new(UpdateNetworkResponse { updated }))
     }
 
     /// Stores a secret and adds it to the existing sandboxes. Running sandboxes pick it up the
@@ -1131,5 +1148,28 @@ mod tests {
 
         assert_eq!(status.code(), tonic::Code::NotFound);
         assert_eq!(SecretStore::new(&path).load().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn update_network_rejects_invalid_rule() {
+        let server = FirebrickServer::new(unused_store());
+
+        let status = server
+            .update_network(Request::new(UpdateNetworkRequest {
+                name: "fbk-unit-update-network".to_string(),
+                network: Some(NetworkPolicy {
+                    enforce: true,
+                    allow: vec!["https://example.org".to_string()],
+                    deny: vec![],
+                }),
+            }))
+            .await
+            .expect_err("an invalid rule should be rejected");
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(
+            status.message().contains("https://example.org"),
+            "{status:?}"
+        );
     }
 }
