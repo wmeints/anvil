@@ -13,6 +13,8 @@ service SandboxManagementService {
   rpc SetSecret(SetSecretRequest) returns (SetSecretResponse);
   rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
   rpc RemoveSecret(RemoveSecretRequest) returns (RemoveSecretResponse);
+  rpc ForwardPort(ForwardPortRequest) returns (ForwardPortResponse);
+  rpc RemovePort(RemovePortRequest) returns (RemovePortResponse);
 }
 
 message StartSandboxRequest {
@@ -219,4 +221,31 @@ message RemoveSecretResponse {
   // Existing sandboxes the secret couldn't be removed from. When there are any, the secret
   // stays stored, so removing it again retries them.
   repeated string failed_sandboxes = 1;
+}
+
+message ForwardPortRequest {
+  // Name of the sandbox.
+  string name = 1;
+  // The forward to add to the sandbox's stored ports. It replaces a stored forward with the same
+  // host port. Fails with FAILED_PRECONDITION when the sandbox runs and fbkd can't listen on
+  // the host port, and then nothing changes.
+  PortForward port = 2;
+}
+
+message ForwardPortResponse {
+  // Whether the sandbox runs, so the forward is open now. Otherwise it opens when the sandbox
+  // starts.
+  bool running = 1;
+}
+
+message RemovePortRequest {
+  // Name of the sandbox.
+  string name = 1;
+  // Host port of the forward to remove. Fails with NOT_FOUND when the sandbox doesn't forward it.
+  uint32 host = 2;
+}
+
+message RemovePortResponse {
+  // Whether the sandbox runs, so the forward was closed now.
+  bool running = 1;
 }

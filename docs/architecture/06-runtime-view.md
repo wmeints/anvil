@@ -437,6 +437,82 @@ sends `StartSandbox(name)` with an empty workspace and no ports for a running,
 stopped or crashed sandbox; the daemon then falls back to the sandbox name when
 the sandbox still needs a host name, and opens the stored forwards.
 
+### Forwarding a port
+
+`fbk port forward` and `fbk port rm` change the forwards of the working
+directory's sandbox without `fbk start`, and record the change in
+`.firebrick.yml`, so the file stays the record of the sandbox's ports:
+
+```sh
+fbk port forward 3000          # host localhost:3000 -> sandbox port 3000
+fbk port forward 8080:5173     # host localhost:8080 -> sandbox port 5173
+fbk port rm 8080               # closes the forward on host port 8080
+```
+
+The daemon is the source of truth for what's open, so fbk writes the file only
+after the daemon accepted the change. It edits the `ports` block as text with
+`firebrick_spec::add_port` or `remove_port`, which keeps comments and other
+fields, writes `3000` when host and guest port match and `"8080:5173"`
+otherwise, and checks that the result still parses. Forwarding a host port that
+is already listed replaces its guest port in both the daemon and the file.
+
+- The sandbox is stopped: fbkd only updates the `firebrick.ports` label, and fbk
+  prints `Sandbox <name> isn't running; the port applies when it starts.`
+- The sandbox doesn't exist yet: fbk skips the RPC, updates the file and prints
+  `Sandbox <name> doesn't exist yet; the port applies when it's created.`
+- There's no `.firebrick.yml`: fbk creates one with the resolved sandbox name
+  and the port.
+- The argument isn't `<port>` or `<host>:<guest>` with ports from 1 to 65535:
+  clap rejects it before fbk contacts the daemon.
+- The host port is in use by another process or another sandbox's forward:
+  `ForwardPort` reopens the old forwards and fails with `FAILED_PRECONDITION`,
+  and fbk prints `couldn't forward localhost:<port>: <reason>`. Neither the
+  label nor the file changes.
+- `fbk port rm` with a host port that isn't forwarded: `RemovePort` fails with
+  `NOT_FOUND` (or, for a sandbox that doesn't exist, the file doesn't list it),
+  and fbk prints `port <port> isn't forwarded for sandbox <name>`.
+- `.firebrick.yml` is invalid: fbk prints the diagnostic like `fbk validate` and
+  changes nothing.
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer
+    participant CLI as fbk
+    participant F as .firebrick.yml
+    participant D as fbkd
+    participant MS as microsandbox
+
+    Dev->>CLI: fbk port forward 8080:5173
+    CLI->>F: Read and parse (or resolve the default name)
+    alt Invalid spec
+        CLI-->>Dev: .firebrick.yml:line:column: error: message
+    end
+    CLI->>CLI: Edit the ports block in the text and parse the result
+    CLI->>D: GetSandbox(name)
+    alt NOT_FOUND
+        CLI->>F: Write the edited text
+        CLI-->>Dev: Sandbox <name> doesn't exist yet; the port applies when it's created.
+    else Sandbox exists
+        CLI->>D: ForwardPort(name, 8080 -> 5173)
+        D->>MS: Sandbox::get(name), read firebrick.ports
+        opt Sandbox runs
+            D->>D: Reconcile forwards with the new list
+            alt Host port can't be listened on
+                D->>D: Reconcile forwards with the old list
+                D-->>CLI: FAILED_PRECONDITION(reason)
+                CLI-->>Dev: couldn't forward localhost:8080: reason
+            end
+        end
+        D->>MS: Store firebrick.ports label (next_start, no restart)
+        D-->>CLI: ForwardPortResponse(running)
+        CLI->>F: Write the edited text
+        CLI-->>Dev: Forwarding localhost:8080 -> sandbox port 5173<br/>or: Sandbox <name> isn't running; the port applies when it starts.
+    end
+```
+
+`fbk port rm` follows the same steps with `RemovePort`, which closes the forward
+of a running sandbox.
+
 ## Setting a secret
 
 `fbk secret set <name> <value>` stores a secret that sandboxes use without

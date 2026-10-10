@@ -5,9 +5,10 @@ use crate::api::sandbox_management_service_server::{
     SandboxManagementService, SandboxManagementServiceServer,
 };
 use crate::api::{
-    AttachRequest, AttachResponse, AttachStart, GetSandboxRequest, GetSandboxResponse,
-    ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse, Mount,
-    NetworkPolicy, PortForward, PortForwardFailure, PortForwards, RemoveSandboxRequest,
+    AttachRequest, AttachResponse, AttachStart, ForwardPortRequest, ForwardPortResponse,
+    GetSandboxRequest, GetSandboxResponse, ListSandboxesRequest, ListSandboxesResponse,
+    ListSecretsRequest, ListSecretsResponse, Mount, NetworkPolicy, PortForward, PortForwardFailure,
+    PortForwards, RemovePortRequest, RemovePortResponse, RemoveSandboxRequest,
     RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SandboxResources,
     SandboxStatus, SandboxSummary, SecretSummary, SetSecretRequest, SetSecretResponse,
     SshTunnelRequest, SshTunnelResponse, StartSandboxRequest, StartSandboxResponse,
@@ -267,6 +268,36 @@ impl SandboxManagementService for FirebrickServer {
         Ok(Response::new(RemoveSecretResponse { failed_sandboxes }))
     }
 
+    /// Adds a forward to a sandbox's stored ports and opens it when the sandbox runs.
+    async fn forward_port(
+        &self,
+        request: Request<ForwardPortRequest>,
+    ) -> Result<Response<ForwardPortResponse>, Status> {
+        let request = request.into_inner();
+        let port = request
+            .port
+            .ok_or_else(|| Status::invalid_argument("port is required"))?;
+        let port = PortMapping {
+            host: port_number(port.host)?,
+            guest: port_number(port.guest)?,
+        };
+        let running = self.sandboxes.forward_port(&request.name, port).await?;
+
+        Ok(Response::new(ForwardPortResponse { running }))
+    }
+
+    /// Removes a forward from a sandbox's stored ports and closes it when the sandbox runs.
+    async fn remove_port(
+        &self,
+        request: Request<RemovePortRequest>,
+    ) -> Result<Response<RemovePortResponse>, Status> {
+        let request = request.into_inner();
+        let host = port_number(request.host)?;
+        let running = self.sandboxes.remove_port(&request.name, host).await?;
+
+        Ok(Response::new(RemovePortResponse { running }))
+    }
+
     /// Stops a running sandbox.
     async fn stop_sandbox(
         &self,
@@ -427,15 +458,21 @@ fn parse_size_mib(size: &str) -> Result<u32, SandboxError> {
         .map_err(|err| SandboxError::InvalidArgument(err.to_string()))
 }
 
-/// Serves the gRPC API on the socket until SIGINT or SIGTERM is received.
+/// Reopens the port forwards of the sandboxes that are running, then serves the gRPC API on
+/// the socket until SIGINT or SIGTERM is received. The caller makes sure no other daemon serves
+/// on the socket, so it doesn't take that daemon's host ports.
 pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerError> {
-    serve(socket_path, secrets, shutdown_signal()).await
+    let service = FirebrickServer::new(secrets);
+    service.sandboxes.restore_forwards().await;
+
+    serve(socket_path, service, shutdown_signal()).await
 }
 
-/// Serves the gRPC API on the socket until `shutdown` completes, then removes the socket.
+/// Serves the gRPC API on the socket with `service` until `shutdown` completes, then removes
+/// the socket.
 pub async fn serve(
     socket_path: &Path,
-    secrets: SecretStore,
+    service: FirebrickServer,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), ServerError> {
     if socket_path.exists() {
@@ -448,8 +485,6 @@ pub async fn serve(
     })?;
     let incoming = UnixListenerStream::new(listener)
         .filter(move |conn| conn.as_ref().map_or(true, |s| accept(s, daemon_uid)));
-    let service = FirebrickServer::new(secrets);
-    service.sandboxes.restore_forwards().await;
 
     // Dropping the service when the server stops closes the forwards.
     Server::builder()
@@ -562,7 +597,7 @@ mod tests {
         path: PathBuf,
         stop: tokio::sync::oneshot::Receiver<()>,
     ) -> Result<(), ServerError> {
-        serve(&path, unused_store(), async {
+        serve(&path, FirebrickServer::new(unused_store()), async {
             let _ = stop.await;
         })
         .await

@@ -1,6 +1,7 @@
 pub mod client;
 pub mod init;
 pub mod manage;
+pub mod port;
 pub mod secret;
 pub mod session;
 pub mod ssh;
