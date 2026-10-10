@@ -293,6 +293,7 @@ agent user owns the mounted files, like the workspace.
 | `network.enforce`   | Deny outgoing traffic unless a rule allows it. See [Network](#network). | `false`                                     |
 | `network.allow`     | Destinations the sandbox may connect to.                                | Empty                                       |
 | `network.deny`      | Destinations the sandbox may not connect to, even if allowed.           | Empty                                       |
+| `ports`             | Host ports to forward to the sandbox. See [Ports](#ports).              | Empty                                       |
 | `mounts[].host`     | Host directory: absolute, `~/...`, `~user/...` or relative to the spec. | Required per mount                          |
 | `mounts[].guest`    | Absolute guest path to mount it at. Each path may appear only once.     | Required per mount                          |
 | `mounts[].readonly` | Mount the directory read-only.                                          | `false`                                     |
@@ -320,8 +321,9 @@ when the sandbox stops, and `fbk rm` deletes it with the sandbox.
 
 The image, init, mise setting, resources, volumes, network rules and mounts
 apply when the sandbox is created. To change them for an existing sandbox, run
-`fbk rm` and start it again. Sandboxes created by an older version have no
-Docker data disk until you recreate them.
+`fbk rm` and start it again. `ports` is the exception: `fbk start` applies it to
+an existing sandbox, also while it runs. Sandboxes created by an older version
+have no Docker data disk until you recreate them.
 
 ### Network
 
@@ -377,6 +379,37 @@ Keep in mind that:
 - A secret's allowed hosts must be allowed by the network rules too.
 - `mise install` downloads its tools when the sandbox starts, so allow the hosts
   it needs, or set `mise: false`.
+
+### Ports
+
+To open a server in the sandbox, such as a dev server, from the browser on your
+host, list its port under `ports`, written like Docker Compose:
+
+```yaml
+name: my-project
+ports:
+  - 3000 # host localhost:3000 -> sandbox port 3000
+  - "8080:5173" # host localhost:8080 -> sandbox port 5173
+```
+
+`fbk start` prints each forward:
+
+```text
+Forwarding localhost:3000 -> sandbox port 3000
+Forwarding localhost:8080 -> sandbox port 5173
+```
+
+The forwards reach `127.0.0.1` in the sandbox, so a server that only listens on
+`localhost` there works. They listen on `localhost` on the host only, never on
+your network. To change them, edit the list and run `fbk start` again; the
+sandbox keeps running and unchanged forwards keep their connections. `fbk stop`
+and `fbk rm` close them, and an SSH connection that starts the sandbox opens
+them again.
+
+When a host port is already in use, the sandbox still starts and `fbk start`
+prints `warning: couldn't forward localhost:<port>: <reason>`. Free the port and
+run `fbk start` again. Ports must be from 1 to 65535, and each host port may
+appear once.
 
 ### Secrets
 

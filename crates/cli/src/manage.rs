@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
-use firebrick_spec::{MountSpec, NetworkRule, NetworkSpec, SandboxSpec};
+use firebrick_spec::{MountSpec, NetworkRule, NetworkSpec, PortMapping, SandboxSpec};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
@@ -14,9 +14,9 @@ use tonic::transport::Channel;
 
 use crate::api::{
     GetSandboxRequest, GetSandboxResponse, ListSandboxesRequest, ListSandboxesResponse, Mount,
-    NetworkPolicy, RemoveSandboxRequest, SandboxResources, SandboxStatus, SandboxSummary,
-    SandboxVolumes, StartSandboxRequest, StopSandboxRequest,
-    sandbox_management_service_client::SandboxManagementServiceClient,
+    NetworkPolicy, PortForward, PortForwards, RemoveSandboxRequest, SandboxResources,
+    SandboxStatus, SandboxSummary, SandboxVolumes, StartSandboxRequest, StartSandboxResponse,
+    StopSandboxRequest, sandbox_management_service_client::SandboxManagementServiceClient,
 };
 use crate::table;
 
@@ -31,7 +31,7 @@ pub async fn start_sandbox(
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
-    let name = match name {
+    let (name, started) = match name {
         Some(name) => start_named_sandbox(name, client).await?,
         None => start_working_dir_sandbox(working_dir, client).await?,
     };
@@ -41,9 +41,35 @@ pub async fn start_sandbox(
         .await?
         .into_inner();
 
+    print!("{}", forward_lines(&started));
     print!("{}", connect_instructions(&sandbox));
 
     Ok(())
+}
+
+/// Returns a line per open forward of the sandbox.
+fn forward_lines(started: &StartSandboxResponse) -> String {
+    started
+        .forwards
+        .iter()
+        .map(|forward| {
+            format!(
+                "Forwarding localhost:{} -> sandbox port {}\n",
+                forward.host, forward.guest
+            )
+        })
+        .collect()
+}
+
+/// Prints a warning to stderr for each forward the daemon couldn't open.
+fn warn_failed_forwards(started: &StartSandboxResponse) {
+    for failure in &started.failed_forwards {
+        let host = failure.port.as_ref().map_or(0, |port| port.host);
+        eprintln!(
+            "warning: couldn't forward localhost:{host}: {}",
+            failure.reason
+        );
+    }
 }
 
 /// Returns the commands that connect to the sandbox over SSH and open its workspace in VS Code
@@ -62,54 +88,79 @@ fn connect_instructions(sandbox: &GetSandboxResponse) -> String {
     }
 }
 
-/// Starts the existing sandbox with the name and returns the name.
+/// Starts the existing sandbox with the name with its stored ports, and returns the name with
+/// the daemon's response.
 async fn start_named_sandbox(
     name: String,
     client: &mut SandboxManagementServiceClient<Channel>,
-) -> Result<String> {
+) -> Result<(String, StartSandboxResponse)> {
     // The daemon falls back to the sandbox name for the host name when the workspace is empty.
-    if !start_if_exists(&name, Path::new(""), client).await? {
+    let Some(started) = start_if_exists(start_request(&name, Path::new(""), None), client).await?
+    else {
         bail!("sandbox {name} doesn't exist; run fbk start in its project directory to create it");
-    }
+    };
 
-    Ok(name)
+    warn_failed_forwards(&started);
+
+    Ok((name, started))
 }
 
-/// Starts the sandbox for the working directory, creating it when needed, and returns its name.
+/// Starts the sandbox for the working directory, creating it when needed, and returns its name
+/// with the daemon's response.
 async fn start_working_dir_sandbox(
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
-) -> Result<String> {
+) -> Result<(String, StartSandboxResponse)> {
     let spec = resolve_spec(working_dir, client).await?;
     let name = spec.name.clone();
 
-    ensure_running(spec, working_dir, client).await?;
+    let started = ensure_running(spec, working_dir, client).await?;
 
-    Ok(name)
+    Ok((name, started))
 }
 
 const STARTING_TIMEOUT: Duration = Duration::from_secs(120);
 const STARTING_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Makes sure the sandbox exists and is running, creating or starting it when needed. Fails
-/// when an existing sandbox mounts another directory than the workspace.
+/// Makes sure the sandbox exists and is running, creating or starting it when needed, and
+/// sends the spec's ports, also to a running sandbox. Warns about forwards the daemon couldn't
+/// open and returns its response. Fails when an existing sandbox mounts another directory than
+/// the workspace.
 pub(crate) async fn ensure_running(
     spec: SandboxSpec,
     workspace: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
-) -> Result<()> {
+) -> Result<StartSandboxResponse> {
     check_workspace_owner(&spec.name, workspace, client).await?;
 
-    if start_if_exists(&spec.name, workspace, client).await? {
-        return Ok(());
+    let ports = port_forwards(&spec.ports);
+    let request = start_request(&spec.name, workspace, Some(ports));
+    let started = match start_if_exists(request, client).await? {
+        Some(started) => started,
+        None => {
+            let request = build_start_request(spec, workspace)?;
+
+            eprintln!("Creating sandbox {}...", request.name);
+            client.start_sandbox(request).await?.into_inner()
+        }
+    };
+
+    warn_failed_forwards(&started);
+
+    Ok(started)
+}
+
+/// Turns the ports of a spec into their API message.
+fn port_forwards(ports: &[PortMapping]) -> PortForwards {
+    PortForwards {
+        ports: ports
+            .iter()
+            .map(|port| PortForward {
+                host: port.host.into(),
+                guest: port.guest.into(),
+            })
+            .collect(),
     }
-
-    let request = build_start_request(spec, workspace)?;
-
-    eprintln!("Creating sandbox {}...", request.name);
-    client.start_sandbox(request).await?;
-
-    Ok(())
 }
 
 /// Fails when the sandbox exists and mounts another host directory than the workspace, so two
@@ -158,25 +209,35 @@ fn ensure_same_workspace(name: &str, host_path: &str, working_dir: &Path) -> Res
     )
 }
 
-/// Starts the sandbox when it exists, waiting while it's starting. Returns `false` when the
-/// sandbox doesn't exist.
+/// Returns the request that starts an existing sandbox. The workspace lets the daemon name
+/// sandboxes created before SSH support, and `None` ports keep the stored ones.
+fn start_request(name: &str, workspace: &Path, ports: Option<PortForwards>) -> StartSandboxRequest {
+    StartSandboxRequest {
+        name: name.to_string(),
+        workspace: workspace.to_string_lossy().into_owned(),
+        ports,
+        ..Default::default()
+    }
+}
+
+/// Sends the start request when the sandbox exists, waiting while it's starting. Returns the
+/// daemon's response, or `None` when the sandbox doesn't exist.
 async fn start_if_exists(
-    name: &str,
-    workspace: &Path,
+    request: StartSandboxRequest,
     client: &mut SandboxManagementServiceClient<Channel>,
-) -> Result<bool> {
+) -> Result<Option<StartSandboxResponse>> {
+    let name = request.name.clone();
     let deadline = Instant::now() + STARTING_TIMEOUT;
 
     loop {
-        let Some(status) = sandbox_status(client, name).await? else {
-            return Ok(false);
+        let Some(status) = sandbox_status(client, &name).await? else {
+            return Ok(None);
         };
 
-        if start_existing_sandbox(name, status, workspace, client)
-            .await?
-            .is_break()
+        if let ControlFlow::Break(started) =
+            start_existing_sandbox(status, request.clone(), client).await?
         {
-            return Ok(true);
+            return Ok(Some(started));
         }
 
         if Instant::now() >= deadline {
@@ -203,30 +264,26 @@ async fn sandbox_status(
     }
 }
 
-/// Starts an existing sandbox when it's stopped. Returns `Continue` while the sandbox is still
+/// Sends the start request to an existing sandbox that is running or stopped, so a stopped one
+/// starts and both get the request's ports. Returns `Continue` while the sandbox is still
 /// starting, and fails when it can't be started now.
 async fn start_existing_sandbox(
-    name: &str,
     status: SandboxStatus,
-    workspace: &Path,
+    request: StartSandboxRequest,
     client: &mut SandboxManagementServiceClient<Channel>,
-) -> Result<ControlFlow<()>> {
+) -> Result<ControlFlow<StartSandboxResponse>> {
+    let name = request.name.clone();
+
     match status {
-        SandboxStatus::Running => Ok(ControlFlow::Break(())),
         SandboxStatus::Starting => Ok(ControlFlow::Continue(())),
-        SandboxStatus::Stopped | SandboxStatus::Crashed => {
-            eprintln!("Starting sandbox {name}...");
+        SandboxStatus::Running | SandboxStatus::Stopped | SandboxStatus::Crashed => {
+            if status != SandboxStatus::Running {
+                eprintln!("Starting sandbox {name}...");
+            }
 
-            // The workspace lets the daemon name sandboxes created before SSH support.
-            client
-                .start_sandbox(StartSandboxRequest {
-                    name: name.to_string(),
-                    workspace: workspace.to_string_lossy().into_owned(),
-                    ..Default::default()
-                })
-                .await?;
+            let started = client.start_sandbox(request).await?.into_inner();
 
-            Ok(ControlFlow::Break(()))
+            Ok(ControlFlow::Break(started))
         }
         status @ (SandboxStatus::Stopping | SandboxStatus::Paused) => {
             bail!(
@@ -266,6 +323,7 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> Result<StartSandb
         init: Some(spec.init.unwrap_or(true)),
         mise: Some(spec.mise.unwrap_or(true)),
         network: spec.network.map(network_policy),
+        ports: Some(port_forwards(&spec.ports)),
         mounts,
     })
 }
@@ -957,6 +1015,51 @@ mod tests {
     }
 
     #[test]
+    fn start_request_carries_ports_from_spec() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join(SPEC_FILE_NAME),
+            "name: dev\nports: [3000, \"8080:5173\"]\n",
+        )
+        .unwrap();
+
+        let request =
+            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
+
+        assert_eq!(
+            request.ports,
+            Some(PortForwards {
+                ports: vec![
+                    PortForward {
+                        host: 3000,
+                        guest: 3000
+                    },
+                    PortForward {
+                        host: 8080,
+                        guest: 5173
+                    },
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn forward_lines_name_host_and_sandbox_ports() {
+        let started = StartSandboxResponse {
+            forwards: vec![PortForward {
+                host: 8080,
+                guest: 5173,
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            forward_lines(&started),
+            "Forwarding localhost:8080 -> sandbox port 5173\n"
+        );
+    }
+
+    #[test]
     fn start_request_fills_in_defaults() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(SPEC_FILE_NAME), "name: dev\n").unwrap();
@@ -971,6 +1074,7 @@ mod tests {
         assert_eq!(request.mise, Some(true));
         assert_eq!(request.network, None);
         assert!(request.mounts.is_empty());
+        assert_eq!(request.ports, Some(PortForwards { ports: vec![] }));
         assert_eq!(resources.cpu, u32::from(defaults.cpu));
         assert_eq!(resources.memory, defaults.memory);
         assert_eq!(

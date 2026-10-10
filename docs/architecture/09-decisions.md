@@ -18,4 +18,5 @@
 - [ADR 0016 - Run Docker in the sandbox VM](decisions/0016-run-docker-in-the-sandbox-vm.md)
 - [ADR 0017 - Trust the workspace's mise config inside the sandbox](decisions/0017-trust-the-workspaces-mise-config-inside-the-sandbox.md)
 - [ADR 0018 - Enforce egress with microsandbox's network policy](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)
-- [ADR 0021 - Look up user home directories with nix](decisions/0021-look-up-user-home-directories-with-nix.md)
+- [ADR 0019 - Forward ports through the SSH server's direct-tcpip](decisions/0019-forward-ports-through-the-ssh-servers-direct-tcpip.md)
+- [ADR 0020 - Look up user home directories with nix](decisions/0020-look-up-user-home-directories-with-nix.md)

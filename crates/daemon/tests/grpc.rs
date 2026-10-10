@@ -10,16 +10,17 @@ use std::time::Duration;
 use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, GetSandboxRequest,
-    GetSandboxResponse, ListSandboxesRequest, Mount, NetworkPolicy, RemoveSandboxRequest,
-    SandboxResources, SandboxStatus, SandboxVolumes, StartSandboxRequest, StopSandboxRequest,
-    attach_request, attach_response,
+    GetSandboxResponse, ListSandboxesRequest, Mount, NetworkPolicy, PortForward, PortForwards,
+    RemoveSandboxRequest, SandboxResources, SandboxStatus, SandboxVolumes, StartSandboxRequest,
+    StartSandboxResponse, StopSandboxRequest, attach_request, attach_response,
 };
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{mise, sandboxes, server};
 use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
 use microsandbox::sandbox::{OwnedVolumeStorage, RootfsSource, SandboxSpec, VolumeMount};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
@@ -1517,4 +1518,153 @@ async fn start_sandbox_rejects_invalid_network_rule() {
 
     assert_eq!(status.code(), Code::InvalidArgument);
     assert!(status.message().contains("github.com:443"), "{status:?}");
+}
+
+/// Returns a host port that nothing listens on at the moment.
+async fn free_port() -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+
+    listener.local_addr().unwrap().port()
+}
+
+/// Returns the ports message that forwards the host port to the guest port.
+fn forward_ports(host: u16, guest: u16) -> PortForwards {
+    PortForwards {
+        ports: vec![PortForward {
+            host: host.into(),
+            guest: guest.into(),
+        }],
+    }
+}
+
+/// Connects to the forwarded host port until the guest listens, sends `sent` and returns once
+/// the guest answers with `expected`. A connection closes right away while nothing listens in
+/// the guest.
+async fn exchange_through_forward(host: u16, sent: &[u8], expected: &str) {
+    let deadline = Instant::now() + STATUS_TIMEOUT;
+
+    while Instant::now() < deadline {
+        if received_reply(host, sent, expected).await {
+            return;
+        }
+
+        sleep(POLL_INTERVAL).await;
+    }
+
+    panic!("the guest never answered {expected:?} on localhost:{host}");
+}
+
+/// Sends the bytes over a new connection to the host port and returns whether the reply
+/// contains `expected` before the connection closes.
+async fn received_reply(host: u16, sent: &[u8], expected: &str) -> bool {
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", host)).await else {
+        return false;
+    };
+    let _ = stream.write_all(sent).await;
+    let mut received = Vec::new();
+    let mut buffer = [0; 256];
+
+    while let Ok(Ok(count @ 1..)) =
+        tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buffer)).await
+    {
+        received.extend_from_slice(&buffer[..count]);
+
+        if String::from_utf8_lossy(&received).contains(expected) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Reads session output until it contains `expected`.
+async fn wait_for_output(responses: &mut Streaming<AttachResponse>, expected: &str) {
+    let mut output = Vec::new();
+
+    while !String::from_utf8_lossy(&output).contains(expected) {
+        let response = tokio::time::timeout(STATUS_TIMEOUT, responses.message())
+            .await
+            .expect("the session printed nothing in time")
+            .expect("attach stream failed")
+            .expect("the session ended before printing the expected output");
+
+        if let Some(attach_response::Message::Output(data)) = response.message {
+            output.extend(data);
+        }
+    }
+}
+
+/// Port the guest server listens on in the port forwarding test.
+const GUEST_PORT: u16 = 4000;
+
+/// Runs `nc -l` on the guest port and checks that bytes go both ways between it and a
+/// connection to the forwarded host port.
+async fn check_forward_both_ways(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    sandbox: &str,
+    host: u16,
+) {
+    // nc sends its input to the connection and prints what it receives.
+    let port = GUEST_PORT.to_string();
+    let (tx, mut responses) = open_session(
+        client,
+        attach_start(sandbox, "nc", &["-l", "-p", &port], DEFAULT_SIZE),
+    )
+    .await;
+    tx.send(attach_input(b"from-guest\n")).await.unwrap();
+
+    exchange_through_forward(host, b"from-host\n", "from-guest").await;
+    wait_for_output(&mut responses, "from-host").await;
+}
+
+/// Starts the sandbox with the request, waits until it runs and returns the daemon's response.
+async fn start_with_ports(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    request: StartSandboxRequest,
+) -> StartSandboxResponse {
+    let name = request.name.clone();
+    let started = client
+        .start_sandbox(request)
+        .await
+        .expect("failed to start sandbox")
+        .into_inner();
+    wait_for_status(client, &name, SandboxStatus::Running).await;
+
+    started
+}
+
+#[tokio::test]
+async fn forwards_host_port_to_sandbox_and_closes_removed_port() {
+    const NAME: &str = "fbk-it-port-forward";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("port-forward").await;
+    let mut client = daemon.client().await;
+    let host = free_port().await;
+    let request = StartSandboxRequest {
+        // busybox in alpine has `nc`.
+        image: "alpine:3.22".to_string(),
+        ports: Some(forward_ports(host, GUEST_PORT)),
+        ..start_request(NAME)
+    };
+
+    let started = start_with_ports(&mut client, request.clone()).await;
+    check_forward_both_ways(&mut client, NAME, host).await;
+    let restarted = start_with_ports(
+        &mut client,
+        StartSandboxRequest {
+            ports: Some(PortForwards::default()),
+            ..request
+        },
+    )
+    .await;
+    let closed = TcpStream::connect(("127.0.0.1", host)).await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert_eq!(started.forwards, forward_ports(host, GUEST_PORT).ports);
+    assert!(started.failed_forwards.is_empty());
+    assert!(restarted.forwards.is_empty());
+    assert!(closed.is_err(), "localhost:{host} should be closed");
 }

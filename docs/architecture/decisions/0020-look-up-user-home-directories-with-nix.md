@@ -1,4 +1,4 @@
-# 21. Look up user home directories with nix
+# 20. Look up user home directories with nix
 
 ## Status
 

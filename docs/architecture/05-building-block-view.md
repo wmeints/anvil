@@ -116,6 +116,7 @@ C4Component
         Component(runtime, "runtime", "Rust", "Runtime installation")
         Component(secrets, "secrets", "serde_yaml", "Secrets")
         Component(network, "network", "microsandbox-network", "Egress rules")
+        Component(forward, "forward", "russh", "Port forwards")
     }
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
@@ -134,6 +135,8 @@ C4Component
     Rel(server, utils, "Finds socket")
     Rel(sandboxes, secrets, "Loads, stores and applies secrets")
     Rel(sandboxes, network, "Applies egress rules")
+    Rel(sandboxes, forward, "Reconciles port forwards")
+    Rel(forward, microsandbox, "Opens direct-tcpip channels")
     Rel(sandboxes, ssh, "Host names, SSH config")
     Rel(sandboxes, vscode, "Syncs Remote-SSH platforms")
     Rel(sandboxes, zed, "Syncs remote projects")
@@ -152,7 +155,9 @@ C4Component
   `$XDG_STATE_HOME/firebrick`, exits when the socket is already in use, makes
   sure the microsandbox runtime and the SSH keys exist, makes the microsandbox
   `db` directory readable by the user only, syncs the SSH config and serves the
-  API until `SIGINT` or `SIGTERM`.
+  API until `SIGINT` or `SIGTERM`. Before serving, `server` reopens the port
+  forwards of the sandboxes that are running, and when it stops, their listeners
+  close.
 - `server` - Adapts `SandboxManagementService` to the modules below: it converts
   each request into plain values, calls `sandboxes`, `session` or `tunnel`, and
   converts the result into a response. It converts requested resources and
@@ -160,12 +165,14 @@ C4Component
   (for the Docker volume also when the request's `docker` size is empty), and
   rejects invalid values with `INVALID_ARGUMENT`. It parses the network rules of
   a request with `firebrick-spec` and rejects an invalid rule with
-  `INVALID_ARGUMENT`, also when the sandbox already exists. It maps the
-  `SandboxError` of `sandboxes` to gRPC status codes in one place. It refuses to
-  start when the socket already exists, gives the socket mode `0600` after
-  binding it and removes it on shutdown. It only hands a connection to tonic
-  when the peer's UID, read with `SO_PEERCRED`, is the daemon's own UID or root
-  (see
+  `INVALID_ARGUMENT`, also when the sandbox already exists. It rejects a port
+  outside 1 to 65535 or a host port that is listed twice with
+  `INVALID_ARGUMENT`, and returns the open and failed forwards in the
+  `StartSandbox` response. It maps the `SandboxError` of `sandboxes` to gRPC
+  status codes in one place. It refuses to start when the socket already exists,
+  gives the socket mode `0600` after binding it and removes it on shutdown. It
+  only hands a connection to tonic when the peer's UID, read with `SO_PEERCRED`,
+  is the daemon's own UID or root (see
   [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
@@ -201,7 +208,12 @@ C4Component
   the store, keeps it in the store when a sandbox fails so the removal can be
   retried, and returns `NOT_FOUND` for an unknown name. A lock around the secret
   store makes sure a sandbox that is being created can't miss a secret that is
-  being set.
+  being set. It stores a sandbox's port mappings in the `firebrick.ports` label
+  (`3000:3000,8080:5173`), updates it from each `StartSandbox` that carries
+  ports, also for a running sandbox (as a `next_start` change, so the VM keeps
+  running), and keeps it when a request carries none. Once a sandbox runs after
+  `StartSandbox`, or after `SshTunnel` started it, it hands the stored ports to
+  `forward`; `StopSandbox` and `RemoveSandbox` close the sandbox's forwards.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and
@@ -209,6 +221,26 @@ C4Component
 - `tunnel` - Serves an `SshTunnel` connection with microsandbox's SSH server
   over an in-memory pipe, copying bytes in both directions until the SSH session
   closes. `sandboxes` boots the sandbox when needed.
+- `forward` - Forwards host loopback ports to a sandbox's loopback
+  ([ADR 0019](decisions/0019-forward-ports-through-the-ssh-servers-direct-tcpip.md)).
+  `Forwards::apply` reconciles a sandbox's open forwards with a list of
+  mappings: it closes the ones that aren't listed, then opens the new ones, and
+  leaves unchanged ones and their connections alone. Each forward listens on
+  `127.0.0.1:<host>` and, when the host has IPv6 loopback, on `[::1]:<host>`;
+  never on other addresses. Before it listens, it checks that no socket listens
+  on the port at the wildcard address, because on macOS a loopback bind succeeds
+  next to such a listener. A host port that is in use, by another process or
+  another sandbox's forward, or that needs privileges is logged as a warning and
+  reported, and the next `apply` tries it again. `Forwards::close` closes the
+  listeners and their connections and returns once the ports are free. Each
+  accepted connection goes through a `Connector`; `SshConnector` opens a
+  `direct-tcpip` channel to `127.0.0.1:<guest>` over one SSH session per
+  sandbox, which it opens on first use and reopens when it has closed; opening a
+  session to one sandbox doesn't hold up connections to the others. The session
+  runs microsandbox's SSH server over an in-memory pipe with keys generated for
+  that session and no inactivity timeout, so forwards stay open while the
+  sandbox runs. When nothing listens on the guest port, the host connection is
+  closed and logged at `debug`.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,
@@ -277,16 +309,20 @@ C4Component
 - `firebrick-spec` (`crates/spec`) - Parses `.firebrick.yml` into a
   `SandboxSpec` with a `name`, an optional `image`, optional `init` and `mise`
   flags, optional `resources` (`cpu`, `memory`), `volumes` (`docker`, the size
-  of the Docker data disk) and an optional `network` section (`enforce`, default
-  `false`, and the `allow` and `deny` rules) and optional `mounts` (`host`,
-  `guest` and `readonly`, default `false`), rejects unknown fields and reports
-  the line and column of a problem. `guest_mount_path` checks a mount's `guest`
-  the way microsandbox does: an absolute path other than `/`, without `..`, `:`,
-  `;` or `,`. It normalizes the path (no `.` parts or trailing slash), and each
+  of the Docker data disk), an optional `network` section (`enforce`, default
+  `false`, and the `allow` and `deny` rules), an optional `ports` list and
+  optional `mounts` (`host`, `guest` and `readonly`, default `false`), rejects
+  unknown fields and reports the line and column of a problem. A `PortMapping`
+  in `ports` is written like Docker Compose: `3000` forwards host port 3000 to
+  guest port 3000, and `"8080:5173"` host port 8080 to guest port 5173. Ports
+  outside 1 to 65535, other forms and a host port that appears twice are
+  reported at the entry. `guest_mount_path` checks a mount's `guest` the way
+  microsandbox does: an absolute path other than `/`, without `..`, `:`, `;` or
+  `,`. It normalizes the path (no `.` parts or trailing slash), and each
   normalized path may appear only once. The daemon uses the same check. The CLI
   resolves each mount's `host` against the spec file's directory, expanding `~`
   to `$HOME` and `~user` to that user's home directory
-  ([ADR 0021](decisions/0021-look-up-user-home-directories-with-nix.md)), to the
+  ([ADR 0020](decisions/0020-look-up-user-home-directories-with-nix.md)), to the
   canonical path of an existing directory before it sends `StartSandbox`.
   `NetworkRule` parses a rule: a host name, `*.` plus a domain of at least two
   labels, an IPv4 or IPv6 address or a CIDR range. `*` alone, other wildcards,
@@ -305,7 +341,9 @@ C4Component
 
 The image, init, mise setting, resources, network rules and mounts apply when a
 sandbox is created. Changing them in `.firebrick.yml` doesn't change an existing
-sandbox; remove it with `fbk rm` and start it again.
+sandbox; remove it with `fbk rm` and start it again. `ports` is the exception:
+`fbk start` and `fbk run` send them to existing and running sandboxes too, so a
+changed list applies without a restart.
 
 ## Base image
 

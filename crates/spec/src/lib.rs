@@ -91,6 +91,14 @@ pub struct SandboxSpec {
     pub volumes: VolumesSpec,
     /// Egress rules of the sandbox. Without it, the sandbox gets microsandbox's default policy.
     pub network: Option<NetworkSpec>,
+    /// Host ports forwarded to the sandbox's loopback, written like Docker Compose: `3000` or
+    /// `"8080:5173"`. No host port appears twice.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_ports",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub ports: Vec<PortMapping>,
     /// Extra host directories to bind mount into the sandbox, besides the workspace.
     #[serde(
         default,
@@ -282,6 +290,133 @@ fn is_host_label(label: &str) -> bool {
         && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         && !label.starts_with('-')
         && !label.ends_with('-')
+}
+
+/// A host port on the host's loopback that forwards to a port on the sandbox's loopback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PortMapping {
+    /// Port fbkd listens on at `localhost` on the host.
+    pub host: u16,
+    /// Port in the sandbox that connections to the host port reach.
+    pub guest: u16,
+}
+
+/// A port mapping that isn't `<port>` or `<host>:<guest>` with ports from 1 to 65535.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[error(
+    "invalid port mapping \"{0}\": use <port> or \"<host>:<guest>\" with ports from 1 to 65535"
+)]
+pub struct InvalidPortMapping(pub String);
+
+impl FromStr for PortMapping {
+    type Err = InvalidPortMapping;
+
+    /// Parses `3000` as host and guest port 3000, and `8080:5173` as host port 8080 and guest
+    /// port 5173.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let invalid = || InvalidPortMapping(value.to_string());
+
+        match value.split_once(':') {
+            Some((host, guest)) => Ok(PortMapping {
+                host: parse_port(host).ok_or_else(invalid)?,
+                guest: parse_port(guest).ok_or_else(invalid)?,
+            }),
+            None => parse_port(value)
+                .map(|port| PortMapping {
+                    host: port,
+                    guest: port,
+                })
+                .ok_or_else(invalid),
+        }
+    }
+}
+
+impl fmt::Display for PortMapping {
+    /// Writes the mapping as `<host>:<guest>`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.host, self.guest)
+    }
+}
+
+/// Parses a port from 1 to 65535.
+fn parse_port(value: &str) -> Option<u16> {
+    value.parse().ok().filter(|port| *port > 0)
+}
+
+impl Serialize for PortMapping {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+/// Deserializes the port mappings, rejecting a host port that is listed more than once.
+fn deserialize_ports<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<PortMapping>, D::Error> {
+    deserializer.deserialize_seq(PortsVisitor)
+}
+
+/// Reads the mappings of a `ports` list.
+struct PortsVisitor;
+
+impl<'de> Visitor<'de> for PortsVisitor {
+    type Value = Vec<PortMapping>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a list of ports")
+    }
+
+    fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<PortMapping>, A::Error> {
+        let mut ports = vec![];
+        let mut host_ports = HashSet::new();
+
+        while let Some(mapping) = seq.next_element_seed(UniquePort(&mut host_ports))? {
+            ports.push(mapping);
+        }
+
+        Ok(ports)
+    }
+}
+
+/// Reads one mapping and records its host port, failing when an earlier entry has it. The check
+/// runs while the parser still points at the entry, so a duplicate is reported at its own line.
+struct UniquePort<'a>(&'a mut HashSet<u16>);
+
+impl<'de> de::DeserializeSeed<'de> for UniquePort<'_> {
+    type Value = PortMapping;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<PortMapping, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl Visitor<'_> for UniquePort<'_> {
+    type Value = PortMapping;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a port such as 3000 or a mapping such as \"8080:5173\"")
+    }
+
+    fn visit_u64<E: de::Error>(self, value: u64) -> Result<PortMapping, E> {
+        self.visit_str(&value.to_string())
+    }
+
+    fn visit_i64<E: de::Error>(self, value: i64) -> Result<PortMapping, E> {
+        self.visit_str(&value.to_string())
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<PortMapping, E> {
+        let mapping: PortMapping = value.parse().map_err(E::custom)?;
+
+        if !self.0.insert(mapping.host) {
+            return Err(E::custom(format!(
+                "host port {} is listed more than once",
+                mapping.host
+            )));
+        }
+
+        Ok(mapping)
+    }
 }
 
 /// Size of the Docker volume when the spec doesn't set one.
@@ -477,6 +612,7 @@ pub fn default_spec(name: String) -> SandboxSpec {
         volumes: VolumesSpec::default(),
         network: None,
         mounts: None,
+        ports: vec![],
     }
 }
 
@@ -722,6 +858,7 @@ pub mod tests {
         assert_eq!(spec.volumes, VolumesSpec::default());
         assert!(spec.network.is_none());
         assert!(spec.mounts.is_none());
+        assert!(spec.ports.is_empty());
     }
 
     #[test]
@@ -931,6 +1068,103 @@ pub mod tests {
         let result = from_file(file.path());
 
         assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
+    }
+
+    #[test]
+    fn ports_are_optional() {
+        let file = write_spec("name: dev\n");
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert!(spec.ports.is_empty());
+    }
+
+    #[test]
+    fn parses_ports() {
+        let file = write_spec("name: dev\nports:\n  - 3000\n  - \"8080:5173\"\n");
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert_eq!(
+            spec.ports,
+            [
+                PortMapping {
+                    host: 3000,
+                    guest: 3000
+                },
+                PortMapping {
+                    host: 8080,
+                    guest: 5173
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn port_mapping_displays_host_and_guest() {
+        let mapping: PortMapping = "3000".parse().unwrap();
+
+        assert_eq!(mapping.to_string(), "3000:3000");
+        assert_eq!("3000:3000".parse(), Ok(mapping));
+    }
+
+    #[test]
+    fn rejects_invalid_port_mappings() {
+        for mapping in [
+            "", "0", "65536", "-1", "abc", "80:", ":80", "0:80", "80:0", "1:2:3", "80 : 81",
+        ] {
+            assert_eq!(
+                mapping.parse::<PortMapping>(),
+                Err(InvalidPortMapping(mapping.to_string())),
+                "{mapping:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_port_returns_diagnostic() {
+        for (entry, column) in [("0", 5), ("65536", 5), ("\"8080:abc\"", 5), ("web", 5)] {
+            let file = write_spec(&format!("name: dev\nports:\n  - 3000\n  - {entry}\n"));
+
+            let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+            assert_eq!((diagnostic.line, diagnostic.column), (4, column), "{entry}");
+            assert!(
+                diagnostic.message.contains("invalid port mapping"),
+                "{}",
+                diagnostic.message
+            );
+        }
+    }
+
+    #[test]
+    fn port_of_wrong_type_returns_diagnostic() {
+        let file = write_spec("name: dev\nports:\n  - {host: 80}\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!(diagnostic.line, 3);
+        assert!(
+            diagnostic.message.contains("a port such as 3000"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn duplicate_host_port_returns_diagnostic() {
+        let file = write_spec("name: dev\nports:\n  - 3000\n  - \"3000:4000\"\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (4, 5));
+        assert!(
+            diagnostic
+                .message
+                .ends_with("host port 3000 is listed more than once"),
+            "{}",
+            diagnostic.message
+        );
     }
 
     #[test]

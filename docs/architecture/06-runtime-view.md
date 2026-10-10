@@ -129,6 +129,11 @@ is and doesn't read `.firebrick.yml`.
 `crates/daemon/src/sandboxes.rs`). When the sandbox hasn't stopped by then,
 `fbkd` kills it, so a guest that ignores the shutdown can't make `fbk stop`
 hang. A killed sandbox can lose writes the guest hadn't flushed to its disk yet.
+Once the sandbox has stopped, `fbkd` closes its port forwards, so their host
+ports are free when `fbk stop` returns. When stopping fails, the forwards stay
+open, because the sandbox may still run. When the sandbox doesn't exist anymore,
+for example because it was removed with `msb rm`, `fbkd` still closes the
+forwards it has open for that name, for `fbk stop` and `fbk rm`.
 
 ```mermaid
 sequenceDiagram
@@ -145,6 +150,7 @@ sequenceDiagram
     D->>MS: Sandbox::get(name)
     alt Sandbox doesn't exist
         MS-->>D: SandboxNotFound
+        D->>D: Close port forwards with that name
         D-->>CLI: NOT_FOUND
         CLI-->>Dev: Error: sandbox name doesn't exist
     else Sandbox exists
@@ -155,6 +161,7 @@ sequenceDiagram
             D->>MS: kill()
         end
         MS-->>D: Stopped
+        D->>D: Close the sandbox's port forwards
         D-->>CLI: StopSandboxResponse
         CLI-->>Dev: Exit 0
     end
@@ -169,8 +176,10 @@ explains how to remove the sandbox. With `fbk rm --force`, the request carries
 `force: true` and `fbkd` first stops a live sandbox the same way as `fbk stop`,
 killing it after 30 seconds. When that stop fails, `fbkd` returns `INTERNAL` and
 leaves the sandbox in place. A stopped or crashed sandbox is removed with or
-without `--force`. After a removal, `fbkd` syncs the SSH config and the editors'
-Remote-SSH settings, so they drop the sandbox's host.
+without `--force`. `fbkd` closes the sandbox's port forwards once the sandbox
+isn't live anymore, before it removes it, so they also close when the removal
+fails. After a removal, `fbkd` syncs the SSH config and the editors' Remote-SSH
+settings, so they drop the sandbox's host.
 
 ```mermaid
 sequenceDiagram
@@ -187,6 +196,7 @@ sequenceDiagram
     D->>MS: Sandbox::get(name)
     alt Sandbox doesn't exist
         MS-->>D: SandboxNotFound
+        D->>D: Close port forwards with that name
         D-->>CLI: NOT_FOUND
         CLI-->>Dev: Error: sandbox name doesn't exist
     else Sandbox exists
@@ -194,6 +204,9 @@ sequenceDiagram
         opt force and the sandbox is live
             D->>MS: stop_with_timeout(30s), then kill() on StopTimeout
             MS-->>D: Stopped
+        end
+        opt force or the sandbox isn't live
+            D->>D: Close port forwards
         end
         D->>MS: remove()
         alt Sandbox is still live
@@ -213,9 +226,10 @@ sequenceDiagram
 
 `fbk start` creates the sandbox when it doesn't exist yet, or starts the
 existing one. The image, init, mise setting, resources, network rules and mounts
-from the spec only apply when the sandbox is created. Like `fbk run`, the CLI
-first checks the status of the sandbox: it leaves a running sandbox alone, waits
-for a starting one (max 120s), and fails for a stopping or paused one. The
+from the spec only apply when the sandbox is created; the `ports` apply every
+time. Like `fbk run`, the CLI first checks the status of the sandbox: it waits
+for a starting one (max 120s), fails for a stopping or paused one, and sends
+`StartSandbox` with the spec's ports for a running, stopped or crashed one. The
 daemon's `StartSandbox` is idempotent as well: it returns without starting a
 sandbox that is already running or starting, and treats a start that loses a
 race with another start as a success.
@@ -280,6 +294,49 @@ The SSH config and editor settings are synced after every `StartSandbox`, also
 when it failed, so the developer can still connect to a sandbox whose mise step
 failed.
 
+### Forwarding ports
+
+The `ports` in `.firebrick.yml` forward host ports to the sandbox, so a browser
+on the host reaches a dev server in the sandbox at `localhost`:
+
+```yaml
+ports:
+  - 3000 # host localhost:3000 -> guest 127.0.0.1:3000
+  - "8080:5173" # host localhost:8080 -> guest 127.0.0.1:5173
+```
+
+`fbk start` and `fbk run` send the spec's ports in every `StartSandbox`: when
+they create the sandbox, start a stopped one, and for a running one, so editing
+the list and running `fbk start` again applies it without a restart. A spec
+without `ports` sends an empty list, which closes all forwards. fbkd stores the
+list in the sandbox's `firebrick.ports` label. `fbk start <name>` and SSH
+connections carry no ports, so fbkd uses the stored list.
+
+Once a successful `StartSandbox` leaves the sandbox running, fbkd reconciles its
+forwards with the list: it closes the forwards that aren't listed, opens the new
+ones and leaves the unchanged ones and their connections alone. A forward
+listens on `127.0.0.1:<host>`, and on `[::1]:<host>` when the host has IPv6
+loopback. Each connection it accepts goes to `127.0.0.1:<guest>` in the sandbox
+through a `direct-tcpip` channel of microsandbox's SSH server, which agentd
+opens from inside the guest, and bytes are copied both ways until both sides are
+done. One SSH session per sandbox, with no inactivity timeout, carries all
+channels
+([ADR 0019](decisions/0019-forward-ports-through-the-ssh-servers-direct-tcpip.md)).
+`StartSandbox` returns the open forwards, and `fbk start` prints one line per
+forward, such as `Forwarding localhost:8080 -> sandbox port 5173`.
+
+When fbkd starts, it opens the stored forwards of the sandboxes that are already
+running. `fbk stop`, `fbk rm` and fbkd's exit close them.
+
+- The host port is in use, by another process or another sandbox's forward, or
+  needs privileges: the sandbox still starts. fbkd logs `couldn't forward
+  localhost:<host> for sandbox <name>: <error>` as a warning and returns the
+  failure, and the CLI prints `warning: couldn't forward localhost:<host>:
+  <reason>` to stderr. The next `StartSandbox` tries the port again.
+- Nothing listens on the guest port when a connection arrives: fbkd closes that
+  host connection and logs it at `debug`. The listener stays up, so a later
+  connection works once the guest listens.
+
 ```mermaid
 sequenceDiagram
     actor Dev as Developer
@@ -293,15 +350,15 @@ sequenceDiagram
     Dev->>CLI: fbk start
     CLI->>CLI: Resolve spec, fill in default image, init and resources
     CLI->>D: GetSandbox(name)
-    Note over CLI,D: Running: skip StartSandbox. Starting: poll until running.<br/>Stopping or Paused: error.
+    Note over CLI,D: Starting: poll until running.<br/>Stopping or Paused: error.
     alt NOT_FOUND
         CLI->>CLI: Resolve mount host paths
-        CLI->>D: StartSandbox(name, image, init, mise, resources, network, mounts, workspace)
-    else Stopped or Crashed
-        CLI->>D: StartSandbox(name, workspace)
+        CLI->>D: StartSandbox(name, image, init, mise, resources, network, ports, mounts, workspace)
+    else Running, Stopped or Crashed
+        CLI->>D: StartSandbox(name, workspace, ports)
     end
-    D->>D: Parse network rules
-    alt Invalid rule
+    D->>D: Parse network rules and ports
+    alt Invalid rule or port
         D-->>CLI: INVALID_ARGUMENT
         CLI-->>Dev: Error
     end
@@ -325,7 +382,7 @@ sequenceDiagram
         end
         D->>MS: List sandboxes for taken host names
         D->>D: Pick unique project.fbk host name
-        D->>MS: Create detached sandbox (image, init, cpus, memory,<br/>firebrick.hostname and firebrick.mise labels,<br/>workspace mounted at /workspaces/project,<br/>extra mounts at their guest paths,<br/>owned ext4 disk at /var/lib/docker,<br/>network policy with TLS interception when enforced)
+        D->>MS: Create detached sandbox (image, init, cpus, memory,<br/>firebrick.hostname, firebrick.mise and firebrick.ports labels,<br/>workspace mounted at /workspaces/project,<br/>extra mounts at their guest paths,<br/>owned ext4 disk at /var/lib/docker,<br/>network policy with TLS interception when enforced)
         alt init on and image has no /sbin/init
             D->>MS: Remove the half-created sandbox
             Note over D: Result: FAILED_PRECONDITION (set init: false)
@@ -346,10 +403,17 @@ sequenceDiagram
     D->>SSH: Write Host entries for all host names
     D->>Ed: Map all host names to linux in remote.SSH.remotePlatform
     D->>Zed: Write an ssh_connections entry per sandbox host
-    D-->>CLI: StartSandboxResponse or the error
+    opt StartSandbox succeeded
+        opt Request has ports that differ from the firebrick.ports label
+            D->>MS: Store firebrick.ports label (next_start, no restart)
+        end
+        D->>D: Close unlisted forwards, open new ones on localhost
+    end
+    D-->>CLI: StartSandboxResponse(forwards, failed_forwards) or the error
+    CLI-->>Dev: warning: couldn't forward localhost:port: reason (per failed forward)
     CLI->>D: GetSandbox(name)
     D-->>CLI: GetSandboxResponse(hostname, workspace_path)
-    CLI-->>Dev: Connect with: ssh project.fbk<br/>Open in VS Code: code --folder-uri<br/>vscode-remote://ssh-remote+project.fbk/workspaces/project<br/>Open in Zed: zed ssh://project.fbk/workspaces/project
+    CLI-->>Dev: Forwarding localhost:8080 -> sandbox port 5173<br/>Connect with: ssh project.fbk<br/>Open in VS Code: code --folder-uri<br/>vscode-remote://ssh-remote+project.fbk/workspaces/project<br/>Open in Zed: zed ssh://project.fbk/workspaces/project
 ```
 
 The editor settings are synced for VS Code, VS Code Insiders, Cursor and
@@ -369,9 +433,9 @@ a sandbox: creating one needs the image, resources and workspace from a spec.
 When `GetSandbox` returns `NOT_FOUND`, the CLI fails with `sandbox <name>
 doesn't exist; run fbk start in its project directory to create it` without
 sending `StartSandbox`. Otherwise it handles the status like `fbk start`, and
-sends `StartSandbox(name)` with an empty workspace for a stopped or crashed
-sandbox; the daemon then falls back to the sandbox name when the sandbox still
-needs a host name.
+sends `StartSandbox(name)` with an empty workspace and no ports for a running,
+stopped or crashed sandbox; the daemon then falls back to the sandbox name when
+the sandbox still needs a host name, and opens the stored forwards.
 
 ## Setting a secret
 
@@ -461,6 +525,7 @@ sequenceDiagram
     end
     D->>MS: connect_or_start_detached()
     MS->>VM: Boot when not running
+    D->>D: Open the stored port forwards
     D->>MS: Prepare SSH server (host key, authorized client key)
     D->>D: Serve SSH over an in-memory duplex pipe
 
