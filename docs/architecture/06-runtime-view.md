@@ -13,8 +13,11 @@ version. When `MSB_PATH` or `paths.msb` selects a runtime with another version,
 `fbkd` exits instead, and the CLI reports a timeout.
 
 The CLI resolves the sandbox name from `.firebrick.yml` in the working
-directory, or derives it from the full working directory path when there's no
-spec file.
+directory. Without a spec file, it first asks the daemon for a sandbox with the
+name older versions derived from the path, such as `home_user_my_project`, and
+keeps using it when it exists. Otherwise it names the sandbox `firebrick-`
+followed by the first 6 hex digits of the SHA-256 hash of the full working
+directory path, such as `firebrick-d9f287`.
 
 ## Running a session
 

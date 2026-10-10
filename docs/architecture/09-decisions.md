@@ -13,3 +13,4 @@
 - [ADR 0011 - Own the firebrick entries in Zed's ssh_connections](decisions/0011-own-the-anvil-entries-in-zeds-ssh-connections.md)
 - [ADR 0012 - Rename Anvil to Firebrick](decisions/0012-rename-anvil-to-firebrick.md)
 - [ADR 0013 - Share the gRPC code through a proto crate](decisions/0013-share-the-grpc-code-through-a-proto-crate.md)
+- [ADR 0014 - Name sandboxes after a hash of the working directory](decisions/0014-name-sandboxes-after-a-hash-of-the-working-directory.md)

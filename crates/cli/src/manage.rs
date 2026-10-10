@@ -1,7 +1,8 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
 use firebrick_spec::SandboxSpec;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::ops::ControlFlow;
 use std::path::Path;
 use std::time::Duration;
@@ -75,7 +76,7 @@ async fn start_working_dir_sandbox(
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<String> {
-    let spec = resolve_spec(working_dir)?;
+    let spec = resolve_spec(working_dir, client).await?;
     let name = spec.name.clone();
 
     ensure_running(spec, working_dir, client).await?;
@@ -208,7 +209,7 @@ pub async fn stop_sandbox(
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
-    let name = sandbox_name(name, working_dir)?;
+    let name = sandbox_name(name, working_dir, client).await?;
 
     client
         .stop_sandbox(StopSandboxRequest { name: name.clone() })
@@ -226,7 +227,7 @@ pub async fn remove_sandbox(
     working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
-    let name = sandbox_name(name, working_dir)?;
+    let name = sandbox_name(name, working_dir, client).await?;
 
     client
         .remove_sandbox(RemoveSandboxRequest {
@@ -241,10 +242,14 @@ pub async fn remove_sandbox(
 
 /// Returns the explicit sandbox name, or the name of the sandbox for the working directory.
 /// The spec file is only read without an explicit name.
-fn sandbox_name(name: Option<String>, working_dir: &Path) -> Result<String> {
+async fn sandbox_name(
+    name: Option<String>,
+    working_dir: &Path,
+    client: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<String> {
     match name {
         Some(name) => Ok(name),
-        None => Ok(resolve_spec(working_dir)?.name),
+        None => Ok(resolve_spec(working_dir, client).await?.name),
     }
 }
 
@@ -337,22 +342,65 @@ fn render_sandbox_json(sandboxes: &[SandboxSummary]) -> Result<String> {
     Ok(format!("{}\n", serde_json::to_string_pretty(&listings)?))
 }
 
-/// Loads the sandbox spec from the working directory, falling back to a default spec
-/// named after the working directory path when there's no spec file.
-pub(crate) fn resolve_spec(working_dir: &Path) -> Result<SandboxSpec> {
-    let spec_path = working_dir.join(SPEC_FILE_NAME);
-
-    if spec_path.is_file() {
-        return Ok(firebrick_spec::from_file(&spec_path)?);
+/// Loads the sandbox spec from the working directory, falling back to a default spec when
+/// there's no spec file. The default spec keeps the name of a sandbox created before names
+/// were hashed, and is otherwise named after the hash of the working directory path.
+pub(crate) async fn resolve_spec(
+    working_dir: &Path,
+    client: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<SandboxSpec> {
+    if let Some(spec) = read_spec_file(working_dir)? {
+        return Ok(spec);
     }
 
-    Ok(firebrick_spec::default_spec(derive_name_from_path(
+    let legacy_exists = match legacy_name(working_dir) {
+        Some(name) => sandbox_status(client, &name)
+            .await
+            .with_context(|| format!("failed to check for existing sandbox {name}"))?
+            .is_some(),
+        None => false,
+    };
+
+    Ok(firebrick_spec::default_spec(default_name(
         working_dir,
-    )?))
+        legacy_exists,
+    )))
 }
 
-/// Encodes the full path as a sandbox name made of ASCII alphanumerics and underscores.
-fn derive_name_from_path(working_dir: &Path) -> Result<String> {
+/// Returns the legacy name when a sandbox with it exists, and the hashed name otherwise.
+fn default_name(working_dir: &Path, legacy_exists: bool) -> String {
+    match legacy_name(working_dir) {
+        Some(name) if legacy_exists => name,
+        _ => hashed_name(working_dir),
+    }
+}
+
+/// Loads the spec file from the working directory, or returns `None` when there isn't one.
+fn read_spec_file(working_dir: &Path) -> Result<Option<SandboxSpec>> {
+    let spec_path = working_dir.join(SPEC_FILE_NAME);
+
+    if !spec_path.is_file() {
+        return Ok(None);
+    }
+
+    Ok(Some(firebrick_spec::from_file(&spec_path)?))
+}
+
+/// Names the sandbox `firebrick-` followed by the first 6 hex digits of the SHA-256 hash of
+/// the full path.
+fn hashed_name(working_dir: &Path) -> String {
+    let digest = Sha256::digest(working_dir.as_os_str().as_encoded_bytes());
+    let prefix: String = digest[..3]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+
+    format!("firebrick-{prefix}")
+}
+
+/// Encodes the full path as ASCII alphanumerics and underscores, the way sandboxes were named
+/// before names were hashed. Returns `None` when the path has no alphanumerics.
+fn legacy_name(working_dir: &Path) -> Option<String> {
     let mut name = String::new();
 
     for c in working_dir.to_string_lossy().chars() {
@@ -365,14 +413,7 @@ fn derive_name_from_path(working_dir: &Path) -> Result<String> {
 
     let name = name.trim_end_matches('_');
 
-    if name.is_empty() {
-        bail!(
-            "can't derive a sandbox name from {}; add a {SPEC_FILE_NAME} file",
-            working_dir.display()
-        );
-    }
-
-    Ok(name.to_string())
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Returns a human-readable label for a sandbox status.
@@ -503,49 +544,70 @@ mod tests {
         assert_eq!(render_sandbox_json(&[]).unwrap(), "[]\n");
     }
 
-    #[test]
-    fn uses_name_from_spec_file() {
+    /// Returns a client for an address nothing listens on, so a test fails when it calls the
+    /// daemon.
+    fn unreachable_client() -> SandboxManagementServiceClient<Channel> {
+        SandboxManagementServiceClient::new(
+            Channel::from_static("http://127.0.0.1:1").connect_lazy(),
+        )
+    }
+
+    #[tokio::test]
+    async fn uses_name_from_spec_file() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(SPEC_FILE_NAME), "name: dev\n").unwrap();
 
-        let spec = resolve_spec(dir.path()).unwrap();
+        let spec = resolve_spec(dir.path(), &mut unreachable_client())
+            .await
+            .unwrap();
 
         assert_eq!(spec.name, "dev");
     }
 
-    #[test]
-    fn derives_name_from_path_without_spec_file() {
-        let dir = TempDir::new().unwrap();
+    #[tokio::test]
+    async fn hashes_path_without_spec_file_or_legacy_name() {
+        // The root path has no legacy name, so the daemon isn't asked whether one exists.
+        let spec = resolve_spec(Path::new("/"), &mut unreachable_client())
+            .await
+            .unwrap();
 
-        let spec = resolve_spec(dir.path()).unwrap();
-
-        assert_eq!(spec.name, derive_name_from_path(dir.path()).unwrap());
+        assert_eq!(spec.name, "firebrick-8a5eda");
     }
 
-    #[test]
-    fn invalid_spec_file_returns_error() {
+    #[tokio::test]
+    async fn invalid_spec_file_returns_error() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(SPEC_FILE_NAME), "image: ubuntu:24.04\n").unwrap();
 
-        assert!(resolve_spec(dir.path()).is_err());
+        let result = resolve_spec(dir.path(), &mut unreachable_client()).await;
+
+        assert!(result.is_err());
     }
 
-    #[test]
-    fn explicit_name_skips_spec_file() {
+    #[tokio::test]
+    async fn explicit_name_skips_spec_file() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(SPEC_FILE_NAME), "image: ubuntu:24.04\n").unwrap();
 
-        let name = sandbox_name(Some("other".to_string()), dir.path()).unwrap();
+        let name = sandbox_name(
+            Some("other".to_string()),
+            dir.path(),
+            &mut unreachable_client(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(name, "other");
     }
 
-    #[test]
-    fn without_name_uses_working_directory() {
+    #[tokio::test]
+    async fn without_name_uses_working_directory() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(SPEC_FILE_NAME), "name: dev\n").unwrap();
 
-        let name = sandbox_name(None, dir.path()).unwrap();
+        let name = sandbox_name(None, dir.path(), &mut unreachable_client())
+            .await
+            .unwrap();
 
         assert_eq!(name, "dev");
     }
@@ -588,22 +650,67 @@ mod tests {
     }
 
     #[test]
-    fn encodes_full_path() {
-        let name = derive_name_from_path(Path::new("/home/user/my-project.v2")).unwrap();
+    fn hashed_name_uses_first_six_hex_digits_of_sha256() {
+        let name = hashed_name(Path::new("/home/user/my-project.v2"));
+
+        assert_eq!(name, "firebrick-d9f287");
+    }
+
+    #[test]
+    fn hashed_name_differs_per_path() {
+        assert_ne!(
+            hashed_name(Path::new("/home/user/a/project")),
+            hashed_name(Path::new("/home/user/b/project"))
+        );
+    }
+
+    #[test]
+    fn legacy_name_encodes_full_path() {
+        let name = legacy_name(Path::new("/home/user/my-project.v2"));
+
+        assert_eq!(name.as_deref(), Some("home_user_my_project_v2"));
+    }
+
+    #[test]
+    fn legacy_name_collapses_and_trims_separators() {
+        let name = legacy_name(Path::new("//home//user/--project--/"));
+
+        assert_eq!(name.as_deref(), Some("home_user_project"));
+    }
+
+    #[test]
+    fn default_name_keeps_existing_legacy_name() {
+        let name = default_name(Path::new("/home/user/my-project.v2"), true);
 
         assert_eq!(name, "home_user_my_project_v2");
     }
 
     #[test]
-    fn collapses_and_trims_separators() {
-        let name = derive_name_from_path(Path::new("//home//user/--project--/")).unwrap();
+    fn default_name_hashes_path_without_legacy_sandbox() {
+        let name = default_name(Path::new("/home/user/my-project.v2"), false);
 
-        assert_eq!(name, "home_user_project");
+        assert_eq!(name, "firebrick-d9f287");
+    }
+
+    #[tokio::test]
+    async fn failed_legacy_lookup_names_the_sandbox() {
+        let dir = TempDir::new().unwrap();
+
+        let error = resolve_spec(dir.path(), &mut unreachable_client())
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .starts_with("failed to check for existing sandbox "),
+            "{error}"
+        );
     }
 
     #[test]
-    fn root_path_returns_error() {
-        assert!(derive_name_from_path(Path::new("/")).is_err());
+    fn root_path_has_no_legacy_name() {
+        assert_eq!(legacy_name(Path::new("/")), None);
     }
 
     #[test]
@@ -624,7 +731,7 @@ mod tests {
         )
         .unwrap();
 
-        let request = build_start_request(resolve_spec(dir.path()).unwrap(), dir.path());
+        let request = build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path());
         let resources = request.resources.unwrap();
 
         assert_eq!(request.image, "alpine:3.22");
@@ -637,7 +744,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(SPEC_FILE_NAME), "name: dev\n").unwrap();
 
-        let request = build_start_request(resolve_spec(dir.path()).unwrap(), dir.path());
+        let request = build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path());
         let resources = request.resources.unwrap();
         let defaults = firebrick_spec::SandboxResourcesSpec::default();
 
