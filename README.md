@@ -169,6 +169,9 @@ so move your setup over by hand:
    rm ~/.local/bin/anvil ~/.local/bin/anvild
    ```
 
+   If you installed them with `cargo install`, run `cargo uninstall anvil-cli
+   anvil-daemon` instead of `rm`.
+
 2. Move the data directory with your SSH keys and secrets:
 
    ```sh
@@ -180,8 +183,10 @@ so move your setup over by hand:
    `~/.local/share/anvil/ssh/config` in `~/.ssh/config`, the `*.anvil` keys in
    `remote.SSH.remotePlatform` of your VS Code settings, and the `*.anvil`
    entries in `ssh_connections` of your Zed settings.
-
-Your sandboxes get a `<leaf>.fbk` host name the next time you run `fbk start`.
+5. Run `fbk start` once in each project. It gives the existing sandbox a
+   `<leaf>.fbk` host name. Until then, `fbk ls` shows no host name for it, you
+   can't connect to it over SSH, and `fbk secret set` and `fbk secret rm` skip
+   it.
 
 ### Building from source
 
@@ -222,7 +227,7 @@ The sandbox keeps running after the command exits.
 
 ### Configuring a sandbox
 
-Add an `.firebrick.yml` file to the project directory to configure the sandbox:
+Add a `.firebrick.yml` file to the project directory to configure the sandbox:
 
 ```yaml
 name: my-project

@@ -5,7 +5,7 @@
 Pushing a tag such as `v0.1.0` runs `.github/workflows/release.yaml`, which
 publishes:
 
-- An `firebrick-<tag>-<target>.tar.gz` archive per target, with a `.sha256`
+- A `firebrick-<tag>-<target>.tar.gz` archive per target, with a `.sha256`
   checksum, attached to a GitHub release with generated release notes. Each
   archive holds one directory with the `fbk` and `fbkd` binaries side by side,
   because the CLI starts the daemon from its own directory.

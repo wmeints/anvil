@@ -5,15 +5,15 @@
 ```mermaid
 C4Container
     Person(user, "Developer")
-    Container(firebrick, "fbk", "Rust, Clap", "CLI")
+    Container(fbk, "fbk", "Rust, Clap", "CLI")
     Container(fbkd, "fbkd", "Rust, Tonic", "User daemon")
     System_Ext(ssh, "OpenSSH client", "ssh, scp, IDEs")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
 
-    Rel(user, firebrick, "Runs commands")
+    Rel(user, fbk, "Runs commands")
     Rel(user, ssh, "Connects to <leaf>.fbk")
-    Rel(ssh, firebrick, "ProxyCommand", "fbk ssh-proxy")
-    Rel(firebrick, fbkd, "gRPC", "Unix socket")
+    Rel(ssh, fbk, "ProxyCommand", "fbk ssh-proxy")
+    Rel(fbk, fbkd, "gRPC", "Unix socket")
     Rel(fbkd, microsandbox, "Manages sandboxes")
 ```
 

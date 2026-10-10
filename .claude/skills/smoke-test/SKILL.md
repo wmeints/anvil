@@ -52,7 +52,7 @@ runs `fbk`, `msb` or `ssh` with `source <env file>`. The env file sets:
 ### 3. Create a workspace
 
 Make a directory per scenario under `$SMOKE_WORK`. Its name is the leaf of the
-workspace path, so `$SMOKE_WORK/demo` gets the host name `demo.fbk`. Add an
+workspace path, so `$SMOKE_WORK/demo` gets the host name `demo.fbk`. Add a
 `.firebrick.yml` when the scenario needs a name, image or setting:
 
 ```bash
