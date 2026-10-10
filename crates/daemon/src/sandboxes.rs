@@ -1,16 +1,18 @@
 //! Sandbox management on top of microsandbox: the sandbox lifecycle, the workspace's mise
-//! tools, the secrets of sandboxes, SSH host names, the generated SSH config, the editors'
-//! Remote-SSH settings and Zed's remote projects.
+//! tools, the secrets of sandboxes, their port forwards, SSH host names, the generated SSH
+//! config, the editors' Remote-SSH settings and Zed's remote projects.
 
+use crate::forward::{self, ForwardReport, Forwards, SshConnector};
 use crate::mise::{self, MiseError};
 use crate::network;
 use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
 use crate::vscode;
 use crate::zed;
-use firebrick_spec::{NetworkSpec, VolumesSpec};
+use firebrick_spec::{MountSpec, NetworkSpec, PortMapping, VolumesSpec};
 use microsandbox::sandbox::{
-    HostPermissions, OwnedVolumeStorage, SandboxBuilder, SandboxHandle, SandboxStatus, VolumeMount,
+    HostPermissions, MountBuilder, OwnedVolumeStorage, SandboxBuilder, SandboxHandle,
+    SandboxStatus, VolumeMount,
 };
 use microsandbox::snapshot::Snapshot;
 use microsandbox::{MicrosandboxError, Sandbox};
@@ -90,6 +92,11 @@ pub struct StartSandbox<'a> {
     pub mise: bool,
     /// Egress rules of the sandbox, applied when it is created.
     pub network: &'a NetworkSpec,
+    /// Host ports to forward to the sandbox. Stored with the sandbox; `None` keeps the stored
+    /// list.
+    pub ports: Option<&'a [PortMapping]>,
+    /// Extra host directories with absolute host paths, mounted when the sandbox is created.
+    pub mounts: &'a [MountSpec],
 }
 
 /// The name, status, SSH host name and workspace paths of a sandbox.
@@ -147,6 +154,8 @@ struct SandboxSettings {
     labels: BTreeMap<String, String>,
     /// The host directory mounted as the workspace and its guest path, which is the workdir.
     workspace: Option<Workspace>,
+    /// Extra host directories bind-mounted next to the workspace.
+    mounts: Vec<MountSpec>,
     init: bool,
     resources: Resources,
 }
@@ -165,9 +174,11 @@ impl SandboxSettings {
         let workspace = workspace_host_path_of(handle)
             .zip(workspace_path_of(handle))
             .map(|(host, guest)| Workspace { host, guest });
+        let workdir = spec.runtime.workdir.as_deref();
 
         Ok(Self {
             name: handle.name().to_string(),
+            mounts: extra_mounts(&spec.mounts, workdir),
             labels: spec.labels,
             workspace,
             init: spec.init.is_some(),
@@ -189,9 +200,31 @@ impl SandboxSettings {
             })
             .detached(true);
         let builder = with_workspace(builder, self.workspace.as_ref());
+        let builder = with_mounts(builder, &self.mounts);
 
         with_init(with_resources(builder, self.resources), self.init)
     }
+}
+
+/// Returns the extra host directories among the sandbox's mounts: the bind mounts other than
+/// the workspace at `workdir`.
+fn extra_mounts(mounts: &[VolumeMount], workdir: Option<&str>) -> Vec<MountSpec> {
+    mounts
+        .iter()
+        .filter_map(|mount| match mount {
+            VolumeMount::Bind {
+                host,
+                guest,
+                options,
+                ..
+            } if Some(guest.as_str()) != workdir => Some(MountSpec {
+                host: host.to_string_lossy().into_owned(),
+                guest: guest.clone(),
+                readonly: options.readonly,
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Returns the size of the sandbox's Docker disk, or the default size when it has none.
@@ -215,15 +248,19 @@ fn default_docker_volume_mib() -> u32 {
     firebrick_spec::parse_size_mib(&VolumesSpec::default().docker).unwrap_or(20 * 1024)
 }
 
-/// Manages sandboxes and the secrets they get.
+/// Manages sandboxes, the secrets they get and their port forwards.
 pub struct SandboxManager {
     secrets: SecretStore,
+    forwards: Forwards,
     // Held while secrets are stored or added to sandboxes, so a sandbox that is being created
     // can't miss a secret that is being set, and concurrent sets can't mix up values.
     secrets_lock: tokio::sync::Mutex<()>,
     // One lock per sandbox name, held while the sandbox is started, stopped, removed, connected
     // to or recreated, so recreating a sandbox can't interleave with another operation on it.
     sandbox_locks: SandboxLocks,
+    // Held while the ports of a sandbox are read or stored and its forwards are reconciled, so a
+    // request with stale ports can't undo the forwards of a newer one.
+    ports_lock: tokio::sync::Mutex<()>,
 }
 
 /// The locks of the sandboxes that are in use, by sandbox name.
@@ -259,8 +296,10 @@ impl SandboxManager {
     pub fn new(secrets: SecretStore) -> Self {
         Self {
             secrets,
+            forwards: Forwards::new(SshConnector::default()),
             secrets_lock: tokio::sync::Mutex::new(()),
             sandbox_locks: std::sync::Mutex::new(HashMap::new()),
+            ports_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -286,13 +325,14 @@ impl SandboxManager {
 
     /// Starts an existing sandbox or creates a new one when it doesn't exist, installs the
     /// workspace's mise tools when it started, then syncs the SSH config and the editor
-    /// settings, also when starting failed. `resources` is only called when the sandbox is
-    /// created.
+    /// settings, also when starting failed. Once the sandbox runs, stores the requested ports
+    /// and opens its forwards, also when it was already running. `resources` is only called
+    /// when the sandbox is created.
     pub async fn start(
         &self,
         request: StartSandbox<'_>,
         resources: impl FnOnce() -> Result<Resources, SandboxError>,
-    ) -> Result<(), SandboxError> {
+    ) -> Result<ForwardReport, SandboxError> {
         let _guard = self.lock_sandbox(request.name).await;
         let result = match Sandbox::get(request.name).await {
             Ok(existing_sb) => start_existing_sandbox(&existing_sb, request).await,
@@ -300,32 +340,81 @@ impl SandboxManager {
         };
 
         sync_ssh_config().await;
+        result?;
 
-        result
+        Ok(self.open_forwards(request.name, request.ports).await)
     }
 
-    /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`].
+    /// Opens the forwards of the sandboxes that are running, from their stored ports. Used
+    /// when the daemon starts.
+    pub async fn restore_forwards(&self) {
+        let sandboxes = match list_all_sandboxes().await {
+            Ok(sandboxes) => sandboxes,
+            Err(err) => {
+                tracing::warn!("failed to restore port forwards: {err}");
+                return;
+            }
+        };
+        let _ports = self.ports_lock.lock().await;
+
+        for sb in sandboxes
+            .iter()
+            .filter(|sb| sb.status_snapshot() == SandboxStatus::Running)
+        {
+            self.forwards.apply(sb.name(), &stored_ports(sb)).await;
+        }
+    }
+
+    /// Stores the ports with the sandbox when they're given, then makes its open forwards
+    /// match the stored ports.
+    async fn open_forwards(&self, name: &str, ports: Option<&[PortMapping]>) -> ForwardReport {
+        let _ports = self.ports_lock.lock().await;
+        let ports = match (ports, Sandbox::get(name).await) {
+            (Some(ports), Ok(sb)) => {
+                store_ports(&sb, ports).await;
+                ports.to_vec()
+            }
+            (Some(ports), Err(_)) => ports.to_vec(),
+            (None, Ok(sb)) => stored_ports(&sb),
+            (None, Err(_)) => vec![],
+        };
+
+        self.forwards.apply(name, &ports).await
+    }
+
+    /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`],
+    /// then closes its forwards.
     pub async fn stop(&self, name: &str) -> Result<(), SandboxError> {
         let _guard = self.lock_sandbox(name).await;
+        let sb = self.get_or_close_forwards(name).await?;
 
-        stop_or_kill(&get_sandbox(name).await?, STOP_TIMEOUT)
-            .await
-            .map_err(|err| {
-                tracing::error!(error = ?err, "failed to stop sandbox {name}");
-                SandboxError::internal("failed to stop sandbox")
-            })
+        stop_or_kill(&sb, STOP_TIMEOUT).await.map_err(|err| {
+            tracing::error!(error = ?err, "failed to stop sandbox {name}");
+            SandboxError::internal("failed to stop sandbox")
+        })?;
+
+        self.forwards.close(name).await;
+
+        Ok(())
     }
 
-    /// Removes a sandbox, then syncs the SSH config and the editor settings. A running sandbox
-    /// is only removed with `force`, which stops it first like [`SandboxManager::stop`].
+    /// Removes a sandbox and closes its forwards, then syncs the SSH config and the editor
+    /// settings. A running sandbox is only removed with `force`, which stops it first like
+    /// [`SandboxManager::stop`].
     pub async fn remove(&self, name: &str, force: bool) -> Result<(), SandboxError> {
         let _guard = self.lock_sandbox(name).await;
-        let sb = get_sandbox(name).await?;
+        let sb = self.get_or_close_forwards(name).await?;
+        let live = is_live(sb.status_snapshot());
 
-        if force && is_live(sb.status_snapshot()) {
+        if force && live {
             stop_or_kill(&sb, STOP_TIMEOUT)
                 .await
                 .map_err(|err| stop_before_remove_failed(name, &err))?;
+        }
+
+        // The sandbox doesn't run anymore, also when removing it fails below.
+        if force || !live {
+            self.forwards.close(name).await;
         }
 
         sb.remove().await.map_err(|err| match err {
@@ -341,6 +430,18 @@ impl SandboxManager {
         sync_ssh_config().await;
 
         Ok(())
+    }
+
+    /// Returns the sandbox with the name. Closes its forwards when it doesn't exist anymore, for
+    /// example because it was removed without fbkd, so its host ports are freed.
+    async fn get_or_close_forwards(&self, name: &str) -> Result<SandboxHandle, SandboxError> {
+        let result = get_sandbox(name).await;
+
+        if let Err(SandboxError::NotFound(_)) = result {
+            self.forwards.close(name).await;
+        }
+
+        result
     }
 
     /// Returns the sandbox with the name.
@@ -368,20 +469,25 @@ impl SandboxManager {
             .map_err(|err| connect_failed(name, &err))
     }
 
-    /// Connects to the sandbox with the SSH host name, starting it when needed.
+    /// Connects to the sandbox with the SSH host name, starting it when needed, and opens its
+    /// stored forwards.
     pub async fn connect_by_hostname(&self, hostname: &str) -> Result<Sandbox, SandboxError> {
         let name = sandbox_name_by_hostname(hostname).await?;
         let _guard = self.lock_sandbox(&name).await;
 
         // Get the sandbox again, because it may have been recreated while waiting for the lock.
-        get_sandbox(&name)
+        let sb = get_sandbox(&name)
             .await?
             .connect_or_start_detached()
             .await
             .map_err(|err| {
                 tracing::error!(error = ?err, "failed to start sandbox with host name {hostname}");
                 SandboxError::failed_precondition("failed to start sandbox")
-            })
+            })?;
+
+        self.open_forwards(sb.name(), None).await;
+
+        Ok(sb)
     }
 
     /// Replaces the egress rules of an existing sandbox by recreating it from a disk snapshot,
@@ -411,8 +517,20 @@ impl SandboxManager {
 
         let result = self.replace(&sb, &settings, network).await;
         sync_ssh_config().await;
+        self.reopen_forwards(name).await;
 
         result.map(|()| true)
+    }
+
+    /// Opens the stored forwards of the sandbox when it runs after an update of its rules.
+    async fn reopen_forwards(&self, name: &str) {
+        let running = Sandbox::get(name)
+            .await
+            .is_ok_and(|sb| sb.status_snapshot() == SandboxStatus::Running);
+
+        if running {
+            self.open_forwards(name, None).await;
+        }
     }
 
     /// Stops the sandbox when it's live, replaces it with one created from a snapshot of its
@@ -430,6 +548,7 @@ impl SandboxManager {
             stop_or_kill(sb, STOP_TIMEOUT)
                 .await
                 .map_err(|err| update_failed(name, &err))?;
+            self.forwards.close(name).await;
         }
 
         let snapshot = match snapshot_and_remove(sb).await {
@@ -599,6 +718,7 @@ impl SandboxManager {
         resources: impl FnOnce() -> Result<Resources, SandboxError>,
     ) -> Result<(Sandbox, String), SandboxError> {
         let guest_path = workspace_mount_path(request.workspace)?;
+        check_mounts(request.mounts, &guest_path)?;
         let resources = resources()?;
         let hostname = ssh::pick_hostname(request.workspace, &taken_hostnames().await?);
         let _secrets_guard = self.secrets_lock.lock().await;
@@ -635,6 +755,10 @@ fn new_sandbox_settings(
             mise::ENABLED_LABEL.to_string(),
             mise::label_value(request.mise).to_string(),
         ),
+        (
+            forward::PORTS_LABEL.to_string(),
+            forward::label_value(request.ports.unwrap_or_default()),
+        ),
     ]);
 
     SandboxSettings {
@@ -644,6 +768,7 @@ fn new_sandbox_settings(
             host: request.workspace.to_string(),
             guest: guest_path.to_string(),
         }),
+        mounts: request.mounts.to_vec(),
         init: request.init,
         resources,
     }
@@ -891,6 +1016,35 @@ async fn start_existing_sandbox(
     }
 }
 
+/// Returns the ports stored with the sandbox.
+fn stored_ports(sb: &SandboxHandle) -> Vec<PortMapping> {
+    sb.config()
+        .ok()
+        .and_then(|config| config.spec.labels.get(forward::PORTS_LABEL).cloned())
+        .map(|value| forward::ports_from_label(&value))
+        .unwrap_or_default()
+}
+
+/// Stores the ports with the sandbox when they differ from the stored ones, logging a warning
+/// when that fails. The label doesn't affect the running VM, so it's applied on the next start
+/// rather than restarting the sandbox.
+async fn store_ports(sb: &SandboxHandle, ports: &[PortMapping]) {
+    if stored_ports(sb) == ports {
+        return;
+    }
+
+    let result = sb
+        .modify()
+        .label(forward::PORTS_LABEL, forward::label_value(ports))
+        .next_start()
+        .apply()
+        .await;
+
+    if let Err(err) = result {
+        tracing::warn!("failed to store the ports of sandbox {}: {err}", sb.name());
+    }
+}
+
 /// Whether the sandbox installs its workspace's mise tools on start.
 fn mise_enabled(sb: &SandboxHandle) -> bool {
     sb.config()
@@ -1098,6 +1252,64 @@ fn workspace_mount_path(workspace: &str) -> Result<String, SandboxError> {
     Ok(format!("/workspaces/{}", leaf.to_string_lossy()))
 }
 
+/// Fails with `InvalidArgument` when a mount has a relative host path, an invalid guest path
+/// (see [`firebrick_spec::guest_mount_path`]), or the guest path of the workspace or the Docker
+/// data volume.
+fn check_mounts(mounts: &[MountSpec], workspace_guest_path: &str) -> Result<(), SandboxError> {
+    mounts
+        .iter()
+        .try_for_each(|mount| check_mount(mount, workspace_guest_path))
+}
+
+/// Checks the paths of one extra mount, see [`check_mounts`].
+fn check_mount(mount: &MountSpec, workspace_guest_path: &str) -> Result<(), SandboxError> {
+    if !Path::new(&mount.host).is_absolute() {
+        return Err(SandboxError::invalid_argument(format!(
+            "mount host path {} must be an absolute path",
+            mount.host
+        )));
+    }
+
+    let guest = firebrick_spec::guest_mount_path(&mount.guest)
+        .map_err(|err| SandboxError::invalid_argument(format!("mount {}: {err}", mount.guest)))?;
+
+    if guest == workspace_guest_path {
+        return Err(SandboxError::invalid_argument(format!(
+            "mount {guest} conflicts with the workspace mount"
+        )));
+    }
+
+    if guest == DOCKER_DATA_PATH {
+        return Err(SandboxError::invalid_argument(format!(
+            "mount {guest} conflicts with the Docker data volume"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Bind mounts the extra host directories like the workspace: owned by the agent user, with
+/// guest permission changes mirrored to the host, and read-only when the mount asks for it.
+fn with_mounts(builder: SandboxBuilder, mounts: &[MountSpec]) -> SandboxBuilder {
+    mounts.iter().fold(builder, |builder, mount| {
+        builder.volume(&mount.guest, |m| bind_mount(m, mount))
+    })
+}
+
+/// Configures a bind mount of the extra host directory.
+fn bind_mount(builder: MountBuilder, mount: &MountSpec) -> MountBuilder {
+    let builder = builder
+        .bind(&mount.host)
+        .host_permissions(HostPermissions::Mirror)
+        .owner(1000, 1000);
+
+    if mount.readonly {
+        builder.readonly()
+    } else {
+        builder
+    }
+}
+
 /// Returns the requested image, or the default image when the request doesn't name one.
 fn sandbox_image(image: &str) -> &str {
     if image.is_empty() {
@@ -1263,6 +1475,76 @@ mod tests {
                     Err(SandboxError::InvalidArgument(_))
                 ),
                 "{workspace:?} should be rejected"
+            );
+        }
+    }
+
+    fn mount(host: &str, guest: &str) -> MountSpec {
+        MountSpec {
+            host: host.to_string(),
+            guest: guest.to_string(),
+            readonly: false,
+        }
+    }
+
+    #[test]
+    fn check_mounts_accepts_absolute_paths() {
+        let mounts = [mount("/home/user/lib", "/workspaces/lib")];
+
+        assert_eq!(check_mounts(&mounts, "/workspaces/project"), Ok(()));
+    }
+
+    #[test]
+    fn check_mounts_rejects_the_workspace_guest_path() {
+        let mounts = [mount("/home/user/lib", "/workspaces/project")];
+
+        assert_eq!(
+            check_mounts(&mounts, "/workspaces/project"),
+            Err(SandboxError::InvalidArgument(
+                "mount /workspaces/project conflicts with the workspace mount".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn check_mounts_rejects_the_workspace_guest_path_in_another_form() {
+        let mounts = [mount("/home/user/lib", "/workspaces/project/.")];
+
+        assert_eq!(
+            check_mounts(&mounts, "/workspaces/project"),
+            Err(SandboxError::InvalidArgument(
+                "mount /workspaces/project conflicts with the workspace mount".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn check_mounts_rejects_the_docker_data_path() {
+        let mounts = [mount("/home/user/docker", "/var/lib/docker/")];
+
+        assert_eq!(
+            check_mounts(&mounts, "/workspaces/project"),
+            Err(SandboxError::InvalidArgument(
+                "mount /var/lib/docker conflicts with the Docker data volume".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn check_mounts_rejects_relative_and_invalid_paths() {
+        for mounts in [
+            [mount("../lib", "/lib")],
+            [mount("/home/user/lib", "lib")],
+            [mount("/home/user/lib", "/")],
+            [mount("/home/user/lib", "/lib/../etc")],
+            [mount("/home/user/lib", "/lib:v1")],
+        ] {
+            assert!(
+                matches!(
+                    check_mounts(&mounts, "/workspaces/project"),
+                    Err(SandboxError::InvalidArgument(_))
+                ),
+                "{mounts:?} should be rejected"
             );
         }
     }

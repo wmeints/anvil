@@ -1,4 +1,4 @@
-# 19. Recreate sandboxes from a disk snapshot to change their network rules
+# 21. Recreate sandboxes from a disk snapshot to change their network rules
 
 ## Status
 
@@ -38,13 +38,15 @@ matches, `fbkd` leaves the sandbox alone and answers `updated: false`. It
 refuses a paused sandbox with `FAILED_PRECONDITION`, because the recreated
 sandbox can't be paused again. Otherwise, it applies the rules by:
 
-1. Reading the sandbox's settings from its stored config: labels, workspace
-   mount, workdir, vCPUs, memory, Docker disk size and `init`.
+1. Reading the sandbox's settings from its stored config: labels (including the
+   stored ports), workspace mount, workdir, extra mounts, vCPUs, memory, Docker
+   disk size and `init`.
 2. Stopping it when it runs, and taking a disk snapshot (not a full one).
 3. Removing it and creating it again with
    `Sandbox::builder(name).override_snapshot(<snapshot path>)`, the same builder
    chain `create_sandbox` uses, the stored secrets and the new rules.
-4. Stopping it again when it was stopped, and deleting the snapshot.
+4. Stopping it again when it was stopped, and deleting the snapshot. Its port
+   forwards are closed while it's stopped and opened again when it runs.
 
 When the snapshot or the remove fails, `fbkd` starts a sandbox that was running
 again, so it keeps its old rules and state. When the recreate fails, `fbkd`

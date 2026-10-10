@@ -10,9 +10,10 @@ use std::time::Duration;
 use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, GetSandboxRequest,
-    GetSandboxResponse, ListSandboxesRequest, NetworkPolicy, RemoveSandboxRequest,
-    SandboxResources, SandboxStatus, SandboxVolumes, StartSandboxRequest, StopSandboxRequest,
-    UpdateNetworkRequest, attach_request, attach_response,
+    GetSandboxResponse, ListSandboxesRequest, Mount, NetworkPolicy, PortForward, PortForwards,
+    RemoveSandboxRequest, SandboxResources, SandboxStatus, SandboxVolumes, StartSandboxRequest,
+    StartSandboxResponse, StopSandboxRequest, UpdateNetworkRequest, attach_request,
+    attach_response,
 };
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{mise, sandboxes, server};
@@ -20,7 +21,8 @@ use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
 use microsandbox::sandbox::{OwnedVolumeStorage, RootfsSource, SandboxSpec, VolumeMount};
 use microsandbox::snapshot::{Snapshot, SnapshotHandle};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
@@ -1124,6 +1126,93 @@ async fn workspace_is_owned_by_agent_user() {
     remove_sandbox(NAME).await;
 }
 
+/// Creates an empty host directory to mount next to the workspace of a test sandbox.
+fn test_mount_dir(name: &str, suffix: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("{name}-{suffix}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("failed to create test mount directory");
+
+    dir
+}
+
+/// Returns the request message that mounts the host directory at the guest path.
+fn mount(host: &Path, guest: &str, readonly: bool) -> Mount {
+    Mount {
+        host: host.to_string_lossy().into_owned(),
+        guest: guest.to_string(),
+        readonly,
+    }
+}
+
+#[tokio::test]
+async fn extra_mounts_are_writable_unless_readonly() {
+    const NAME: &str = "fbk-it-extra-mounts";
+    remove_sandbox(NAME).await;
+
+    let writable = test_mount_dir(NAME, "rw");
+    let readonly = test_mount_dir(NAME, "ro");
+    std::fs::write(readonly.join("from-host.txt"), "hello from host").unwrap();
+    let request = StartSandboxRequest {
+        mounts: vec![
+            mount(&writable, "/mnt/rw", false),
+            mount(&readonly, "/mnt/ro", true),
+        ],
+        ..start_request(NAME)
+    };
+
+    let daemon = TestDaemon::start("extra-mounts").await;
+    let mut client = daemon.client().await;
+    start_and_wait(&mut client, request).await;
+
+    // The test image runs as root, so switch to UID/GID 1000 the way the agent user would run.
+    let script = "setpriv --reuid=1000 --regid=1000 --clear-groups touch /mnt/rw/from-agent.txt \
+                  && cat /mnt/ro/from-host.txt \
+                  && ! touch /mnt/ro/from-guest.txt";
+    let (output, code) = run_command(&mut client, NAME, "sh", &["-c", script]).await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert_eq!(code, 0, "unexpected output: {output:?}");
+    assert!(output.contains("hello from host"), "{output:?}");
+    assert!(output.contains("Read-only file system"), "{output:?}");
+    assert!(writable.join("from-agent.txt").exists());
+    assert!(!readonly.join("from-guest.txt").exists());
+
+    let _ = std::fs::remove_dir_all(writable);
+    let _ = std::fs::remove_dir_all(readonly);
+}
+
+#[tokio::test]
+async fn start_sandbox_rejects_mount_at_workspace_guest_path() {
+    const NAME: &str = "fbk-it-mount-conflict";
+    remove_sandbox(NAME).await;
+
+    let extra = test_mount_dir(NAME, "extra");
+    let request = start_request(NAME);
+    let guest = guest_workspace(Path::new(&request.workspace));
+    let request = StartSandboxRequest {
+        mounts: vec![mount(&extra, &guest, false)],
+        ..request
+    };
+
+    let daemon = TestDaemon::start("mount-conflict").await;
+    let mut client = daemon.client().await;
+    let status = client.start_sandbox(request).await.unwrap_err();
+    let exists = Sandbox::get(NAME).await.is_ok();
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+    let _ = std::fs::remove_dir_all(extra);
+
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_eq!(
+        status.message(),
+        format!("mount {guest} conflicts with the workspace mount")
+    );
+    assert!(!exists, "the sandbox should not have been created");
+}
+
 fn test_secret(name: &str) -> Secret {
     Secret::new(
         name.to_string(),
@@ -1803,4 +1892,187 @@ async fn update_network_refuses_a_paused_sandbox() {
         format!("sandbox {NAME} is paused; resume it before updating its network rules")
     );
     assert_eq!(paused, Some(SandboxStatus::Paused));
+}
+
+/// Returns a host port that nothing listens on at the moment.
+async fn free_port() -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+
+    listener.local_addr().unwrap().port()
+}
+
+/// Returns the ports message that forwards the host port to the guest port.
+fn forward_ports(host: u16, guest: u16) -> PortForwards {
+    PortForwards {
+        ports: vec![PortForward {
+            host: host.into(),
+            guest: guest.into(),
+        }],
+    }
+}
+
+/// Connects to the forwarded host port until the guest listens, sends `sent` and returns once
+/// the guest answers with `expected`. A connection closes right away while nothing listens in
+/// the guest.
+async fn exchange_through_forward(host: u16, sent: &[u8], expected: &str) {
+    let deadline = Instant::now() + STATUS_TIMEOUT;
+
+    while Instant::now() < deadline {
+        if received_reply(host, sent, expected).await {
+            return;
+        }
+
+        sleep(POLL_INTERVAL).await;
+    }
+
+    panic!("the guest never answered {expected:?} on localhost:{host}");
+}
+
+/// Sends the bytes over a new connection to the host port and returns whether the reply
+/// contains `expected` before the connection closes.
+async fn received_reply(host: u16, sent: &[u8], expected: &str) -> bool {
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", host)).await else {
+        return false;
+    };
+    let _ = stream.write_all(sent).await;
+    let mut received = Vec::new();
+    let mut buffer = [0; 256];
+
+    while let Ok(Ok(count @ 1..)) =
+        tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buffer)).await
+    {
+        received.extend_from_slice(&buffer[..count]);
+
+        if String::from_utf8_lossy(&received).contains(expected) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Reads session output until it contains `expected`.
+async fn wait_for_output(responses: &mut Streaming<AttachResponse>, expected: &str) {
+    let mut output = Vec::new();
+
+    while !String::from_utf8_lossy(&output).contains(expected) {
+        let response = tokio::time::timeout(STATUS_TIMEOUT, responses.message())
+            .await
+            .expect("the session printed nothing in time")
+            .expect("attach stream failed")
+            .expect("the session ended before printing the expected output");
+
+        if let Some(attach_response::Message::Output(data)) = response.message {
+            output.extend(data);
+        }
+    }
+}
+
+/// Port the guest server listens on in the port forwarding test.
+const GUEST_PORT: u16 = 4000;
+
+/// Runs `nc -l` on the guest port and checks that bytes go both ways between it and a
+/// connection to the forwarded host port.
+async fn check_forward_both_ways(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    sandbox: &str,
+    host: u16,
+) {
+    // nc sends its input to the connection and prints what it receives.
+    let port = GUEST_PORT.to_string();
+    let (tx, mut responses) = open_session(
+        client,
+        attach_start(sandbox, "nc", &["-l", "-p", &port], DEFAULT_SIZE),
+    )
+    .await;
+    tx.send(attach_input(b"from-guest\n")).await.unwrap();
+
+    exchange_through_forward(host, b"from-host\n", "from-guest").await;
+    wait_for_output(&mut responses, "from-host").await;
+}
+
+/// Starts the sandbox with the request, waits until it runs and returns the daemon's response.
+async fn start_with_ports(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    request: StartSandboxRequest,
+) -> StartSandboxResponse {
+    let name = request.name.clone();
+    let started = client
+        .start_sandbox(request)
+        .await
+        .expect("failed to start sandbox")
+        .into_inner();
+    wait_for_status(client, &name, SandboxStatus::Running).await;
+
+    started
+}
+
+#[tokio::test]
+async fn forwards_host_port_to_sandbox_and_closes_removed_port() {
+    const NAME: &str = "fbk-it-port-forward";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("port-forward").await;
+    let mut client = daemon.client().await;
+    let host = free_port().await;
+    let request = StartSandboxRequest {
+        // busybox in alpine has `nc`.
+        image: "alpine:3.22".to_string(),
+        ports: Some(forward_ports(host, GUEST_PORT)),
+        ..start_request(NAME)
+    };
+
+    let started = start_with_ports(&mut client, request.clone()).await;
+    check_forward_both_ways(&mut client, NAME, host).await;
+    let restarted = start_with_ports(
+        &mut client,
+        StartSandboxRequest {
+            ports: Some(PortForwards::default()),
+            ..request
+        },
+    )
+    .await;
+    let closed = TcpStream::connect(("127.0.0.1", host)).await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert_eq!(started.forwards, forward_ports(host, GUEST_PORT).ports);
+    assert!(started.failed_forwards.is_empty());
+    assert!(restarted.forwards.is_empty());
+    assert!(closed.is_err(), "localhost:{host} should be closed");
+}
+
+#[tokio::test]
+async fn update_network_keeps_extra_mounts_and_port_forwards() {
+    const NAME: &str = "fbk-it-update-mounts-ports";
+    remove_sandbox_and_snapshots(NAME).await;
+
+    let readonly = test_mount_dir(NAME, "ro");
+    std::fs::write(readonly.join("from-host.txt"), "hello from host").unwrap();
+    let daemon = TestDaemon::start("update-mounts-ports").await;
+    let mut client = daemon.client().await;
+    let host = free_port().await;
+    let request = StartSandboxRequest {
+        // busybox in alpine has `nc`.
+        image: "alpine:3.22".to_string(),
+        mounts: vec![mount(&readonly, "/mnt/ro", true)],
+        ports: Some(forward_ports(host, GUEST_PORT)),
+        ..start_request(NAME)
+    };
+    start_with_ports(&mut client, request).await;
+
+    let updated = update_network(&mut client, NAME, allow_policy(true, &["example.org"])).await;
+    let script = "cat /mnt/ro/from-host.txt && ! touch /mnt/ro/from-guest.txt";
+    let (output, code) = run_command(&mut client, NAME, "sh", &["-c", script]).await;
+    check_forward_both_ways(&mut client, NAME, host).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(NAME).await;
+    let _ = std::fs::remove_dir_all(readonly);
+
+    assert!(matches!(updated, Ok(true)), "{updated:?}");
+    assert_eq!(code, 0, "unexpected output: {output:?}");
+    assert!(output.contains("hello from host"), "{output:?}");
+    assert!(output.contains("Read-only file system"), "{output:?}");
 }

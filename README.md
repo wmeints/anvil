@@ -266,18 +266,41 @@ network:
 `<version>` is the installed firebrick version. Edit the file to change any of
 the fields, such as `image` to run your own image.
 
-| Field              | Description                                                             | Default                                     |
-| ------------------ | ----------------------------------------------------------------------- | ------------------------------------------- |
-| `name`             | Name of the sandbox.                                                    | Required                                    |
-| `image`            | OCI image the sandbox runs.                                             | `ghcr.io/wmeints/firebrick-base:v<version>` |
-| `init`             | Run the image's `/sbin/init` as PID 1. See below.                       | `true`                                      |
-| `mise`             | Trust and install the project's mise tools when it starts.              | `true`                                      |
-| `resources.cpu`    | Number of vCPUs.                                                        | `2`                                         |
-| `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`.         | `4 GiB`                                     |
-| `volumes.docker`   | Size of the Docker data disk, in the same units as `memory`.            | `20 GiB`                                    |
-| `network.enforce`  | Deny outgoing traffic unless a rule allows it. See [Network](#network). | `false`                                     |
-| `network.allow`    | Destinations the sandbox may connect to.                                | Empty                                       |
-| `network.deny`     | Destinations the sandbox may not connect to, even if allowed.           | Empty                                       |
+To give the sandbox more host directories than the project directory, such as a
+library checked out next to it or a dataset, list them under `mounts`:
+
+```yaml
+mounts:
+  - host: ../shared-lib
+    guest: /workspaces/shared-lib
+  - host: ~/datasets/images
+    guest: /data/images
+    readonly: true
+```
+
+A relative `host` resolves against the directory that holds `.firebrick.yml`,
+`~` expands to `$HOME`, and `~user` to that user's home directory. `fbk start`
+and `fbk run` refuse to create the sandbox when a `host` isn't an existing
+directory, or when a `guest` is the workspace path (`/workspaces/<leaf-name>`)
+or `/var/lib/docker`. A `guest` must not contain `..`, `:`, `;` or `,`. The
+agent user owns the mounted files, like the workspace.
+
+| Field               | Description                                                             | Default                                     |
+| ------------------- | ----------------------------------------------------------------------- | ------------------------------------------- |
+| `name`              | Name of the sandbox.                                                    | Required                                    |
+| `image`             | OCI image the sandbox runs.                                             | `ghcr.io/wmeints/firebrick-base:v<version>` |
+| `init`              | Run the image's `/sbin/init` as PID 1. See below.                       | `true`                                      |
+| `mise`              | Trust and install the project's mise tools when it starts.              | `true`                                      |
+| `resources.cpu`     | Number of vCPUs.                                                        | `2`                                         |
+| `resources.memory`  | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`.         | `4 GiB`                                     |
+| `volumes.docker`    | Size of the Docker data disk, in the same units as `memory`.            | `20 GiB`                                    |
+| `network.enforce`   | Deny outgoing traffic unless a rule allows it. See [Network](#network). | `false`                                     |
+| `network.allow`     | Destinations the sandbox may connect to.                                | Empty                                       |
+| `network.deny`      | Destinations the sandbox may not connect to, even if allowed.           | Empty                                       |
+| `ports`             | Host ports to forward to the sandbox. See [Ports](#ports).              | Empty                                       |
+| `mounts[].host`     | Host directory: absolute, `~/...`, `~user/...` or relative to the spec. | Required per mount                          |
+| `mounts[].guest`    | Absolute guest path to mount it at. Each path may appear only once.     | Required per mount                          |
+| `mounts[].readonly` | Mount the directory read-only.                                          | `false`                                     |
 
 Without `.firebrick.yml`, Firebrick uses the defaults and names the sandbox
 `firebrick-` followed by the first 6 characters of the SHA-256 hash of the full
@@ -300,11 +323,13 @@ can store images and containers inside the sandbox; Docker's storage doesn't
 work on the sandbox's overlayfs root filesystem. The disk keeps its contents
 when the sandbox stops, and `fbk rm` deletes it with the sandbox.
 
-The image, init, mise setting, resources, volumes and network rules apply when
-the sandbox is created. To change them for an existing sandbox, run `fbk rm` and
-start it again. The network rules are the exception: `fbk network` changes them
-without removing the sandbox (see [Network](#network)). Sandboxes created by an
-older version have no Docker data disk until you recreate them.
+The image, init, mise setting, resources, volumes, network rules and mounts
+apply when the sandbox is created. To change them for an existing sandbox, run
+`fbk rm` and start it again. There are two exceptions: `fbk start` applies
+`ports` to an existing sandbox, also while it runs, and `fbk network` changes
+the network rules without removing the sandbox (see [Network](#network)).
+Sandboxes created by an older version have no Docker data disk until you
+recreate them.
 
 ### Network
 
@@ -392,6 +417,37 @@ Keep in mind that:
 - A secret's allowed hosts must be allowed by the network rules too.
 - `mise install` downloads its tools when the sandbox starts, so allow the hosts
   it needs, or set `mise: false`.
+
+### Ports
+
+To open a server in the sandbox, such as a dev server, from the browser on your
+host, list its port under `ports`, written like Docker Compose:
+
+```yaml
+name: my-project
+ports:
+  - 3000 # host localhost:3000 -> sandbox port 3000
+  - "8080:5173" # host localhost:8080 -> sandbox port 5173
+```
+
+`fbk start` prints each forward:
+
+```text
+Forwarding localhost:3000 -> sandbox port 3000
+Forwarding localhost:8080 -> sandbox port 5173
+```
+
+The forwards reach `127.0.0.1` in the sandbox, so a server that only listens on
+`localhost` there works. They listen on `localhost` on the host only, never on
+your network. To change them, edit the list and run `fbk start` again; the
+sandbox keeps running and unchanged forwards keep their connections. `fbk stop`
+and `fbk rm` close them, and an SSH connection that starts the sandbox opens
+them again.
+
+When a host port is already in use, the sandbox still starts and `fbk start`
+prints `warning: couldn't forward localhost:<port>: <reason>`. Free the port and
+run `fbk start` again. Ports must be from 1 to 65535, and each host port may
+appear once.
 
 ### Secrets
 

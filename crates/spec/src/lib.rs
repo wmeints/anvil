@@ -1,9 +1,10 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::{fs, path::Path};
 
-use serde::de::{self, Visitor};
+use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::result::Result;
 use thiserror::Error;
@@ -99,6 +100,36 @@ pub struct SandboxSpec {
     /// Egress rules of the sandbox. Without it, the sandbox gets microsandbox's default policy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<NetworkSpec>,
+    /// Host ports forwarded to the sandbox's loopback, written like Docker Compose: `3000` or
+    /// `"8080:5173"`. No host port appears twice.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_ports",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub ports: Vec<PortMapping>,
+    /// Extra host directories to bind mount into the sandbox, besides the workspace.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_mounts",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mounts: Option<Vec<MountSpec>>,
+}
+
+/// A host directory mounted into the sandbox when it's created.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MountSpec {
+    /// The host directory: absolute, starting with `~`, or relative to the spec file's
+    /// directory.
+    pub host: String,
+    /// Absolute guest path the directory shows up at, normalized by [`guest_mount_path`].
+    #[serde(deserialize_with = "deserialize_guest_path")]
+    pub guest: String,
+    /// Whether the directory is mounted read-only. Defaults to `false`.
+    #[serde(default)]
+    pub readonly: bool,
 }
 
 /// CPU and memory resources assigned to a sandbox.
@@ -305,6 +336,133 @@ fn is_host_label(label: &str) -> bool {
         && !label.ends_with('-')
 }
 
+/// A host port on the host's loopback that forwards to a port on the sandbox's loopback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PortMapping {
+    /// Port fbkd listens on at `localhost` on the host.
+    pub host: u16,
+    /// Port in the sandbox that connections to the host port reach.
+    pub guest: u16,
+}
+
+/// A port mapping that isn't `<port>` or `<host>:<guest>` with ports from 1 to 65535.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[error(
+    "invalid port mapping \"{0}\": use <port> or \"<host>:<guest>\" with ports from 1 to 65535"
+)]
+pub struct InvalidPortMapping(pub String);
+
+impl FromStr for PortMapping {
+    type Err = InvalidPortMapping;
+
+    /// Parses `3000` as host and guest port 3000, and `8080:5173` as host port 8080 and guest
+    /// port 5173.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let invalid = || InvalidPortMapping(value.to_string());
+
+        match value.split_once(':') {
+            Some((host, guest)) => Ok(PortMapping {
+                host: parse_port(host).ok_or_else(invalid)?,
+                guest: parse_port(guest).ok_or_else(invalid)?,
+            }),
+            None => parse_port(value)
+                .map(|port| PortMapping {
+                    host: port,
+                    guest: port,
+                })
+                .ok_or_else(invalid),
+        }
+    }
+}
+
+impl fmt::Display for PortMapping {
+    /// Writes the mapping as `<host>:<guest>`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.host, self.guest)
+    }
+}
+
+/// Parses a port from 1 to 65535.
+fn parse_port(value: &str) -> Option<u16> {
+    value.parse().ok().filter(|port| *port > 0)
+}
+
+impl Serialize for PortMapping {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+/// Deserializes the port mappings, rejecting a host port that is listed more than once.
+fn deserialize_ports<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<PortMapping>, D::Error> {
+    deserializer.deserialize_seq(PortsVisitor)
+}
+
+/// Reads the mappings of a `ports` list.
+struct PortsVisitor;
+
+impl<'de> Visitor<'de> for PortsVisitor {
+    type Value = Vec<PortMapping>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a list of ports")
+    }
+
+    fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<PortMapping>, A::Error> {
+        let mut ports = vec![];
+        let mut host_ports = HashSet::new();
+
+        while let Some(mapping) = seq.next_element_seed(UniquePort(&mut host_ports))? {
+            ports.push(mapping);
+        }
+
+        Ok(ports)
+    }
+}
+
+/// Reads one mapping and records its host port, failing when an earlier entry has it. The check
+/// runs while the parser still points at the entry, so a duplicate is reported at its own line.
+struct UniquePort<'a>(&'a mut HashSet<u16>);
+
+impl<'de> de::DeserializeSeed<'de> for UniquePort<'_> {
+    type Value = PortMapping;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<PortMapping, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+impl Visitor<'_> for UniquePort<'_> {
+    type Value = PortMapping;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a port such as 3000 or a mapping such as \"8080:5173\"")
+    }
+
+    fn visit_u64<E: de::Error>(self, value: u64) -> Result<PortMapping, E> {
+        self.visit_str(&value.to_string())
+    }
+
+    fn visit_i64<E: de::Error>(self, value: i64) -> Result<PortMapping, E> {
+        self.visit_str(&value.to_string())
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<PortMapping, E> {
+        let mapping: PortMapping = value.parse().map_err(E::custom)?;
+
+        if !self.0.insert(mapping.host) {
+            return Err(E::custom(format!(
+                "host port {} is listed more than once",
+                mapping.host
+            )));
+        }
+
+        Ok(mapping)
+    }
+}
+
 /// Size of the Docker volume when the spec doesn't set one.
 fn default_docker_volume() -> String {
     "20 GiB".to_string()
@@ -360,6 +518,119 @@ impl Visitor<'_> for SizeVisitor {
     }
 }
 
+/// Deserializes the mounts, rejecting a guest path that is mounted more than once.
+fn deserialize_mounts<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<MountSpec>>, D::Error> {
+    deserializer.deserialize_option(MountsVisitor)
+}
+
+/// Checks the guest paths while the parser still points at the list, so a duplicate is
+/// reported at the list's line and column instead of at the start of the document.
+struct MountsVisitor;
+
+impl<'de> Visitor<'de> for MountsVisitor {
+    type Value = Option<Vec<MountSpec>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a list of mounts")
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_seq(self)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut mounts = Vec::new();
+
+        while let Some(mount) = seq.next_element::<MountSpec>()? {
+            mounts.push(mount);
+        }
+
+        if let Some(guest) = duplicate_guest(&mounts) {
+            return Err(de::Error::custom(format!(
+                "guest path {guest} is mounted more than once"
+            )));
+        }
+
+        Ok(Some(mounts))
+    }
+}
+
+/// Returns the first guest path that more than one mount uses.
+fn duplicate_guest(mounts: &[MountSpec]) -> Option<&str> {
+    let mut guests = HashSet::new();
+
+    mounts
+        .iter()
+        .map(|mount| mount.guest.as_str())
+        .find(|guest| !guests.insert(*guest))
+}
+
+/// Deserializes a guest path, rejecting one that isn't absolute or is `/`.
+fn deserialize_guest_path<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    deserializer.deserialize_str(GuestPathVisitor)
+}
+
+/// Checks the guest path while the parser still points at it, so a problem is reported at
+/// the path's line and column.
+struct GuestPathVisitor;
+
+impl Visitor<'_> for GuestPathVisitor {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an absolute guest path")
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<String, E> {
+        guest_mount_path(value).map_err(E::custom)
+    }
+}
+
+/// A guest mount path that microsandbox can't mount a directory at.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum InvalidGuestPath {
+    #[error("guest path must be an absolute path other than /")]
+    NotAbsolute,
+    #[error("guest path must not contain ..")]
+    ParentDir,
+    #[error("guest path must not contain ':', ';' or ','")]
+    Separator,
+}
+
+/// Checks a guest mount path and returns it normalized the way microsandbox stores it: without
+/// `.` parts, repeated slashes or a trailing slash. Rejects a relative path, `/`, a path with
+/// `..`, and a path with `:`, `;` or `,`, which microsandbox refuses.
+pub fn guest_mount_path(guest: &str) -> Result<String, InvalidGuestPath> {
+    if !guest.starts_with('/') {
+        return Err(InvalidGuestPath::NotAbsolute);
+    }
+
+    if guest.contains([':', ';', ',']) {
+        return Err(InvalidGuestPath::Separator);
+    }
+
+    let parts: Vec<&str> = guest
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+
+    if parts.contains(&"..") {
+        return Err(InvalidGuestPath::ParentDir);
+    }
+
+    if parts.is_empty() {
+        return Err(InvalidGuestPath::NotAbsolute);
+    }
+
+    Ok(format!("/{}", parts.join("/")))
+}
+
 /// Loads and parses a sandbox spec from a YAML file.
 pub fn from_file(path: &Path) -> Result<SandboxSpec, SandboxSpecError> {
     if !path.exists() {
@@ -392,6 +663,8 @@ pub fn default_spec(name: String) -> SandboxSpec {
         mise: Some(true),
         volumes: VolumesSpec::default(),
         network: None,
+        mounts: None,
+        ports: vec![],
     }
 }
 
@@ -636,6 +909,8 @@ pub mod tests {
         assert_eq!(spec.mise, Some(true));
         assert_eq!(spec.volumes, VolumesSpec::default());
         assert!(spec.network.is_none());
+        assert!(spec.mounts.is_none());
+        assert!(spec.ports.is_empty());
     }
 
     #[test]
@@ -845,6 +1120,274 @@ pub mod tests {
         let result = from_file(file.path());
 
         assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
+    }
+
+    #[test]
+    fn ports_are_optional() {
+        let file = write_spec("name: dev\n");
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert!(spec.ports.is_empty());
+    }
+
+    #[test]
+    fn parses_ports() {
+        let file = write_spec("name: dev\nports:\n  - 3000\n  - \"8080:5173\"\n");
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert_eq!(
+            spec.ports,
+            [
+                PortMapping {
+                    host: 3000,
+                    guest: 3000
+                },
+                PortMapping {
+                    host: 8080,
+                    guest: 5173
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn port_mapping_displays_host_and_guest() {
+        let mapping: PortMapping = "3000".parse().unwrap();
+
+        assert_eq!(mapping.to_string(), "3000:3000");
+        assert_eq!("3000:3000".parse(), Ok(mapping));
+    }
+
+    #[test]
+    fn rejects_invalid_port_mappings() {
+        for mapping in [
+            "", "0", "65536", "-1", "abc", "80:", ":80", "0:80", "80:0", "1:2:3", "80 : 81",
+        ] {
+            assert_eq!(
+                mapping.parse::<PortMapping>(),
+                Err(InvalidPortMapping(mapping.to_string())),
+                "{mapping:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_port_returns_diagnostic() {
+        for (entry, column) in [("0", 5), ("65536", 5), ("\"8080:abc\"", 5), ("web", 5)] {
+            let file = write_spec(&format!("name: dev\nports:\n  - 3000\n  - {entry}\n"));
+
+            let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+            assert_eq!((diagnostic.line, diagnostic.column), (4, column), "{entry}");
+            assert!(
+                diagnostic.message.contains("invalid port mapping"),
+                "{}",
+                diagnostic.message
+            );
+        }
+    }
+
+    #[test]
+    fn port_of_wrong_type_returns_diagnostic() {
+        let file = write_spec("name: dev\nports:\n  - {host: 80}\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!(diagnostic.line, 3);
+        assert!(
+            diagnostic.message.contains("a port such as 3000"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn duplicate_host_port_returns_diagnostic() {
+        let file = write_spec("name: dev\nports:\n  - 3000\n  - \"3000:4000\"\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (4, 5));
+        assert!(
+            diagnostic
+                .message
+                .ends_with("host port 3000 is listed more than once"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn mounts_are_optional() {
+        for content in ["name: dev\n", "name: dev\nmounts: null\n"] {
+            let file = write_spec(content);
+
+            let spec = from_file(file.path()).unwrap();
+
+            assert!(spec.mounts.is_none(), "{content:?}");
+        }
+    }
+
+    #[test]
+    fn parses_mounts() {
+        let file = write_spec(concat!(
+            "name: dev\n",
+            "mounts:\n",
+            "  - host: ../shared-lib\n",
+            "    guest: /workspaces/shared-lib\n",
+            "  - host: ~/datasets/images\n",
+            "    guest: /data/images\n",
+            "    readonly: true\n",
+        ));
+
+        let mounts = from_file(file.path()).unwrap().mounts.unwrap();
+
+        assert_eq!(
+            mounts,
+            [
+                MountSpec {
+                    host: "../shared-lib".to_string(),
+                    guest: "/workspaces/shared-lib".to_string(),
+                    readonly: false,
+                },
+                MountSpec {
+                    host: "~/datasets/images".to_string(),
+                    guest: "/data/images".to_string(),
+                    readonly: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn mount_without_guest_returns_invalid_spec() {
+        let file = write_spec("name: dev\nmounts:\n  - host: ../lib\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!(diagnostic.line, 3);
+        assert!(
+            diagnostic.message.contains("missing field `guest`"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn unknown_mount_field_returns_invalid_spec() {
+        let file =
+            write_spec("name: dev\nmounts:\n  - host: ../lib\n    guest: /lib\n    ro: true\n");
+
+        let result = from_file(file.path());
+
+        assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
+    }
+
+    #[test]
+    fn invalid_guest_path_returns_diagnostic() {
+        for guest in ["data", "./data", "/"] {
+            let file = write_spec(&format!(
+                "name: dev\nmounts:\n  - host: ../data\n    guest: {guest}\n"
+            ));
+
+            let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+            assert_eq!((diagnostic.line, diagnostic.column), (4, 12), "{guest:?}");
+            assert_eq!(
+                diagnostic.message,
+                "mounts[0].guest: guest path must be an absolute path other than /"
+            );
+        }
+    }
+
+    #[test]
+    fn guest_mount_path_normalizes_the_path() {
+        let cases = [
+            ("/data", "/data"),
+            ("/data/", "/data"),
+            ("/data/./images", "/data/images"),
+            ("//data//images/.", "/data/images"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                guest_mount_path(input).as_deref(),
+                Ok(expected),
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn guest_mount_path_rejects_paths_microsandbox_refuses() {
+        let cases = [
+            ("data", InvalidGuestPath::NotAbsolute),
+            ("", InvalidGuestPath::NotAbsolute),
+            ("/", InvalidGuestPath::NotAbsolute),
+            ("/./", InvalidGuestPath::NotAbsolute),
+            ("/data/../etc", InvalidGuestPath::ParentDir),
+            ("/data:v1", InvalidGuestPath::Separator),
+            ("/data;v1", InvalidGuestPath::Separator),
+            ("/data,v1", InvalidGuestPath::Separator),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(guest_mount_path(input), Err(expected), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn duplicate_guest_path_ignores_trailing_slash() {
+        let file = write_spec(concat!(
+            "name: dev\n",
+            "mounts:\n",
+            "  - host: ../a\n",
+            "    guest: /data/images\n",
+            "  - host: ../b\n",
+            "    guest: /data/images/\n",
+        ));
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!(
+            diagnostic.message,
+            "mounts: guest path /data/images is mounted more than once"
+        );
+    }
+
+    #[test]
+    fn invalid_guest_path_reports_parent_dir() {
+        let file = write_spec("name: dev\nmounts:\n  - host: ../a\n    guest: /data/../etc\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (4, 12));
+        assert_eq!(
+            diagnostic.message,
+            "mounts[0].guest: guest path must not contain .."
+        );
+    }
+
+    #[test]
+    fn duplicate_guest_path_returns_diagnostic() {
+        let file = write_spec(concat!(
+            "name: dev\n",
+            "mounts:\n",
+            "  - host: ../a\n",
+            "    guest: /data/images\n",
+            "  - host: ../b\n",
+            "    guest: /data/images\n",
+        ));
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (3, 3));
+        assert_eq!(
+            diagnostic.message,
+            "mounts: guest path /data/images is mounted more than once"
+        );
     }
 
     #[test]
