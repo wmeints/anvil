@@ -27,6 +27,7 @@ use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tonic::{Code, Streaming};
 use tower::service_fn;
+use tracing_subscriber::EnvFilter;
 
 const STATUS_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -54,6 +55,8 @@ impl TestDaemon {
     }
 
     async fn start_with_secrets(name: &str, secrets: SecretStore) -> Self {
+        init_logging();
+
         let socket_path =
             std::env::temp_dir().join(format!("fbk-it-{}-{}.sock", std::process::id(), name));
         let _ = std::fs::remove_file(&socket_path);
@@ -90,6 +93,19 @@ impl TestDaemon {
             .unwrap()
             .expect("daemon exited with an error");
     }
+}
+
+/// Sends the daemon's logs through libtest's output capture, so a failing test prints them.
+///
+/// The tests use the current-thread runtime, so the daemon logs on the test's own thread and
+/// its lines end up under the right test. Only the first call installs the subscriber.
+fn init_logging() {
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .try_init();
 }
 
 /// Serves the daemon on the socket until `stop` fires.
