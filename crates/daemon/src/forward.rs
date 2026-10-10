@@ -6,6 +6,9 @@
 //! loopback, and hands accepted connections to a [`Connector`]. [`SshConnector`] reaches the
 //! guest port through a `direct-tcpip` channel of the sandbox's SSH server, which agentd opens
 //! from inside the guest. One SSH session per sandbox carries all channels.
+//!
+//! [`CallbackForwards`] opens forwards of one sandbox on demand, such as for the OAuth callback
+//! port of a URL the sandbox opens on the host, and closes each one after it's idle.
 
 use async_trait::async_trait;
 use firebrick_spec::PortMapping;
@@ -15,8 +18,8 @@ use russh::keys::{Algorithm, PrivateKey, PrivateKeyWithHashAlg, PublicKeyBase64}
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, PoisonError};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::Mutex;
@@ -152,26 +155,215 @@ impl Forwards {
         self.connector.forget(sandbox).await;
     }
 
-    /// Listens on the host port and forwards its connections to the guest port.
+    /// Listens on the host port and forwards its connections to the guest port until the
+    /// forward is closed.
     async fn open(&self, sandbox: &str, port: PortMapping) -> io::Result<Forward> {
-        let mut listeners = JoinSet::new();
+        listen(Route {
+            sandbox: sandbox.to_string(),
+            port,
+            connector: Arc::clone(&self.connector),
+            activity: Arc::new(Activity::new(None)),
+        })
+        .await
+    }
+}
 
-        for listener in bind_loopback(port.host).await? {
-            listeners.spawn(accept_loop(
-                listener,
-                sandbox.to_string(),
-                port,
-                Arc::clone(&self.connector),
-            ));
+/// Where a forward sends its connections, and what tracks whether it's idle.
+#[derive(Clone)]
+struct Route {
+    sandbox: String,
+    port: PortMapping,
+    connector: Arc<dyn Connector>,
+    activity: Arc<Activity>,
+}
+
+/// Listens on the route's host port and forwards its connections to the guest port, until the
+/// forward is dropped or the route's activity says it's idle.
+async fn listen(route: Route) -> io::Result<Forward> {
+    let mut listeners = JoinSet::new();
+    let Route { sandbox, port, .. } = &route;
+
+    for listener in bind_loopback(port.host).await? {
+        listeners.spawn(accept_loop(listener, route.clone()));
+    }
+
+    tracing::info!(
+        "forwarding localhost:{} to port {} of sandbox {sandbox}",
+        port.host,
+        port.guest
+    );
+
+    Ok(Forward(listeners))
+}
+
+/// How long a callback forward stays open without open or new connections, or new URLs for
+/// its port.
+pub const CALLBACK_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// Forwards of host ports to the same ports in one sandbox, opened on demand. Each one closes
+/// after it's idle for the timeout. Dropping it closes them all.
+pub struct CallbackForwards {
+    sandbox: String,
+    connector: Arc<dyn Connector>,
+    idle_timeout: Duration,
+    open: HashMap<u16, CallbackForward>,
+}
+
+/// An open callback forward and what keeps it from being idle.
+struct CallbackForward {
+    forward: Forward,
+    activity: Arc<Activity>,
+}
+
+impl CallbackForwards {
+    /// Creates the callback forwards of the sandbox, reached through `connector`, that close
+    /// after `idle_timeout` without connections.
+    pub fn new(sandbox: &str, connector: Arc<dyn Connector>, idle_timeout: Duration) -> Self {
+        Self {
+            sandbox: sandbox.to_string(),
+            connector,
+            idle_timeout,
+            open: HashMap::new(),
+        }
+    }
+
+    /// Forwards `localhost:<port>` on the host to the same port in the sandbox, reusing the
+    /// open forward of the port and resetting its idle timer. Logs a warning and fails when the
+    /// host port can't be listened on.
+    pub async fn ensure(&mut self, port: u16) -> io::Result<()> {
+        if self
+            .open
+            .get(&port)
+            .is_some_and(|open| open.activity.touch())
+        {
+            return Ok(());
         }
 
-        tracing::info!(
-            "forwarding localhost:{} to port {} of sandbox {sandbox}",
-            port.host,
-            port.guest
-        );
+        // Wait until the listeners of an idle forward are closed, so the port can be bound again.
+        if let Some(idle) = self.open.remove(&port) {
+            close(idle.forward).await;
+        }
 
-        Ok(Forward(listeners))
+        let opened = self.open_new(port).await?;
+        self.open.insert(port, opened);
+
+        Ok(())
+    }
+
+    /// Listens on the host port and forwards its connections to the same guest port until it's
+    /// idle. Logs a warning when it can't listen.
+    async fn open_new(&self, port: u16) -> io::Result<CallbackForward> {
+        let mapping = PortMapping {
+            host: port,
+            guest: port,
+        };
+        let activity = Arc::new(Activity::new(Some(self.idle_timeout)));
+        let route = Route {
+            sandbox: self.sandbox.clone(),
+            port: mapping,
+            connector: Arc::clone(&self.connector),
+            activity: Arc::clone(&activity),
+        };
+
+        match listen(route).await {
+            Ok(forward) => Ok(CallbackForward { forward, activity }),
+            Err(err) => {
+                open_failed(&self.sandbox, mapping, &err);
+                Err(err)
+            }
+        }
+    }
+}
+
+/// When a forward was last used and how many connections it has open, to close it after it's
+/// idle.
+struct Activity {
+    idle_timeout: Option<Duration>,
+    state: std::sync::Mutex<ActivityState>,
+}
+
+/// The mutable part of [`Activity`].
+struct ActivityState {
+    last_used: Instant,
+    connections: usize,
+    idle: bool,
+}
+
+impl Activity {
+    /// Starts tracking a forward that is idle after `idle_timeout`, or never when it's `None`.
+    fn new(idle_timeout: Option<Duration>) -> Self {
+        Self {
+            idle_timeout,
+            state: std::sync::Mutex::new(ActivityState {
+                last_used: Instant::now(),
+                connections: 0,
+                idle: false,
+            }),
+        }
+    }
+
+    /// Locks the state. It stays consistent when a holder panics, so a poisoned lock is used as
+    /// is.
+    fn state(&self) -> std::sync::MutexGuard<'_, ActivityState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Resets the idle timer and returns `true`, or returns `false` when the forward is idle
+    /// and closed already.
+    fn touch(&self) -> bool {
+        let mut state = self.state();
+        state.last_used = Instant::now();
+
+        !state.idle
+    }
+
+    /// Counts a new connection until the returned guard is dropped.
+    fn connected(self: &Arc<Self>) -> ConnectionGuard {
+        self.state().connections += 1;
+
+        ConnectionGuard(Arc::clone(self))
+    }
+
+    /// Returns once the forward is idle: it has no open connections and wasn't used within the
+    /// timeout. Never returns without a timeout.
+    async fn idle(&self) {
+        let Some(timeout) = self.idle_timeout else {
+            return std::future::pending().await;
+        };
+
+        while let Some(wait) = self.time_until_idle(timeout) {
+            tokio::time::sleep(wait).await;
+        }
+    }
+
+    /// Returns how long to wait before checking again, or `None` once the forward is idle,
+    /// which marks it so.
+    fn time_until_idle(&self, timeout: Duration) -> Option<Duration> {
+        let mut state = self.state();
+        let unused = timeout.saturating_sub(state.last_used.elapsed());
+
+        if state.idle || (state.connections == 0 && unused.is_zero()) {
+            state.idle = true;
+            return None;
+        }
+
+        // A connection that closes resets the timer, so wait a full timeout while one is open.
+        Some(if state.connections > 0 {
+            timeout
+        } else {
+            unused
+        })
+    }
+}
+
+/// Counts an open connection of a forward. Dropping it resets the forward's idle timer.
+struct ConnectionGuard(Arc<Activity>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        let mut state = self.0.state();
+        state.connections = state.connections.saturating_sub(1);
+        state.last_used = Instant::now();
     }
 }
 
@@ -265,24 +457,34 @@ fn is_taken(err: &io::Error) -> bool {
 }
 
 /// Accepts connections on the listener and forwards each one until the forward is closed,
-/// which also closes its open connections.
-async fn accept_loop(
-    listener: TcpListener,
-    sandbox: String,
-    port: PortMapping,
-    connector: Arc<dyn Connector>,
-) {
+/// which also closes its open connections, or until it's idle.
+async fn accept_loop(listener: TcpListener, route: Route) {
+    let Route {
+        sandbox,
+        port,
+        connector,
+        activity,
+    } = route;
     let mut connections = JoinSet::new();
 
     loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
-                    connections.spawn(relay(stream, sandbox.clone(), port.guest, Arc::clone(&connector)));
+                    let guard = activity.connected();
+                    let relayed = relay(stream, sandbox.clone(), port.guest, Arc::clone(&connector));
+                    connections.spawn(async move {
+                        relayed.await;
+                        drop(guard);
+                    });
                 }
                 Err(err) => accept_failed(port.host, &err).await,
             },
             Some(_) = connections.join_next() => {}
+            () = activity.idle() => {
+                tracing::debug!("closed idle forward of localhost:{} for sandbox {sandbox}", port.host);
+                return;
+            }
         }
     }
 }
@@ -699,6 +901,159 @@ mod tests {
             .await
             .expect("the host port should be free again");
         assert!(forwards.apply("dev", &[]).await.open.is_empty());
+    }
+
+    /// Idle timeout of the callback forwards in the tests.
+    const IDLE: Duration = Duration::from_millis(300);
+
+    /// Refuses every connection, standing in for a guest port that nothing listens on. The
+    /// callback forwards use the host port as guest port, which [`LocalConnector`] would
+    /// connect back to the forward itself.
+    struct RefusingConnector;
+
+    #[async_trait]
+    impl Connector for RefusingConnector {
+        async fn connect(&self, _sandbox: &str, _guest_port: u16) -> io::Result<Box<dyn GuestIo>> {
+            Err(io::ErrorKind::ConnectionRefused.into())
+        }
+
+        async fn forget(&self, _sandbox: &str) {}
+    }
+
+    /// Accepts every connection and keeps the guest's end open, so the connection stays open
+    /// until the host closes it.
+    #[derive(Default)]
+    struct HoldingConnector {
+        guest_ends: Mutex<Vec<DuplexStream>>,
+    }
+
+    #[async_trait]
+    impl Connector for HoldingConnector {
+        async fn connect(&self, _sandbox: &str, _guest_port: u16) -> io::Result<Box<dyn GuestIo>> {
+            let (host_end, guest_end) = tokio::io::duplex(64);
+            self.guest_ends.lock().await.push(guest_end);
+
+            Ok(Box::new(host_end))
+        }
+
+        async fn forget(&self, _sandbox: &str) {}
+    }
+
+    fn callback_forwards() -> CallbackForwards {
+        CallbackForwards::new("dev", Arc::new(RefusingConnector), IDLE)
+    }
+
+    /// Opens a callback forward on a free port and returns the port. Retries with another port
+    /// when a concurrent test took the port in the meantime, for example as the local port of
+    /// a connection.
+    async fn ensure_free_port(forwards: &mut CallbackForwards) -> u16 {
+        let mut port = free_port().await;
+
+        for _ in 0..10 {
+            port = match forwards.ensure(port).await {
+                Ok(()) => return port,
+                Err(_) => free_port().await,
+            };
+        }
+
+        panic!("couldn't open a callback forward on a free port");
+    }
+
+    /// Opens the forward of the port again `times` times, half an idle timeout apart.
+    async fn ensure_repeatedly(forwards: &mut CallbackForwards, port: u16, times: usize) {
+        for _ in 0..times {
+            tokio::time::sleep(IDLE / 2).await;
+            forwards.ensure(port).await.unwrap();
+        }
+    }
+
+    /// Waits until the connector opened a connection.
+    async fn wait_for_connection(connector: &HoldingConnector) {
+        while connector.guest_ends.lock().await.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Waits until the host port can be listened on again, or fails after a few timeouts. It
+    /// doesn't connect, because a connection would reset the idle timer.
+    async fn wait_until_closed(port: u16) {
+        let deadline = Instant::now() + 10 * IDLE;
+
+        while TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+            .await
+            .is_err()
+        {
+            assert!(Instant::now() < deadline, "localhost:{port} is still open");
+            tokio::time::sleep(IDLE / 10).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_forward_closes_after_idle_timeout() {
+        let mut forwards = callback_forwards();
+
+        let port = ensure_free_port(&mut forwards).await;
+        assert!(connect(port).await.is_ok());
+
+        wait_until_closed(port).await;
+        assert!(connect(port).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn callback_forward_is_reused_and_its_idle_timer_reset() {
+        let mut forwards = callback_forwards();
+        let port = ensure_free_port(&mut forwards).await;
+
+        ensure_repeatedly(&mut forwards, port, 4).await;
+
+        // Without the resets the forward would have closed after IDLE.
+        assert!(connect(port).await.is_ok());
+        assert_eq!(forwards.open.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn callback_forward_stays_open_while_a_connection_is_open() {
+        let connector = Arc::new(HoldingConnector::default());
+        let mut forwards = CallbackForwards::new("dev", connector.clone(), IDLE);
+        let port = ensure_free_port(&mut forwards).await;
+        let _open = connect(port).await.unwrap();
+        wait_for_connection(&connector).await;
+
+        tokio::time::sleep(3 * IDLE).await;
+
+        assert!(connect(port).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn callback_forward_opens_again_after_it_was_idle() {
+        let mut forwards = callback_forwards();
+        let port = ensure_free_port(&mut forwards).await;
+        wait_until_closed(port).await;
+
+        forwards.ensure(port).await.unwrap();
+
+        assert!(connect(port).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn callback_forward_of_a_busy_port_fails() {
+        let mut forwards = callback_forwards();
+        let busy = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = busy.local_addr().unwrap().port();
+
+        assert!(forwards.ensure(port).await.is_err());
+        assert!(forwards.open.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropping_the_callback_forwards_closes_them() {
+        let mut forwards = callback_forwards();
+        let port = ensure_free_port(&mut forwards).await;
+
+        drop(forwards);
+        tokio::task::yield_now().await;
+
+        assert!(connect(port).await.is_err());
     }
 
     #[tokio::test]

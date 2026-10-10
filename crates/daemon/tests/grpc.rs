@@ -2693,7 +2693,7 @@ async fn url_relay_follows_updated_network_rules() {
 
     let updated = update_network(&mut client, name, allow_policy(true, &["example.org"])).await;
     write_to_relay(&mut client, name, "https://example.com/not-allowed").await;
-    write_to_relay(&mut client, name, "http://localhost:3000/").await;
+    write_to_relay(&mut client, name, "http://10.0.0.1:3000/").await;
     write_to_relay(&mut client, name, "https://example.org/allowed").await;
     wait_for_opened(&daemon, &["https://example.org/allowed"]).await;
     let relays = relay_count(&mut client, name).await;
@@ -2703,6 +2703,43 @@ async fn url_relay_follows_updated_network_rules() {
 
     assert!(matches!(updated, Ok(true)), "{updated:?}");
     assert_eq!(relays, 1);
+}
+
+/// Returns a URL that sends the browser back to `localhost:<port>`, as an OAuth login does.
+fn login_url(port: u16) -> String {
+    format!("https://example.com/login?redirect_uri=http%3A%2F%2Flocalhost%3A{port}%2Fcb")
+}
+
+#[tokio::test]
+async fn forwards_the_callback_port_of_an_opened_url() {
+    let name: &str = &sandbox_name("open-url-callback");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("open-url-callback").await;
+    let mut client = daemon.client().await;
+    start_alpine_sandbox(&mut client, name).await;
+    let port = free_port().await;
+    let (tx, mut responses) = open_session(
+        &mut client,
+        attach_start(name, "nc", &["-l", "-p", &port.to_string()], DEFAULT_SIZE),
+    )
+    .await;
+    tx.send(attach_input(b"from-guest\n")).await.unwrap();
+
+    write_to_relay(&mut client, name, &login_url(port)).await;
+    wait_for_opened(&daemon, &[&login_url(port)]).await;
+    exchange_through_forward(port, b"from-host\n", "from-guest").await;
+    wait_for_output(&mut responses, "from-host").await;
+    stop_sandbox(&mut client, name).await;
+    let closed = TcpStream::connect(("127.0.0.1", port)).await;
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+
+    assert!(
+        closed.is_err(),
+        "localhost:{port} should close with the sandbox"
+    );
 }
 
 /// Asks the daemon to forward the host port to the guest port of the sandbox.

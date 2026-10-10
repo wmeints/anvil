@@ -867,19 +867,67 @@ sequenceDiagram
     O-->>A: Exit 0
     R-->>D: Echo the line on stdout
     D->>D: Validate the URL again, plus the 8 KiB limit, and parse it
-    alt Invalid, local host, host the egress rules deny, or over the rate limit
+    alt Invalid, local host without a forwardable port, host the egress rules deny, or over the rate limit
         D->>D: Log a warning with the reason, without the URL
     else Allowed
+        opt Loopback host or loopback redirect_uri with a port
+            alt The relay forwards the port already
+                D->>D: Reuse the forward, reset its idle timer
+            else
+                D->>D: Listen on 127.0.0.1:port and [::1]:port
+            end
+            alt The port is busy and it's the URL's own host
+                D->>D: Log a warning, don't open the URL
+            end
+        end
         D->>B: xdg-open <url> (Linux) or open <url> (macOS)
     end
+    B->>D: GET http://localhost:port/callback
+    D->>MS: direct-tcpip to 127.0.0.1:port over the SSH server
+    MS->>A: Connection to the callback server
 ```
 
-`fbkd` doesn't open URLs whose host is `localhost` or an address of the host's
-local network, so a sandbox can't make the browser send requests to services on
-the host or the LAN. When the sandbox enforces egress rules, the host must also
-be one the rules allow, so the browser can't carry data to a host the sandbox
-itself can't reach. A sandbox with its network disabled opens no URLs at all. At
-most 5 URLs per sandbox open within 10 seconds.
+OAuth logins, such as `gh auth login --web` or Claude Code's login, start a
+callback server on the guest's `localhost:<port>` and open a URL whose
+`redirect_uri` is `http://localhost:<port>/...`. The browser runs on the host,
+so `fbkd` forwards the host's `localhost:<port>` into the sandbox before it
+opens such a URL, and the same for a URL whose own host is `localhost`,
+`127.0.0.1` or `[::1]` with a port, such as a dev server
+([ADR 0030](decisions/0030-forward-oauth-callback-ports-when-opening-a-url.md)).
+It listens on `127.0.0.1:<port>`, and on `[::1]:<port>` when the host has IPv6
+loopback, and forwards each connection to `127.0.0.1:<port>` in the sandbox
+through a `direct-tcpip` channel of microsandbox's SSH server, like the ports in
+`.firebrick.yml`
+([ADR 0019](decisions/0019-forward-ports-through-the-ssh-servers-direct-tcpip.md)).
+The listener is bound before the browser opens, so the callback can't arrive
+first.
+
+```sh
+# inside the sandbox
+agent@sandbox:~$ gh auth login --web    # callback server on localhost:43117
+# fbkd: forwarding localhost:43117 to port 43117 of sandbox my-project
+# the browser opens https://github.com/login/oauth/authorize?...&redirect_uri=http%3A%2F%2Flocalhost%3A43117%2Fcallback
+```
+
+A second URL for a port the sandbox forwards already reuses the forward and
+resets its idle timer. A forward closes after 10 minutes without open or new
+connections, when the sandbox stops or is removed, which ends its relay, and
+when `fbkd` exits. When the host port is in use by another process, another
+sandbox's forward, or needs privileges, `fbkd` logs `couldn't forward
+localhost:<port> for sandbox <name>: <error>` and still opens a URL with that
+`redirect_uri`, but not a URL whose own host is that port, because the browser
+would reach the host's own service. A port of `0`, a missing port, or a
+`redirect_uri` that doesn't parse forwards nothing. A connection that arrives
+while nothing listens on the guest port is closed and logged at `debug`; the
+listener stays up.
+
+Apart from these forwarded loopback ports, `fbkd` doesn't open URLs whose host
+is `localhost` or an address of the host's local network, so a sandbox can't
+make the browser send requests to services on the host or the LAN. When the
+sandbox enforces egress rules, the host must also be one the rules allow, so the
+browser can't carry data to a host the sandbox itself can't reach. A sandbox
+with its network disabled opens only its forwarded loopback URLs, which reach
+the sandbox itself. At most 5 URLs per sandbox open within 10 seconds.
 
 The relay keeps running after the session or SSH connection that started it
 closes, and a sandbox never has more than one. `UpdateNetwork` recreates a

@@ -340,7 +340,15 @@ C4Component
   runs microsandbox's SSH server over an in-memory pipe with keys generated for
   that session and no inactivity timeout, so forwards stay open while the
   sandbox runs. When nothing listens on the guest port, the host connection is
-  closed and logged at `debug`.
+  closed and logged at `debug`. `CallbackForwards` holds the on-demand forwards
+  of one sandbox that `open` uses for OAuth callback ports (see
+  [ADR 0030](decisions/0030-forward-oauth-callback-ports-when-opening-a-url.md)):
+  `CallbackForwards::ensure(port)` forwards `localhost:<port>` to the same port
+  in the sandbox through the same listeners and `Connector`, or reuses the open
+  forward of the port and resets its idle timer. A forward closes after 10
+  minutes without open or new connections, and dropping `CallbackForwards`
+  closes them all. A host port it can't listen on is logged as `couldn't forward
+  localhost:<port> for sandbox <name>: <error>` and fails `ensure`.
 - `open` - Opens http and https URLs from a sandbox in the browser on the host
   (see
   [ADR 0026](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)
@@ -366,14 +374,23 @@ C4Component
   does: deny rules first, then allow rules, else deny. Domain rules only match
   host names and IP rules only IP addresses, because `fbkd` doesn't resolve
   names. A sandbox whose label can't be read, or one with a network policy that
-  predates the label, opens nothing. At most 5 URLs per sandbox open within 10
-  seconds. `fbkd` opens the URL as the `url` crate serializes it through an
-  `Opener`; `HostOpener` runs `xdg-open <url>` on Linux and `open <url>` on
-  macOS with `tokio::process`, without a shell, and doesn't wait for it; tests
-  pass an opener that records the URLs. A rejected line is logged at `warn`
-  without the URL, with the reason. A relay that can't start or exits with an
-  error is logged as a warning with its stderr, and an opener that fails is
-  logged as a warning; neither fails the request.
+  predates the label, opens only forwarded loopback URLs. At most 5 URLs per
+  sandbox open within 10 seconds. `fbkd` opens the URL as the `url` crate
+  serializes it through an `Opener`; `HostOpener` runs `xdg-open <url>` on Linux
+  and `open <url>` on macOS with `tokio::process`, without a shell, and doesn't
+  wait for it; tests pass an opener that records the URLs. A rejected line is
+  logged at `warn` without the URL, with the reason. A relay that can't start or
+  exits with an error is logged as a warning with its stderr, and an opener that
+  fails is logged as a warning; neither fails the request. Before it opens a
+  URL, `fbkd` forwards its loopback ports into the sandbox with the relay's own
+  `CallbackForwards`, which use a `SshConnector` of their own: the port of the
+  URL's own host when that is `localhost`, `127.0.0.1` or `[::1]` with an
+  explicit, non-zero port, and the same for the port of a percent-decoded `http`
+  `redirect_uri` query parameter. Such a loopback URL skips the local host and
+  egress checks, because it reaches the sandbox, and opens only when its forward
+  is open; a busy `redirect_uri` port is logged and the URL still opens. The
+  forwards close when the relay ends, when `Relays::forget` stops the relay
+  task, or after they're idle.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,

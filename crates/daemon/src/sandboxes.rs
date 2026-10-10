@@ -553,13 +553,15 @@ impl SandboxManager {
         Ok(())
     }
 
-    /// Returns the sandbox with the name. Closes its forwards when it doesn't exist anymore, for
-    /// example because it was removed without fbkd, so its host ports are freed.
+    /// Returns the sandbox with the name. Closes its forwards and forgets its URL relay when it
+    /// doesn't exist anymore, for example because it was removed without fbkd, so its host
+    /// ports are freed.
     async fn get_or_close_forwards(&self, name: &str) -> Result<SandboxHandle, SandboxError> {
         let result = get_sandbox(name).await;
 
         if let Err(SandboxError::NotFound(_)) = result {
             self.forwards.close(name).await;
+            self.relays.forget(name);
         }
 
         result

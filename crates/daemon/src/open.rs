@@ -6,7 +6,14 @@
 //! line by line, checks each URL and hands it to an [`Opener`]. It never opens a URL whose host
 //! is the host itself or its local network, or one the sandbox's enforced egress rules don't
 //! allow, so the browser can't be used to get around them.
+//!
+//! OAuth logins in the sandbox send the browser to a `redirect_uri` on `localhost:<port>`,
+//! where a callback server in the sandbox waits. Before fbkd opens such a URL, or one whose own
+//! host is `localhost:<port>`, it forwards the host's `localhost:<port>` to the same port in
+//! the sandbox with [`CallbackForwards`], so the browser reaches the sandbox instead of the
+//! host. A URL whose own host is loopback only opens when that forward is open.
 
+use crate::forward::{CALLBACK_IDLE_TIMEOUT, CallbackForwards, SshConnector};
 use crate::network;
 use firebrick_spec::NetworkSpec;
 use microsandbox::Sandbox;
@@ -16,8 +23,9 @@ use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
+use tokio::task::AbortHandle;
 use url::{Host, Url};
 
 /// Guest path of the FIFO that the stand-in writes URLs to.
@@ -83,30 +91,71 @@ enum Rejection {
     /// It isn't an http or https URL of at most [`MAX_URL_LEN`] bytes without whitespace or
     /// control characters.
     Invalid,
-    /// Its host is the host itself or its local network.
+    /// Its host is the host itself or its local network, and not a loopback port that fbkd
+    /// forwards to the sandbox.
     LocalHost,
     /// The sandbox's egress rules don't allow its host.
     NotAllowed,
 }
 
-/// Checks a line from the relay and returns the URL to open, as the browser would read it.
-fn check_url(line: &[u8], network: &NetworkSpec) -> Result<Url, Rejection> {
+/// A URL to open and the loopback ports to forward to the sandbox before opening it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Target {
+    /// The URL as the browser reads it.
+    url: Url,
+    /// The port of the URL's own loopback host. The URL only opens when it's forwarded.
+    own_port: Option<u16>,
+    /// The port of the URL's loopback `redirect_uri`.
+    callback_port: Option<u16>,
+}
+
+/// Checks a line from the relay and returns the URL to open with the ports to forward.
+fn check_url(line: &[u8], network: &NetworkSpec) -> Result<Target, Rejection> {
     let text = std::str::from_utf8(line)
         .ok()
         .filter(|text| is_valid_url(text))
         .ok_or(Rejection::Invalid)?;
     let url = Url::parse(text).map_err(|_| Rejection::Invalid)?;
     let host = url.host().ok_or(Rejection::Invalid)?;
+    let own_port = loopback_port(&url);
 
-    if is_local(&host) {
+    // A loopback URL goes to the sandbox through the forward, so the egress rules don't apply.
+    if own_port.is_none() && is_local(&host) {
         return Err(Rejection::LocalHost);
     }
 
-    if !network::allows_host(network, &host) {
+    if own_port.is_none() && !network::allows_host(network, &host) {
         return Err(Rejection::NotAllowed);
     }
 
-    Ok(url)
+    Ok(Target {
+        callback_port: redirect_port(&url),
+        own_port,
+        url,
+    })
+}
+
+/// Returns the explicit, non-zero port of the URL when its host is `localhost`, `127.0.0.1` or
+/// `[::1]`.
+fn loopback_port(url: &Url) -> Option<u16> {
+    let loopback = match url.host()? {
+        Host::Domain(name) => name == "localhost",
+        Host::Ipv4(ip) => ip == Ipv4Addr::LOCALHOST,
+        Host::Ipv6(ip) => ip == Ipv6Addr::LOCALHOST,
+    };
+
+    url.port().filter(|&port| loopback && port != 0)
+}
+
+/// Returns the loopback port of the URL's `redirect_uri` query parameter when it's an `http`
+/// URL.
+fn redirect_port(url: &Url) -> Option<u16> {
+    let (_, redirect) = url.query_pairs().find(|(key, _)| key == "redirect_uri")?;
+    let redirect = Url::parse(&redirect)
+        .ok()
+        .filter(|r| r.scheme() == "http")?;
+
+    loopback_port(&redirect)
 }
 
 /// Whether the text starts with `http://` or `https://` in any case, has no whitespace or
@@ -215,23 +264,31 @@ impl RateLimit {
     }
 }
 
-/// Handles the output of the relay of one sandbox.
+/// Handles the output of the relay of one sandbox. Dropping it closes its callback forwards.
 struct RelayOutput {
     sandbox: String,
     network: NetworkSpec,
     opener: Arc<dyn Opener>,
+    forwards: CallbackForwards,
     lines: LineSplitter,
     limit: RateLimit,
     stderr: Vec<u8>,
 }
 
 impl RelayOutput {
-    /// Creates the handler for the relay of the sandbox with the egress rules.
-    fn new(sandbox: &str, network: NetworkSpec, opener: Arc<dyn Opener>) -> Self {
+    /// Creates the handler for the relay of the sandbox with the egress rules, which forwards
+    /// callback ports with `forwards`.
+    fn new(
+        sandbox: &str,
+        network: NetworkSpec,
+        opener: Arc<dyn Opener>,
+        forwards: CallbackForwards,
+    ) -> Self {
         Self {
             sandbox: sandbox.to_string(),
             network,
             opener,
+            forwards,
             lines: LineSplitter::default(),
             limit: RateLimit::default(),
             stderr: Vec::new(),
@@ -239,9 +296,9 @@ impl RelayOutput {
     }
 
     /// Opens the URLs in the relay's output, and logs when the relay fails or exits.
-    fn handle_event(&mut self, event: ExecEvent) {
+    async fn handle_event(&mut self, event: ExecEvent) {
         match event {
-            ExecEvent::Stdout(data) => self.handle_stdout(&data),
+            ExecEvent::Stdout(data) => self.handle_stdout(&data).await,
             ExecEvent::Stderr(data) => self.keep_stderr(&data),
             ExecEvent::Failed(failed) => {
                 let sandbox = &self.sandbox;
@@ -253,18 +310,19 @@ impl RelayOutput {
     }
 
     /// Opens the URLs on the lines the output completes.
-    fn handle_stdout(&mut self, data: &[u8]) {
+    async fn handle_stdout(&mut self, data: &[u8]) {
         for line in self.lines.push(data) {
-            self.handle_line(&line, Instant::now());
+            self.handle_line(&line, Instant::now()).await;
         }
     }
 
-    /// Opens the URL on a line when it passes the checks and the rate limit, and logs a warning
-    /// without the URL when it doesn't or when opening fails.
-    fn handle_line(&mut self, line: &[u8], now: Instant) {
+    /// Opens the URL on a line when it passes the checks and the rate limit, after forwarding
+    /// its loopback ports, and logs a warning without the URL when it doesn't or when opening
+    /// fails.
+    async fn handle_line(&mut self, line: &[u8], now: Instant) {
         let sandbox = &self.sandbox;
-        let url = match check_url(line, &self.network) {
-            Ok(url) => url,
+        let target = match check_url(line, &self.network) {
+            Ok(target) => target,
             Err(rejection) => return log_rejection(sandbox, rejection),
         };
 
@@ -272,6 +330,28 @@ impl RelayOutput {
             tracing::warn!("ignoring a URL from sandbox {sandbox}: it opens URLs too often");
             return;
         }
+
+        // Without its forward, a loopback URL would reach whatever listens on the host's port.
+        if let Some(port) = target.own_port
+            && self.forwards.ensure(port).await.is_err()
+        {
+            return log_rejection(sandbox, Rejection::LocalHost);
+        }
+
+        // The forwards log their own failures; the login can still complete another way.
+        if let Some(port) = target
+            .callback_port
+            .filter(|&port| Some(port) != target.own_port)
+        {
+            let _ = self.forwards.ensure(port).await;
+        }
+
+        self.open(&target.url);
+    }
+
+    /// Opens the URL with the opener and logs the outcome without the URL.
+    fn open(&self, url: &Url) {
+        let sandbox = &self.sandbox;
 
         match self.opener.open(url.as_str()) {
             Ok(()) => tracing::info!("opened a URL from sandbox {sandbox} on the host"),
@@ -314,10 +394,16 @@ fn log_rejection(sandbox: &str, rejection: Rejection) {
 /// The relays of the running sandboxes, at most one per sandbox.
 pub struct Relays {
     opener: Arc<dyn Opener>,
-    // The generation of the relay that runs for each sandbox, so a relay that ends only removes
-    // its own entry, not that of a newer relay.
-    running: Arc<Mutex<HashMap<String, u64>>>,
+    running: Arc<Mutex<HashMap<String, Running>>>,
     next_generation: AtomicU64,
+}
+
+/// The registry entry of the relay that runs for a sandbox.
+struct Running {
+    // So a relay that ends only removes its own entry, not that of a newer relay.
+    generation: u64,
+    // The relay's task, once it's spawned. Aborting it closes its callback forwards.
+    task: Option<AbortHandle>,
 }
 
 impl Relays {
@@ -344,16 +430,7 @@ impl Relays {
             .await;
 
         match started {
-            Ok(handle) => {
-                let entry = RelayEntry {
-                    running: self.running.clone(),
-                    name: name.to_string(),
-                    generation,
-                };
-                let network = network::rules_of(&sb.config().spec);
-                let output = RelayOutput::new(name, network, self.opener.clone());
-                tokio::spawn(run_relay(handle, entry, output));
-            }
+            Ok(handle) => self.spawn(sb, handle, generation),
             Err(err) => {
                 tracing::warn!("failed to start the URL relay of sandbox {name}: {err}");
                 release(&self.running, name, generation);
@@ -361,10 +438,44 @@ impl Relays {
         }
     }
 
-    /// Forgets the relay of the sandbox, so the next [`Relays::ensure`] starts a new one. Used
-    /// when the sandbox stops, because its relay's exec stream may end only after that.
+    /// Handles the output of the sandbox's started relay in a task, with callback forwards
+    /// through the sandbox's SSH server and the egress rules the sandbox has now.
+    fn spawn(&self, sb: &Sandbox, handle: ExecHandle, generation: u64) {
+        let name = sb.name();
+        let entry = RelayEntry {
+            running: self.running.clone(),
+            name: name.to_string(),
+            generation,
+        };
+        let network = network::rules_of(&sb.config().spec);
+        let connector = Arc::new(SshConnector::default());
+        let forwards = CallbackForwards::new(name, connector, CALLBACK_IDLE_TIMEOUT);
+        let output = RelayOutput::new(name, network, self.opener.clone(), forwards);
+        let task = tokio::spawn(run_relay(handle, entry, output));
+
+        self.track(name, generation, task.abort_handle());
+    }
+
+    /// Forgets the relay of the sandbox, so the next [`Relays::ensure`] starts a new one, and
+    /// stops it, which closes its callback forwards. Used when the sandbox stops, because its
+    /// relay's exec stream may end only after that.
     pub fn forget(&self, name: &str) {
-        lock(&self.running).remove(name);
+        let removed = lock(&self.running).remove(name);
+
+        if let Some(task) = removed.and_then(|running| running.task) {
+            task.abort();
+        }
+    }
+
+    /// Stores the task of the relay with the generation, or stops it when the sandbox was
+    /// forgotten while the relay started.
+    fn track(&self, name: &str, generation: u64, task: AbortHandle) {
+        let mut running = lock(&self.running);
+
+        match running.get_mut(name).filter(|r| r.generation == generation) {
+            Some(entry) => entry.task = Some(task),
+            None => task.abort(),
+        }
     }
 
     /// Registers a relay for the sandbox and returns its generation, or `None` when the sandbox
@@ -377,7 +488,11 @@ impl Relays {
         }
 
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        running.insert(name.to_string(), generation);
+        let entry = Running {
+            generation,
+            task: None,
+        };
+        running.insert(name.to_string(), entry);
 
         Some(generation)
     }
@@ -385,7 +500,7 @@ impl Relays {
 
 /// The registry entry of a running relay.
 struct RelayEntry {
-    running: Arc<Mutex<HashMap<String, u64>>>,
+    running: Arc<Mutex<HashMap<String, Running>>>,
     name: String,
     generation: u64,
 }
@@ -393,30 +508,79 @@ struct RelayEntry {
 /// Handles the relay's output until its exec stream ends, then removes its entry.
 async fn run_relay(mut handle: ExecHandle, entry: RelayEntry, mut output: RelayOutput) {
     while let Some(event) = handle.recv().await {
-        output.handle_event(event);
+        output.handle_event(event).await;
     }
 
     release(&entry.running, &entry.name, entry.generation);
 }
 
 /// Removes the entry of the sandbox when it still belongs to the relay with the generation.
-fn release(running: &Mutex<HashMap<String, u64>>, name: &str, generation: u64) {
+fn release(running: &Mutex<HashMap<String, Running>>, name: &str, generation: u64) {
     let mut running = lock(running);
 
-    if running.get(name) == Some(&generation) {
+    if running
+        .get(name)
+        .is_some_and(|r| r.generation == generation)
+    {
         running.remove(name);
     }
 }
 
 /// Locks the registry. Its map stays consistent when a holder panics, so a poisoned lock is
 /// used as is.
-fn lock(running: &Mutex<HashMap<String, u64>>) -> std::sync::MutexGuard<'_, HashMap<String, u64>> {
+fn lock(running: &Mutex<HashMap<String, Running>>) -> MutexGuard<'_, HashMap<String, Running>> {
     running.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forward::{Connector, GuestIo};
+    use async_trait::async_trait;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    /// Connects every forwarded connection to a port on the host's own loopback, standing in
+    /// for the sandbox.
+    struct LocalConnector {
+        port: u16,
+    }
+
+    #[async_trait]
+    impl Connector for LocalConnector {
+        async fn connect(&self, _sandbox: &str, _guest_port: u16) -> io::Result<Box<dyn GuestIo>> {
+            Ok(Box::new(
+                TcpStream::connect((Ipv4Addr::LOCALHOST, self.port)).await?,
+            ))
+        }
+
+        async fn forget(&self, _sandbox: &str) {}
+    }
+
+    /// Records the URLs it's asked to open and whether `localhost:<port>` accepted connections
+    /// at that moment.
+    struct ProbingOpener {
+        port: u16,
+        opened: Mutex<Vec<(String, bool)>>,
+    }
+
+    impl Opener for ProbingOpener {
+        fn open(&self, url: &str) -> io::Result<()> {
+            let listening = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, self.port)).is_ok();
+            self.opened
+                .lock()
+                .unwrap()
+                .push((url.to_string(), listening));
+
+            Ok(())
+        }
+    }
+
+    impl ProbingOpener {
+        fn opened(&self) -> Vec<(String, bool)> {
+            self.opened.lock().unwrap().clone()
+        }
+    }
 
     /// Records the URLs it's asked to open, and fails when `fail` is set.
     #[derive(Default)]
@@ -480,10 +644,85 @@ mod tests {
         assert!(!is_valid_url(&over_limit));
     }
 
-    /// Returns a handler for the relay of sandbox `sb` with the rules, and its opener.
+    /// Returns callback forwards that connect to `localhost:<guest>` on the host.
+    fn forwards_to(guest: u16) -> CallbackForwards {
+        let connector = Arc::new(LocalConnector { port: guest });
+
+        CallbackForwards::new("sb", connector, CALLBACK_IDLE_TIMEOUT)
+    }
+
+    /// Returns a handler for the relay of sandbox `sb` with the rules, and its opener. Its
+    /// forwards connect to a port that nothing listens on.
     fn relay_output(network: NetworkSpec) -> (RelayOutput, Arc<RecordingOpener>) {
         let opener = Arc::new(RecordingOpener::default());
-        (RelayOutput::new("sb", network, opener.clone()), opener)
+        let output = RelayOutput::new("sb", network, opener.clone(), forwards_to(1));
+
+        (output, opener)
+    }
+
+    /// Returns a handler for the relay whose forwards reach `localhost:<guest>`, with an
+    /// opener that probes `localhost:<probed>`.
+    fn probing_relay_output(guest: u16, probed: u16) -> (RelayOutput, Arc<ProbingOpener>) {
+        let opener = Arc::new(ProbingOpener {
+            port: probed,
+            opened: Mutex::default(),
+        });
+        let output = RelayOutput::new(
+            "sb",
+            NetworkSpec::default(),
+            opener.clone(),
+            forwards_to(guest),
+        );
+
+        (output, opener)
+    }
+
+    /// Returns a port that nothing listens on at the moment.
+    async fn free_port() -> u16 {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+
+        listener.local_addr().unwrap().port()
+    }
+
+    /// Starts a server on a free port that answers each connection with `pong`.
+    async fn pong_server() -> u16 {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(answer_pong(listener));
+
+        port
+    }
+
+    /// Answers each connection to the listener with `pong`.
+    async fn answer_pong(listener: TcpListener) {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let _ = stream.write_all(b"pong").await;
+        }
+    }
+
+    /// Hands the line to the handler `count` times.
+    async fn handle_lines(output: &mut RelayOutput, line: &[u8], count: usize, now: Instant) {
+        for _ in 0..count {
+            output.handle_line(line, now).await;
+        }
+    }
+
+    /// Connects to the host port and returns what the server behind it sends first.
+    async fn read_from(port: u16) -> String {
+        let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        let mut reply = [0; 4];
+        stream.read_exact(&mut reply).await.unwrap();
+
+        String::from_utf8_lossy(&reply).into_owned()
+    }
+
+    /// Returns the ports `check_url` forwards for the line: the URL's own and its callback's.
+    fn ports(line: &str) -> Result<(Option<u16>, Option<u16>), Rejection> {
+        check_url(line.as_bytes(), &NetworkSpec::default())
+            .map(|target| (target.own_port, target.callback_port))
     }
 
     fn enforced(allow: &[&str]) -> NetworkSpec {
@@ -495,7 +734,7 @@ mod tests {
     }
 
     fn check(line: &str, network: &NetworkSpec) -> Result<String, Rejection> {
-        check_url(line.as_bytes(), network).map(String::from)
+        check_url(line.as_bytes(), network).map(|target| target.url.into())
     }
 
     #[test]
@@ -534,7 +773,7 @@ mod tests {
     fn check_url_rejects_the_host_and_its_local_network() {
         let network = NetworkSpec::default();
         let local = [
-            "http://localhost:8080/callback",
+            "http://localhost/callback",
             "http://LOCALHOST./",
             "http://app.localhost/",
             "http://127.0.0.1/",
@@ -561,6 +800,92 @@ mod tests {
         assert!(check("http://8.8.8.8/", &network).is_ok());
         assert!(check("http://[2001:db8::1]/", &network).is_ok());
         assert!(check("http://localhost.example/", &network).is_ok());
+    }
+
+    #[test]
+    fn check_url_rejects_local_hosts_with_ports_it_doesnt_forward() {
+        let network = NetworkSpec::default();
+
+        for line in [
+            "http://localhost:0/",
+            "http://app.localhost:8080/",
+            "http://10.0.0.1:8080/",
+            "http://[::ffff:127.0.0.1]:8080/",
+        ] {
+            assert_eq!(check(line, &network), Err(Rejection::LocalHost), "{line}");
+        }
+    }
+
+    #[test]
+    fn check_url_forwards_the_port_of_a_loopback_host() {
+        for line in [
+            "http://localhost:8080/callback",
+            "https://LOCALHOST:8080/",
+            "http://127.0.0.1:8080/",
+            "http://[::1]:8080/",
+        ] {
+            assert_eq!(ports(line), Ok((Some(8080), None)), "{line}");
+        }
+    }
+
+    #[test]
+    fn check_url_forwards_the_port_of_a_loopback_redirect_uri() {
+        let redirects = [
+            "http%3A%2F%2Flocalhost%3A43117%2Fcallback",
+            "http://localhost:43117/callback",
+            "http%3A%2F%2F127.0.0.1%3A43117%2F",
+            "http%3A%2F%2F%5B%3A%3A1%5D%3A43117%2Fcb",
+        ];
+
+        for redirect in redirects {
+            let line = format!("https://github.com/login?client_id=x&redirect_uri={redirect}&s=1");
+            assert_eq!(ports(&line), Ok((None, Some(43117))), "{line}");
+        }
+    }
+
+    #[test]
+    fn check_url_forwards_both_ports_of_a_loopback_url_with_a_redirect_uri() {
+        let line = "http://localhost:3000/login?redirect_uri=http%3A%2F%2Flocalhost%3A4000%2Fcb";
+
+        assert_eq!(ports(line), Ok((Some(3000), Some(4000))));
+    }
+
+    #[test]
+    fn check_url_forwards_nothing_for_other_redirect_uris() {
+        let redirects = [
+            "http%3A%2F%2Flocalhost%2Fcallback",
+            "http%3A%2F%2Flocalhost%3A0%2F",
+            "https%3A%2F%2Flocalhost%3A43117%2F",
+            "http%3A%2F%2Fexample.com%3A43117%2F",
+            "http%3A%2F%2F10.0.0.1%3A43117%2F",
+            "not%20a%20url",
+            "http%3A%2F%2Flocalhost%3A99999%2F",
+            "",
+        ];
+
+        for redirect in redirects {
+            let line = format!("https://github.com/login?redirect_uri={redirect}");
+            assert_eq!(ports(&line), Ok((None, None)), "{line}");
+        }
+        assert_eq!(
+            ports("https://github.com/login?redirect_url=http%3A%2F%2Flocalhost%3A43117%2F"),
+            Ok((None, None))
+        );
+        assert_eq!(ports("https://example.com:8080/"), Ok((None, None)));
+    }
+
+    #[test]
+    fn check_url_lets_loopback_urls_past_enforced_network_rules() {
+        let network = enforced(&["github.com"]);
+
+        assert!(check("http://localhost:8080/", &network).is_ok());
+        assert_eq!(
+            check(
+                "https://example.com/?redirect_uri=http://localhost:8080/",
+                &network
+            ),
+            Err(Rejection::NotAllowed)
+        );
     }
 
     #[test]
@@ -595,51 +920,56 @@ mod tests {
         assert!(limit.allow(start + OPEN_WINDOW));
     }
 
-    #[test]
-    fn handle_line_opens_valid_url() {
+    #[tokio::test]
+    async fn handle_line_opens_valid_url() {
         let (mut output, opener) = relay_output(NetworkSpec::default());
 
-        output.handle_line(b"https://example.com", Instant::now());
+        output
+            .handle_line(b"https://example.com", Instant::now())
+            .await;
 
         assert_eq!(opener.urls(), ["https://example.com/"]);
     }
 
-    #[test]
-    fn handle_line_ignores_rejected_lines() {
+    #[tokio::test]
+    async fn handle_line_ignores_rejected_lines() {
         let (mut output, opener) = relay_output(enforced(&["example.com"]));
         let now = Instant::now();
 
-        output.handle_line(b"file:///etc/passwd", now);
-        output.handle_line(b"https://example.com/\xff", now);
-        output.handle_line(b"", now);
-        output.handle_line(b"http://localhost:3000/", now);
-        output.handle_line(b"https://example.org/", now);
+        output.handle_line(b"file:///etc/passwd", now).await;
+        output.handle_line(b"https://example.com/\xff", now).await;
+        output.handle_line(b"", now).await;
+        output.handle_line(b"http://10.0.0.1:3000/", now).await;
+        output.handle_line(b"https://example.org/", now).await;
 
         assert!(opener.urls().is_empty());
     }
 
-    #[test]
-    fn handle_line_stops_opening_urls_over_the_rate_limit() {
+    #[tokio::test]
+    async fn handle_line_stops_opening_urls_over_the_rate_limit() {
         let (mut output, opener) = relay_output(NetworkSpec::default());
         let now = Instant::now();
 
-        for _ in 0..=MAX_OPENS {
-            output.handle_line(b"https://example.com/", now);
-        }
+        handle_lines(&mut output, b"https://example.com/", MAX_OPENS + 1, now).await;
 
         assert_eq!(opener.urls().len(), MAX_OPENS);
     }
 
-    #[test]
-    fn handle_line_survives_failing_opener() {
+    #[tokio::test]
+    async fn handle_line_survives_failing_opener() {
         let opener = Arc::new(RecordingOpener {
             fail: true,
             ..Default::default()
         });
-        let mut output = RelayOutput::new("sb", NetworkSpec::default(), opener.clone());
+        let mut output =
+            RelayOutput::new("sb", NetworkSpec::default(), opener.clone(), forwards_to(1));
 
-        output.handle_line(b"https://example.com/", Instant::now());
-        output.handle_line(b"https://example.org/", Instant::now());
+        output
+            .handle_line(b"https://example.com/", Instant::now())
+            .await;
+        output
+            .handle_line(b"https://example.org/", Instant::now())
+            .await;
 
         assert_eq!(
             opener.urls(),
@@ -647,14 +977,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn handle_event_opens_urls_split_over_chunks() {
+    #[tokio::test]
+    async fn handle_event_opens_urls_split_over_chunks() {
         let (mut output, opener) = relay_output(NetworkSpec::default());
 
-        output.handle_event(ExecEvent::Stdout("https://exa".into()));
-        output.handle_event(ExecEvent::Stdout(
-            "mple.com/\nhttps://example.org/\n".into(),
-        ));
+        output
+            .handle_event(ExecEvent::Stdout("https://exa".into()))
+            .await;
+        output
+            .handle_event(ExecEvent::Stdout(
+                "mple.com/\nhttps://example.org/\n".into(),
+            ))
+            .await;
 
         assert_eq!(
             opener.urls(),
@@ -662,15 +996,85 @@ mod tests {
         );
     }
 
-    #[test]
-    fn handle_event_keeps_the_start_of_stderr() {
+    #[tokio::test]
+    async fn handle_event_keeps_the_start_of_stderr() {
         let (mut output, _) = relay_output(NetworkSpec::default());
 
-        output.handle_event(ExecEvent::Stderr("mkfifo: not found\n".into()));
-        output.handle_event(ExecEvent::Stderr(vec![b'x'; 2 * MAX_STDERR].into()));
+        output
+            .handle_event(ExecEvent::Stderr("mkfifo: not found\n".into()))
+            .await;
+        output
+            .handle_event(ExecEvent::Stderr(vec![b'x'; 2 * MAX_STDERR].into()))
+            .await;
 
         assert!(output.stderr.starts_with(b"mkfifo: not found\n"));
         assert_eq!(output.stderr.len(), MAX_STDERR);
+    }
+
+    #[tokio::test]
+    async fn handle_line_forwards_the_redirect_port_before_opening() {
+        let (guest, port) = (pong_server().await, free_port().await);
+        let (mut output, opener) = probing_relay_output(guest, port);
+        let url =
+            format!("https://github.com/login?redirect_uri=http%3A%2F%2Flocalhost%3A{port}%2Fcb");
+
+        output.handle_line(url.as_bytes(), Instant::now()).await;
+
+        assert_eq!(opener.opened(), [(url, true)]);
+        assert_eq!(read_from(port).await, "pong");
+    }
+
+    #[tokio::test]
+    async fn handle_line_forwards_the_port_of_a_loopback_url_before_opening() {
+        let (guest, port) = (pong_server().await, free_port().await);
+        let (mut output, opener) = probing_relay_output(guest, port);
+        let url = format!("http://localhost:{port}/");
+
+        output.handle_line(url.as_bytes(), Instant::now()).await;
+
+        assert_eq!(opener.opened(), [(url, true)]);
+        assert_eq!(read_from(port).await, "pong");
+    }
+
+    #[tokio::test]
+    async fn handle_line_reuses_the_forward_of_a_port() {
+        let (guest, port) = (pong_server().await, free_port().await);
+        let (mut output, opener) = probing_relay_output(guest, port);
+        let url = format!("http://127.0.0.1:{port}/");
+
+        output.handle_line(url.as_bytes(), Instant::now()).await;
+        output.handle_line(url.as_bytes(), Instant::now()).await;
+
+        assert_eq!(opener.opened(), [(url.clone(), true), (url, true)]);
+        assert_eq!(read_from(port).await, "pong");
+    }
+
+    #[tokio::test]
+    async fn handle_line_opens_a_url_whose_redirect_port_is_busy() {
+        let busy = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = busy.local_addr().unwrap().port();
+        let (mut output, opener) = relay_output(NetworkSpec::default());
+        let url = format!("https://github.com/login?redirect_uri=http://localhost:{port}/cb");
+
+        output.handle_line(url.as_bytes(), Instant::now()).await;
+
+        assert_eq!(opener.urls(), [url]);
+    }
+
+    #[tokio::test]
+    async fn handle_line_ignores_a_loopback_url_whose_port_is_busy() {
+        let busy = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = busy.local_addr().unwrap().port();
+        let (mut output, opener) = relay_output(NetworkSpec::default());
+
+        output
+            .handle_line(
+                format!("http://localhost:{port}/").as_bytes(),
+                Instant::now(),
+            )
+            .await;
+
+        assert!(opener.urls().is_empty());
     }
 
     #[test]
