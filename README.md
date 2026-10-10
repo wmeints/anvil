@@ -708,9 +708,9 @@ WORKDIR /home/agent
 
 ## Development
 
-Install the toolchain (Rust, `buf`, `protoc`, `dprint`, `actionlint`,
-`lefthook`, the GitHub CLI and Claude Code) with [mise](https://mise.jdx.dev).
-This also installs the git hooks:
+Install the toolchain (Rust, Node, pnpm, `buf`, `protoc`, `dprint`,
+`actionlint`, `lefthook`, the GitHub CLI and Claude Code) with
+[mise](https://mise.jdx.dev). This also installs the git hooks:
 
 ```sh
 mise install
@@ -762,6 +762,21 @@ The workspace contains five crates:
 
 The gRPC contract lives in
 [`crates/proto/proto/daemon.v1.proto`](crates/proto/proto/daemon.v1.proto).
+
+The website lives in [`website/`](website/), an Astro site with Starlight for
+the docs and Tailwind for styling. Run its commands with pnpm from the
+repository root:
+
+| Command                                        | Description                                             |
+| ---------------------------------------------- | ------------------------------------------------------- |
+| `pnpm --dir website install --frozen-lockfile` | Install the dependencies.                               |
+| `pnpm --dir website run dev`                   | Preview the site on `http://localhost:4321/firebrick/`. |
+| `pnpm --dir website run build`                 | Build the static site into `website/dist`.              |
+| `pnpm --dir website run lint`                  | Run ESLint.                                             |
+| `pnpm --dir website run check`                 | Type-check the site.                                    |
+| `pnpm --dir website run format`                | Format the code with Prettier.                          |
+| `pnpm --dir website run test`                  | Run the unit tests.                                     |
+| `pnpm --dir website run test:e2e`              | Run the end-to-end tests against the built site.        |
 
 ## Documentation
 

@@ -18,11 +18,16 @@ default `main..HEAD`): a change that a later commit hides, such as a test
 deleted and re-added with a different expected value, shows up only there.
 
 Tests are the `#[cfg(test)] mod tests` blocks and the files in each crate's
-`tests/` directory. The check files are the files that decide which tests and
-checks run: `.github/workflows/`, `lefthook.yml`, `.cargo/config.toml`,
-`.claude/hooks/`, `.claude/settings.json`, `clippy.toml`, `dprint.json`, and the
-features, `[[test]]` sections and `[lints]` and `[workspace.lints]` tables of
-every `Cargo.toml`. Review changes to both.
+`tests/` directory, and the website's Vitest unit tests in `website/tests/unit/`
+and Playwright end-to-end tests in `website/tests/e2e/`. The check files are the
+files that decide which tests and checks run: `.github/workflows/`,
+`lefthook.yml`, `.cargo/config.toml`, `.claude/hooks/`, `.claude/settings.json`,
+`clippy.toml`, `dprint.json`, the features, `[[test]]` sections and `[lints]`
+and `[workspace.lints]` tables of every `Cargo.toml`, and in `website/`: the
+`scripts` in `package.json`, `eslint.config.js`, `.prettierrc.json`,
+`.prettierignore`, `tsconfig.json`, `vitest.config.ts`, `playwright.config.ts`,
+`pnpm-workspace.yaml` and the plugins in `astro.config.mjs`, such as the link
+validator. Review changes to both.
 
 Read `CLAUDE.md`, in particular the "Testing" section, before you start. For
 every changed test, read the code under test and the spec it should follow: the
@@ -78,13 +83,17 @@ Flag the following when neither the commit message, the spec nor the issue
 justifies it. When a justification exists, don't report the change, or report it
 as uncertain and quote the justification.
 
-8. **Disabled tests**: tests deleted, commented out, or marked `#[ignore]`.
+8. **Disabled tests**: tests deleted, commented out, or marked `#[ignore]`, and
+   in the website `test.skip`, `test.fixme`, `test.todo`, `describe.skip`, or a
+   `test.only` that silently skips the others.
 9. **Changed expectations**: expected values, asserted error variants or
    asserted messages in existing tests changed. Check that the behavior change
    is intended, not a way to make a failing test pass.
 10. **Test-only behavior in production code**: `#[cfg(test)]` items or
     `cfg!(test)` branches outside `mod tests`, or checks for test-only
-    environment variables, that make the code behave differently under test.
+    environment variables, that make the code behave differently under test. In
+    the website: branches on `import.meta.env.MODE`, `process.env.VITEST`,
+    `process.env.CI` or `navigator.webdriver` in pages, components or config.
 
     ```rust
     if cfg!(test) { return Ok(()); } // the test never runs the real path
@@ -92,17 +101,26 @@ as uncertain and quote the justification.
 
 11. **Weakened checks**: changes to the check files that skip a check, lower a
     lint level, drop a test target, unregister a hook, or move tests behind a
-    feature that CI doesn't enable.
+    feature that CI doesn't enable. In the website, also: files or rules added
+    to the ESLint or Prettier ignores, a rule turned off, `--max-warnings` or
+    `--minimumFailingSeverity` relaxed, the Vitest `include` or Playwright
+    `testDir` narrowed, the link validator removed, or an `allowBuilds` entry
+    set to `true`.
 12. **Loosened limits**: timeouts, retry counts or tolerances in tests that were
     raised or loosened. A slower test is sometimes right, but the reason must be
-    stated; otherwise it hides a regression or a flaky test.
+    stated; otherwise it hides a regression or a flaky test. In the website this
+    includes Playwright `timeout` and `retries`, and the allowed overflow in the
+    end-to-end tests.
 
 ### Mocking and coupling
 
 13. **Over-mocking**: a dependency is mocked or faked when testing against the
     real thing is feasible: a real file in a `tempfile` directory, a real Unix
     socket, or a real VM in a `vm-tests` integration test. Prefer the
-    integration test whenever it can reasonably be written.
+    integration test whenever it can reasonably be written. For the website,
+    render components with Astro's container API instead of mocking Astro, and
+    test pages through Playwright against the built site (`astro preview`)
+    rather than the dev server or HTML strings.
 14. **Coupling to internals**: tests that assert on private state or
     implementation details instead of the public interface, contrary to the
     testing rules in `CLAUDE.md`. Such tests break on refactoring without a

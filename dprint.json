@@ -3,7 +3,18 @@
   "markdown": {
     "textWrap": "always"
   },
-  "includes": ["**/*.md"],
-  "excludes": ["target"],
-  "plugins": ["https://plugins.dprint.dev/markdown-0.26.0.wasm"]
+  "includes": [
+    "**/*.md"
+  ],
+  "excludes": [
+    "target",
+    "website/node_modules",
+    "website/dist",
+    "website/.astro",
+    "website/test-results",
+    "website/playwright-report"
+  ],
+  "plugins": [
+    "https://plugins.dprint.dev/markdown-0.26.0.wasm"
+  ]
 }

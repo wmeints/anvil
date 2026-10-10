@@ -1,0 +1,4 @@
+# Dependencies may not run install scripts unless they're approved here by name.
+# Approve a package only when the build doesn't work without its script.
+strictDepBuilds: true
+allowBuilds: {}

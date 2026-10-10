@@ -17,6 +17,12 @@
   functions to 30 lines, 4 arguments, 1 bool argument and 3 levels of nesting.
   The generated gRPC code in the `api` modules is exempt.
 
+- **Website conventions:** the website in `website/` is formatted by Prettier
+  and linted by ESLint and `astro check`, all failing on warnings. It is a
+  static site under the GitHub Pages base path that makes no third-party
+  requests. See
+  [ADR 0028](decisions/0028-check-the-website-with-eslint-prettier-vitest-and-playwright.md).
+
 - **Architecture documentation:** we use [Arc42][ARC42] style architecture
   documentation.
 

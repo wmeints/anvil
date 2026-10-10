@@ -1,0 +1,60 @@
+name: Website
+
+# Check the website when it, the pinned Node and pnpm versions, or this workflow
+# change.
+on:
+  push:
+    branches: [main]
+    paths: [website/**, mise.toml, .github/workflows/website.yaml]
+  pull_request:
+    branches: [main]
+    paths: [website/**, mise.toml, .github/workflows/website.yaml]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: website
+
+jobs:
+  check:
+    name: Lint, test and build the website
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the Node and pnpm versions pinned in mise.toml.
+      - uses: jdx/mise-action@v2
+
+      # Fails when a dependency wants to run an install script that
+      # pnpm-workspace.yaml doesn't allow.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting
+        run: pnpm run format:check
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Type check
+        run: pnpm run check
+
+      - name: Unit tests
+        run: pnpm run test
+
+      # Fails on broken links in the docs.
+      - name: Build
+        run: pnpm run build
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: pnpm run test:e2e

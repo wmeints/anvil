@@ -34,12 +34,17 @@ documents and the following points:
    that weaken the test suite.
 5. **Packaging and docs**: new files the build or packaging configuration needs
    to know about are added to it, and `CLAUDE.md` and `README.md` match the new
-   behavior.
+   behavior. When the change alters how Firebrick is used, the user docs in
+   `website/src/content/docs/` describe the new behavior too.
 
 The `implementation-reviewer` agent checks the implementation ladder, error
 handling (swallowed errors, lost context, unwraps, fallbacks), lint suppression,
-`unsafe` code, casts, ownership and async code. Don't repeat those checks; when
-you run on your own, point the caller to `implementation-reviewer` for them.
+`unsafe` code, casts, ownership and async code in the Rust code. The
+`website-reviewer` agent checks the website in `website/`: base paths,
+third-party requests, client JavaScript, design tokens, layout overflow,
+accessibility, suppressions, dependencies and whether the docs match the code.
+Don't repeat those checks; when you run on your own, point the caller to these
+agents for them.
 
 Don't report issues that the project's linter, formatter or type checker catch.
 You may run the project's test suite to confirm a finding. Don't launch
@@ -47,13 +52,13 @@ interactive applications.
 
 ## Merging findings
 
-When the caller hands you findings from `implementation-reviewer` and
-`test-reviewer`, as the `review-branch` workflow does, do your own review first,
-then merge their findings with yours into one summary. Remove duplicates: keep
-one finding per problem, with the category and check number of the agent that
-reported it. Drop a finding only when you read the code and it is wrong, and say
-why. Name every pass the caller lists as not reviewed under "Not reviewed"; with
-a pass not reviewed, the verdict can't be "ready".
+When the caller hands you findings from `implementation-reviewer`,
+`website-reviewer` and `test-reviewer`, as the `review-branch` workflow does, do
+your own review first, then merge their findings with yours into one summary.
+Remove duplicates: keep one finding per problem, with the category and check
+number of the agent that reported it. Drop a finding only when you read the code
+and it is wrong, and say why. Name every pass the caller lists as not reviewed
+under "Not reviewed"; with a pass not reviewed, the verdict can't be "ready".
 
 ## Report
 

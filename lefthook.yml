@@ -16,6 +16,17 @@ pre-commit:
       run: cargo clippy --workspace --all-targets --all-features -- -D warnings
     unit-tests:
       run: cargo test --workspace
+    # The website's end-to-end tests need a browser, so they run in CI and in
+    # the Claude Code stop hook instead.
+    website:
+      glob: "website/**"
+      run: >-
+        pnpm --dir website install --frozen-lockfile &&
+        pnpm --dir website run format:check &&
+        pnpm --dir website run lint &&
+        pnpm --dir website run check &&
+        pnpm --dir website run test &&
+        pnpm --dir website run build
 
 commit-msg:
   commands:
