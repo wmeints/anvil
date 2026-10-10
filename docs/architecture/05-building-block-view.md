@@ -65,7 +65,8 @@ C4Component
 
 - `main` - Parses the `start`, `stop`, `ls`, `rm`, `run`, `validate`, `secret
   set`, `secret ls` and `secret rm` commands, and the hidden `ssh-proxy`
-  command. `validate` runs without the daemon.
+  command. `validate` and `--version`, which prints the package version, run
+  without the daemon.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
   waits at most 5 seconds for the socket.

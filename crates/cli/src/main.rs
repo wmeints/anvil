@@ -10,6 +10,7 @@ use tonic::transport::Channel;
 
 /// Firebrick - Run coding agents safely in a sandbox.
 #[derive(Parser, Debug)]
+#[command(name = "fbk", version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -215,6 +216,17 @@ mod tests {
     #[test]
     fn cli_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn version_flag_prints_package_version() {
+        let error = Cli::try_parse_from(["fbk", "--version"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(
+            error.to_string(),
+            format!("fbk {}\n", env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]

@@ -124,8 +124,11 @@ and open a new terminal:
 ### 3. Verify the installation
 
 ```sh
+fbk --version
 fbk ls
 ```
+
+`fbk --version` prints the installed version, for example `fbk 0.3.0`.
 
 This starts `fbkd`, which installs the microsandbox runtime in
 `~/.microsandbox`, and lists your sandboxes (none yet). An error here means
