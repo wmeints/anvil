@@ -1354,11 +1354,40 @@ async fn enforced_network_policy_denies_host_that_is_also_allowed() {
     let mut client = daemon.client().await;
     start_enforced_sandbox(&mut client, NAME, &["*.example.net"], &["example.net"]).await;
 
+    let allowed = fetch(&mut client, NAME, "https://www.example.net").await;
     let denied = fetch(&mut client, NAME, "https://example.net").await;
 
     daemon.stop().await;
     remove_sandbox(NAME).await;
 
+    // The allowed subdomain proves the rules apply, so the failure comes from the deny rule.
+    assert!(!allowed.trim_end().ends_with("000"), "{allowed:?}");
+    assert!(denied.trim_end().ends_with("000"), "{denied:?}");
+}
+
+#[tokio::test]
+async fn enforced_network_policy_allows_and_denies_ip_addresses() {
+    const NAME: &str = "fbk-it-network-ip";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("network-ip").await;
+    let mut client = daemon.client().await;
+    // Cloudflare's resolvers answer plain HTTP on their addresses.
+    start_enforced_sandbox(
+        &mut client,
+        NAME,
+        &["1.0.0.0/24", "1.1.1.0/24"],
+        &["1.1.1.1"],
+    )
+    .await;
+
+    let allowed = fetch(&mut client, NAME, "http://1.0.0.1").await;
+    let denied = fetch(&mut client, NAME, "http://1.1.1.1").await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert!(!allowed.trim_end().ends_with("000"), "{allowed:?}");
     assert!(denied.trim_end().ends_with("000"), "{denied:?}");
 }
 

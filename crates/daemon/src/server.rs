@@ -94,10 +94,8 @@ fn parse_rules(rules: &[String]) -> Result<Vec<NetworkRule>, Status> {
     rules
         .iter()
         .map(|rule| {
-            rule.parse()
-                .map_err(|err: firebrick_spec::InvalidNetworkRule| {
-                    Status::invalid_argument(err.to_string())
-                })
+            rule.parse::<NetworkRule>()
+                .map_err(|err| Status::invalid_argument(err.to_string()))
         })
         .collect()
 }

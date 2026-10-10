@@ -121,11 +121,6 @@ sequenceDiagram
         CLI->>CLI: Resolve spec
     end
     CLI->>D: StopSandbox(name)
-    D->>D: Parse network rules
-    alt Invalid rule
-        D-->>CLI: INVALID_ARGUMENT
-        CLI-->>Dev: Error
-    end
     D->>MS: Sandbox::get(name)
     alt Sandbox doesn't exist
         MS-->>D: SandboxNotFound
@@ -269,9 +264,14 @@ sequenceDiagram
     CLI->>D: GetSandbox(name)
     Note over CLI,D: Running: skip StartSandbox. Starting: poll until running.<br/>Stopping or Paused: error.
     alt NOT_FOUND
-        CLI->>D: StartSandbox(name, image, init, mise, resources, workspace)
+        CLI->>D: StartSandbox(name, image, init, mise, resources, network, workspace)
     else Stopped or Crashed
         CLI->>D: StartSandbox(name, workspace)
+    end
+    D->>D: Parse network rules
+    alt Invalid rule
+        D-->>CLI: INVALID_ARGUMENT
+        CLI-->>Dev: Error
     end
     D->>MS: Sandbox::get(name)
 
