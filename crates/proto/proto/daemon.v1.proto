@@ -13,6 +13,10 @@ service SandboxManagementService {
   rpc SetSecret(SetSecretRequest) returns (SetSecretResponse);
   rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
   rpc RemoveSecret(RemoveSecretRequest) returns (RemoveSecretResponse);
+  // Replaces the egress rules of an existing sandbox. The sandbox keeps its disk but not its
+  // processes: it is recreated from a disk snapshot and ends in the state it was in. A sandbox
+  // that already has the rules is left alone.
+  rpc UpdateNetwork(UpdateNetworkRequest) returns (UpdateNetworkResponse);
 }
 
 message StartSandboxRequest {
@@ -219,4 +223,15 @@ message RemoveSecretResponse {
   // Existing sandboxes the secret couldn't be removed from. When there are any, the secret
   // stays stored, so removing it again retries them.
   repeated string failed_sandboxes = 1;
+}
+
+message UpdateNetworkRequest {
+  string name = 1;
+  // The complete new network section. Unset means microsandbox's default policy.
+  NetworkPolicy network = 2;
+}
+
+message UpdateNetworkResponse {
+  // Whether the sandbox was recreated. False when it already had the rules.
+  bool updated = 1;
 }
