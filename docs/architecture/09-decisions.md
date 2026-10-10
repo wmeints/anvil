@@ -16,3 +16,4 @@
 - [ADR 0014 - Name sandboxes after a hash of the working directory](decisions/0014-name-sandboxes-after-a-hash-of-the-working-directory.md)
 - [ADR 0015 - Give each sandbox a Docker data disk](decisions/0015-give-each-sandbox-a-docker-data-disk.md)
 - [ADR 0016 - Run Docker in the sandbox VM](decisions/0016-run-docker-in-the-sandbox-vm.md)
+- [ADR 0017 - Trust the workspace's mise config inside the sandbox](decisions/0017-trust-the-workspaces-mise-config-inside-the-sandbox.md)

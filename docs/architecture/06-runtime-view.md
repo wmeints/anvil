@@ -205,9 +205,12 @@ for `mise.toml`, `.mise.toml`, `mise/config.toml`, `.config/mise.toml` and
 `.tool-versions` at the root of the mounted workspace, runs `mise trust <file>`
 for each one that exists, and then `mise install --yes` once, in the workspace
 and as the image's default user. It trusts each file by path, because `mise
-trust --all` would also trust configs in subdirectories. Nothing runs when the
-sandbox was already running or starting, when a start lost the race with another
-start, or when the workspace has none of the files.
+trust --all` would also trust configs in subdirectories. Trusting the config
+without asking is safe because everything mise runs stays inside the sandbox
+(see
+[ADR 0017](decisions/0017-trust-the-workspaces-mise-config-inside-the-sandbox.md)).
+Nothing runs when the sandbox was already running or starting, when a start lost
+the race with another start, or when the workspace has none of the files.
 
 The `mise` option in `.firebrick.yml` (default `true`) turns this off. fbkd
 stores it as the `firebrick.mise` label when it creates the sandbox and every
