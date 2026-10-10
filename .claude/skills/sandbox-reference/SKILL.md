@@ -210,9 +210,9 @@ build on it when `Cargo.lock` has a newer version.
 - State lives in `$MSB_HOME`: `bin/msb`, `db/msb.db`, `config.json`, `tls/` (the
   interception CA) and `sandboxes/<name>/logs/`. microsandbox falls back to
   `~/.microsandbox`, but `fbkd` sets `MSB_HOME` to firebrick's own home,
-  `$XDG_STATE_HOME/firebrick/microsandbox`
-  (`~/.local/state/firebrick/microsandbox`), when it's unset or empty (ADR
-  0022). Sandboxes from firebrick 0.3.0 and earlier stay in `~/.microsandbox`.
+  `$XDG_STATE_HOME/firebrick/msb` (`~/.local/state/firebrick/msb`), when it's
+  unset or empty (ADR 0022). Sandboxes from firebrick 0.3.0 and earlier stay in
+  `~/.microsandbox`.
 - `LocalBackend::builder().home(..)` with `set_default_backend` only moves the
   home of the SDK process. The `msb` VM processes it spawns only inherit the
   environment and resolve paths such as the TLS interception CA (`tls/`) from

@@ -1,3 +1,5 @@
+use std::fs::DirBuilder;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -29,8 +31,17 @@ fn use_firebrick_msb_home() -> Result<()> {
     if std::env::var_os("MSB_HOME").is_some_and(|home| !home.is_empty()) {
         return Ok(());
     }
-    let home = firebrick_utils::msb_home();
-    std::fs::create_dir_all(&home)
+    let Some(home) = firebrick_utils::msb_home() else {
+        bail!(
+            "can't choose a microsandbox home: set HOME or XDG_STATE_HOME to an absolute path, \
+             or set MSB_HOME"
+        );
+    };
+    // Private, because the home holds the `msb` binary fbkd runs and the TLS interception CA.
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&home)
         .with_context(|| format!("failed to create the microsandbox home {}", home.display()))?;
     // SAFETY: `main` calls this before it starts the Tokio runtime or the log writer, while the
     // process has a single thread, so nothing reads or writes the environment concurrently.

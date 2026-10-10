@@ -16,28 +16,45 @@ pub fn socket_path() -> PathBuf {
 
 /// Returns the directory the daemon writes its log files to.
 pub fn log_dir() -> PathBuf {
-    state_dir(env_var)
+    base_dir(&env_var, "XDG_STATE_HOME", ".local/state")
+        .unwrap_or_else(std::env::temp_dir)
+        .join("firebrick")
 }
 
 /// Returns the microsandbox home the daemon uses when `MSB_HOME` isn't set, so it never shares
-/// the runtime, database and sandboxes of a separately installed `msb` in `~/.microsandbox`.
-pub fn msb_home() -> PathBuf {
-    msb_home_from(env_var)
+/// the runtime, database and sandboxes of a separately installed `msb` in `~/.microsandbox`:
+/// `$XDG_STATE_HOME/firebrick/msb`, falling back to `$HOME/.local/state/firebrick/msb`.
+///
+/// Returns `None` when neither variable is an absolute path. The home holds the `msb` binary
+/// the daemon runs, so it must not end up in the current directory, which is often a workspace
+/// mounted into a sandbox, or in a temp directory that other users can create first. The name
+/// is short because microsandbox creates unix sockets under the home.
+pub fn msb_home() -> Option<PathBuf> {
+    msb_home_from(&env_var)
 }
 
-/// Returns the firebrick microsandbox home under the state directory that `var` describes.
-fn msb_home_from(var: impl Fn(&str) -> Option<OsString>) -> PathBuf {
-    state_dir(var).join("microsandbox")
+/// Returns the firebrick microsandbox home for the environment that `var` describes.
+fn msb_home_from(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    base_dir(var, "XDG_STATE_HOME", ".local/state").map(|state| state.join("firebrick/msb"))
 }
 
-/// Returns the directory holding the daemon's state, looking up environment variables with
-/// `var`: `$XDG_STATE_HOME/firebrick`, falling back to `$HOME/.local/state/firebrick`.
-fn state_dir(var: impl Fn(&str) -> Option<OsString>) -> PathBuf {
-    var("XDG_STATE_HOME")
+/// Returns the XDG base directory in `xdg_var`, falling back to `home_subdir` in `$HOME`, with
+/// environment variables looked up through `var`. Empty and relative values are ignored, as
+/// the XDG Base Directory spec requires.
+fn base_dir(
+    var: &impl Fn(&str) -> Option<OsString>,
+    xdg_var: &str,
+    home_subdir: &str,
+) -> Option<PathBuf> {
+    absolute_var(var, xdg_var)
+        .or_else(|| absolute_var(var, "HOME").map(|home| home.join(home_subdir)))
+}
+
+/// Returns the value of the environment variable `key` when it's an absolute path.
+fn absolute_var(var: &impl Fn(&str) -> Option<OsString>, key: &str) -> Option<PathBuf> {
+    var(key)
         .map(PathBuf::from)
-        .or_else(|| var("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("firebrick")
+        .filter(|path| path.is_absolute())
 }
 
 /// Looks up an environment variable of the current process.
@@ -57,9 +74,7 @@ pub fn secrets_path() -> PathBuf {
 
 /// Returns the directory holding the daemon's persistent data.
 fn data_dir() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+    base_dir(&env_var, "XDG_DATA_HOME", ".local/share")
         .unwrap_or_else(std::env::temp_dir)
         .join("firebrick")
 }
@@ -106,8 +121,8 @@ mod tests {
     fn msb_home_is_under_xdg_state_home() {
         let var = env(&[("XDG_STATE_HOME", "/state"), ("HOME", "/home/user")]);
         assert_eq!(
-            msb_home_from(var),
-            PathBuf::from("/state/firebrick/microsandbox")
+            msb_home_from(&var),
+            Some(PathBuf::from("/state/firebrick/msb"))
         );
     }
 
@@ -115,22 +130,36 @@ mod tests {
     fn msb_home_falls_back_to_local_state_in_home() {
         let var = env(&[("HOME", "/home/user")]);
         assert_eq!(
-            msb_home_from(var),
-            PathBuf::from("/home/user/.local/state/firebrick/microsandbox")
+            msb_home_from(&var),
+            Some(PathBuf::from("/home/user/.local/state/firebrick/msb"))
         );
     }
 
     #[test]
-    fn msb_home_falls_back_to_temp_dir_without_home() {
-        assert_eq!(
-            msb_home_from(env(&[])),
-            std::env::temp_dir().join("firebrick/microsandbox")
-        );
+    fn msb_home_ignores_empty_and_relative_xdg_state_home() {
+        for state in ["", "state", "./state"] {
+            let vars = [("XDG_STATE_HOME", state), ("HOME", "/home/user")];
+            assert_eq!(
+                msb_home_from(&env(&vars)),
+                Some(PathBuf::from("/home/user/.local/state/firebrick/msb")),
+                "XDG_STATE_HOME={state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn msb_home_is_none_without_absolute_home() {
+        assert_eq!(msb_home_from(&env(&[])), None);
+        assert_eq!(msb_home_from(&env(&[("HOME", "")])), None);
+        let var = env(&[("XDG_STATE_HOME", "state"), ("HOME", "home")]);
+        assert_eq!(msb_home_from(&var), None);
     }
 
     #[test]
     fn msb_home_is_next_to_the_logs() {
-        assert_eq!(msb_home(), log_dir().join("microsandbox"));
+        if let Some(home) = msb_home() {
+            assert_eq!(home, log_dir().join("msb"));
+        }
     }
 
     fn label(path: &str) -> String {

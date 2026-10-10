@@ -52,13 +52,20 @@ impl Daemon {
         Self { root, child }
     }
 
-    async fn client(&self) -> SandboxManagementServiceClient<Channel> {
-        let socket = self.root.join("fbkd.sock");
+    /// Waits until fbkd listens on its socket, failing as soon as it exits.
+    async fn wait_for_socket(&mut self, socket: &Path) {
         let deadline = Instant::now() + TIMEOUT;
-        while UnixStream::connect(&socket).await.is_err() {
+        while UnixStream::connect(socket).await.is_err() {
+            let exited = self.child.try_wait().unwrap();
+            assert!(exited.is_none(), "fbkd exited before listening: {exited:?}");
             assert!(Instant::now() < deadline, "fbkd did not start listening");
             sleep(POLL_INTERVAL).await;
         }
+    }
+
+    async fn client(&mut self) -> SandboxManagementServiceClient<Channel> {
+        let socket = self.root.join("fbkd.sock");
+        self.wait_for_socket(&socket).await;
 
         // The HTTP endpoint isn't used; it only shows up in the authority header.
         let channel = Endpoint::try_from("http://localhost")
@@ -159,7 +166,7 @@ fn assert_exists(path: &Path) {
 
 #[tokio::test]
 async fn sandbox_without_msb_home_lands_in_firebrick_home() {
-    let daemon = Daemon::start();
+    let mut daemon = Daemon::start();
     let mut client = daemon.client().await;
 
     // The VM outlives fbkd, so remove the sandbox even when a check fails.
@@ -213,7 +220,7 @@ async fn start_and_check(root: PathBuf, mut client: SandboxManagementServiceClie
 /// Checks that microsandbox keeps its state in firebrick's home under `root`, not in
 /// `~/.microsandbox`.
 fn assert_in_firebrick_home(root: &Path) {
-    let home = root.join("state/firebrick/microsandbox");
+    let home = root.join("state/firebrick/msb");
     assert_exists(&home.join("bin/msb"));
     assert_exists(&home.join("db/msb.db"));
     assert_exists(&home.join("sandboxes").join(NAME));

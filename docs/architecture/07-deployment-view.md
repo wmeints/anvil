@@ -40,11 +40,15 @@ installed runtime with another version. See
 
 - The runtime, microsandbox's database (`db/msb.db`), its `config.json`, the
   images and the sandboxes live in firebrick's own microsandbox home,
-  `$XDG_STATE_HOME/firebrick/microsandbox` (by default
-  `~/.local/state/firebrick/microsandbox`). `fbkd` never reads or writes
-  `~/.microsandbox`, so a separately installed `msb` keeps its own runtime and
-  database. See
+  `$XDG_STATE_HOME/firebrick/msb` (by default `~/.local/state/firebrick/msb`).
+  `fbkd` never reads or writes `~/.microsandbox`, so a separately installed
+  `msb` keeps its own runtime and database. See
   [ADR 0022](decisions/0022-keep-a-firebrick-microsandbox-home-in-the-xdg-state-directory.md).
+- `fbkd` ignores an empty or relative `XDG_STATE_HOME` or `HOME`, as the XDG
+  spec requires, and refuses to start when neither is an absolute path and
+  `MSB_HOME` isn't set. The home holds the `msb` binary `fbkd` runs, so it must
+  not land in the current directory or a shared temp directory. `fbkd` creates
+  it with mode `0700`.
 - A non-empty `MSB_HOME` environment variable overrides the home. The cargo
   commands in the repository and the `smoke-test` skill use it to isolate
   development builds. `MSB_PATH` and `MSB_LIBKRUNFW_PATH` point `fbkd` at a

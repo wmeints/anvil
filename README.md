@@ -36,8 +36,8 @@ daemon mounts the working directory read/write in the sandbox at
 - On Linux, glibc 2.35 or newer for the release binaries.
 
 Windows isn't supported. `fbkd` embeds the microsandbox runtime and installs it
-in its own microsandbox home, `~/.local/state/firebrick/microsandbox` (or
-`$XDG_STATE_HOME/firebrick/microsandbox`), on first start. It never touches
+in its own microsandbox home, `~/.local/state/firebrick/msb` (or
+`$XDG_STATE_HOME/firebrick/msb`), on first start. It never touches
 `~/.microsandbox`, so a separately installed `msb` keeps its own runtime and
 database. Set `MSB_HOME` to use another directory. Sandboxes created by
 firebrick 0.3.0 and earlier stay in `~/.microsandbox`; remove them with `msb` if
@@ -135,9 +135,8 @@ fbk ls
 `fbk --version` prints the installed version, for example `fbk 0.3.0`.
 
 `fbk ls` starts `fbkd`, which installs the microsandbox runtime in
-`~/.local/state/firebrick/microsandbox`, and lists your sandboxes (none yet). An
-error here means `fbkd` couldn't start, for example because it isn't next to
-`fbk`.
+`~/.local/state/firebrick/msb`, and lists your sandboxes (none yet). An error
+here means `fbkd` couldn't start, for example because it isn't next to `fbk`.
 
 ### macOS: remove the quarantine flag
 
@@ -662,8 +661,8 @@ docker push localhost:5000/firebrick-base:dev
 ```
 
 The local registry speaks plain HTTP, so allow it in `config.json` in the
-microsandbox home (`$MSB_HOME`, or `~/.local/state/firebrick/microsandbox`)
-before `fbkd` starts:
+microsandbox home (`$MSB_HOME`, or `~/.local/state/firebrick/msb`) before `fbkd`
+starts:
 
 ```json
 { "registries": { "hosts": { "localhost:5000": { "insecure": true } } } }
