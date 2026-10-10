@@ -169,8 +169,11 @@ rm ~/.local/bin/fbk ~/.local/bin/fbkd
 
 Each release is also published to crates.io. Instead of downloading an archive,
 build and install both binaries with Cargo. This needs a
-[Rust toolchain](https://rustup.rs/) and `protoc`, the Protocol Buffers
-compiler, on your `PATH`:
+[Rust toolchain](https://rustup.rs/) and `protoc` 3.15 or newer, the Protocol
+Buffers compiler, on your `PATH`. The `protobuf-compiler` package of Ubuntu
+22.04 is too old; install a current release from the
+[protobuf releases](https://github.com/protocolbuffers/protobuf/releases)
+instead:
 
 ```sh
 cargo install firebrick-cli firebrick-daemon

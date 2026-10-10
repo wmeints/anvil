@@ -27,10 +27,10 @@ A tag matching `v*.*.*` triggers a GitHub Actions workflow that:
 - Pushes the `firebrick-base` image to GitHub Container Registry, tagged with
   the git tag, for `linux/amd64` and `linux/arm64`, after every package has
   built.
-- Creates a GitHub release with generated notes once all of the above pass.
 - Publishes the workspace crates to crates.io before the GitHub release, added
   by
   [ADR 0031](0031-publish-the-crates-to-crates-io-with-trusted-publishing.md).
+- Creates a GitHub release with generated notes once all of the above pass.
 
 Windows is left out until the CLI and daemon are ported off unix-only APIs.
 
