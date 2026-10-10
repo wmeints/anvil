@@ -3,13 +3,16 @@ FROM ubuntu:26.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Base tooling, sudo, procps (sysctl), tini and the mise apt repository.
+# Base tooling, a native build toolchain, sudo, procps (sysctl), tini and the mise apt repository.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        build-essential \
         ca-certificates \
         curl \
         git \
         gpg \
+        libssl-dev \
+        pkg-config \
         procps \
         sudo \
         tini \
