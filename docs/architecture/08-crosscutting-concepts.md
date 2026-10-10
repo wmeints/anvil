@@ -11,3 +11,11 @@ logged with its `Debug` representation, because the `Display` representation of
 these errors leaves out their source, which is what's needed to debug an
 internal error. The log is written to the console and to `anvild.log` in the
 daemon's log directory.
+
+A failure the user can cause and fix, such as connecting to a stopped sandbox,
+is logged as a warning instead, so it doesn't hide real internal errors.
+
+Because the `Debug` representation includes every source, an error type must not
+carry secret values anywhere in its chain. serde_yaml quotes the values it can't
+parse, so a parse error of the secrets file only keeps the line and column of
+the error, not the serde_yaml error itself.

@@ -189,10 +189,11 @@ impl SandboxManager {
 
     /// Connects to the running sandbox with the name.
     pub async fn connect(&self, name: &str) -> Result<Sandbox, SandboxError> {
-        get_sandbox(name).await?.connect().await.map_err(|err| {
-            tracing::error!(error = ?err, "failed to connect to sandbox {name}");
-            SandboxError::failed_precondition("sandbox is not running")
-        })
+        get_sandbox(name)
+            .await?
+            .connect()
+            .await
+            .map_err(|err| connect_failed(name, &err))
     }
 
     /// Connects to the sandbox with the SSH host name, starting it when needed.
@@ -358,6 +359,18 @@ async fn get_sandbox(name: &str) -> Result<SandboxHandle, SandboxError> {
     })
 }
 
+/// Logs why connecting to a sandbox failed and returns the error the client sees. A stopped
+/// sandbox is a normal situation, so only other failures are logged as errors.
+fn connect_failed(name: &str, err: &MicrosandboxError) -> SandboxError {
+    if matches!(err, MicrosandboxError::SandboxNotRunning(_)) {
+        tracing::warn!(error = ?err, "failed to connect to sandbox {name}");
+    } else {
+        tracing::error!(error = ?err, "failed to connect to sandbox {name}");
+    }
+
+    SandboxError::failed_precondition("sandbox is not running")
+}
+
 /// Logs why a forced remove couldn't stop the sandbox and returns the error the client sees.
 fn stop_before_remove_failed(name: &str, err: &MicrosandboxError) -> SandboxError {
     tracing::error!(error = ?err, "failed to stop sandbox {name} before removing it");
@@ -504,7 +517,7 @@ async fn update_anvil_sandboxes(change: SecretChange<'_>) -> Result<Vec<String>,
         };
 
         if let Err(err) = result {
-            tracing::warn!("failed to {change} sandbox {}: {err}", handle.name());
+            tracing::warn!(error = ?err, "failed to {change} sandbox {}", handle.name());
             failed.push(handle.name().to_string());
         }
     }

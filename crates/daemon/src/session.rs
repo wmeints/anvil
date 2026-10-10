@@ -48,6 +48,8 @@ pub async fn attach(
 
 /// An interactive process in a sandbox, with its input and controls.
 struct Session {
+    /// Name of the sandbox the session runs in.
+    sandbox: String,
     handle: ExecHandle,
     stdin: ExecSink,
     control: ExecControl,
@@ -65,7 +67,7 @@ impl Session {
             })
             .await
             .map_err(|err| {
-                tracing::error!(error = ?err, "failed to start session");
+                tracing::error!(error = ?err, "failed to start session in sandbox {}", sb.name());
                 Status::internal("failed to start session")
             })?;
 
@@ -75,6 +77,7 @@ impl Session {
         let control = handle.control();
 
         Ok(Self {
+            sandbox: sb.name().to_string(),
             handle,
             stdin,
             control,
@@ -84,7 +87,7 @@ impl Session {
     /// Sets the terminal size of the session, ending the session when that fails.
     async fn resize(&self, width: u16, height: u16) -> Result<(), Status> {
         if let Err(err) = self.control.resize(height, width).await {
-            tracing::error!(error = ?err, "failed to resize session");
+            tracing::error!(error = ?err, "failed to resize session in sandbox {}", self.sandbox);
             end_session(&self.control).await;
             return Err(Status::internal("failed to resize session"));
         }
