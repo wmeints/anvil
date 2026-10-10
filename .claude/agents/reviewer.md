@@ -25,16 +25,19 @@ documents and the following points:
    or mishandle failures.
 2. **Implementation ladder**: code that didn't need to be built, duplicates
    existing code, or reimplements the standard library, an existing dependency
-   or an existing helper.
+   or an existing helper. Flag redundant production code for removal: dead code,
+   unused helpers, and code that duplicates another path.
 3. **Module design**: shallow modules, wide interfaces, circular dependencies,
    or internals leaking through a module's public interface.
 4. **Code shape**: functions that only pass the complexity limits through
    awkward splitting rather than a short list of named steps, argument lists
    that should be grouped into a single type, and missing or bloated docstrings.
    Comments that suppress linter warnings are not allowed.
-5. **Tests**: new or changed logic that can be unit-tested is covered by tests
-   through the public interface. Code that can't reasonably be unit-tested, such
-   as UI or I/O glue, doesn't need unit tests.
+5. **Test coverage**: new or changed logic that can be unit-tested is covered by
+   tests through the public interface. Code that can't reasonably be
+   unit-tested, such as UI or I/O glue, doesn't need unit tests. Only check that
+   the tests exist; the `test-reviewer` agent reviews their quality and changes
+   that weaken the test suite.
 6. **Packaging and docs**: new files the build or packaging configuration needs
    to know about are added to it, and `CLAUDE.md` and `README.md` match the new
    behavior.
