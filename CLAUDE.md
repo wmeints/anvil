@@ -65,9 +65,11 @@ that fits from the start:
   of `as`.
 - Don't suppress lints with `#[allow(...)]` or `#[expect(...)]`; fix the code.
   If a finding is a false positive, ask the user, and add the attribute only
-  with a `// HUMAN-APPROVED: <reason>` comment on the line directly above it.
+  with a `// HUMAN-APPROVED: <reason>` comment directly above it. A long reason
+  may wrap onto more `//` lines, as long as the comment ends on the line
+  directly above the code.
 - Don't write `unsafe` code without the same `// HUMAN-APPROVED: <reason>`
-  comment on the line directly above it.
+  comment directly above it.
 
 ## Testing
 

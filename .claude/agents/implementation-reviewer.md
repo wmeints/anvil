@@ -35,15 +35,18 @@ report the unknown name and the valid names, and stop.
 ### HUMAN-APPROVED marker
 
 Some checks accept code only when a human approved it. The marker is a comment
-on the line directly above the attribute, block or statement:
+that starts with `// HUMAN-APPROVED: <reason>` and directly precedes the
+attribute, block or statement. A long reason may wrap onto more `//` lines, as
+long as the comment runs without a gap up to the line directly above the code:
 
 ```rust
-// HUMAN-APPROVED: edition 2024 marks set_var unsafe; called before any thread starts.
+// HUMAN-APPROVED: edition 2024 marks `set_var` unsafe because other threads may
+// read the environment at the same time; no other thread runs yet.
 unsafe { std::env::set_var("MSB_HOME", &home) };
 ```
 
-A marker without a reason, a `// SAFETY:` comment alone, or a marker further up
-doesn't count.
+A marker without a reason, a `// SAFETY:` comment alone, or a marker separated
+from the code by other code or a blank line doesn't count.
 
 ### Category `ownership`: borrow-checker workarounds
 
