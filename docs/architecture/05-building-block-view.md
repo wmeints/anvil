@@ -245,8 +245,11 @@ start it again.
 The `Dockerfile` in the repository root describes a base image for sandbox
 images. It builds on `ubuntu:26.04` and adds:
 
-- Base tooling - `ca-certificates`, `curl`, `git`, `gpg`, `procps`, `sudo` and
-  `tini`.
+- Base tooling - `build-essential`, `ca-certificates`, `curl`, `git`, `gpg`,
+  `libssl-dev`, `pkg-config`, `procps`, `sudo` and `tini`. The build toolchain
+  and OpenSSL headers let native npm and pip extensions, Rust crates with C
+  build scripts such as `openssl-sys`, and runtimes that mise builds from source
+  compile without installing anything first.
 - `mise` - installed from the mise apt repository. It's activated in `.bashrc`
   for interactive shells, and its shims are on `PATH` for everything else.
 - `agent` - an unprivileged user (UID/GID `1000`, home `/home/agent`) with
