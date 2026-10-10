@@ -141,7 +141,10 @@ impl SandboxManager {
     pub async fn stop(&self, name: &str) -> Result<(), SandboxError> {
         stop_or_kill(&get_sandbox(name).await?, STOP_TIMEOUT)
             .await
-            .map_err(|_| SandboxError::internal("failed to stop sandbox"))
+            .map_err(|err| {
+                tracing::error!(error = ?err, "failed to stop sandbox {name}");
+                SandboxError::internal("failed to stop sandbox")
+            })
     }
 
     /// Removes a sandbox, then syncs the SSH config and the editor settings. A running sandbox
@@ -152,14 +155,17 @@ impl SandboxManager {
         if force && is_live(sb.status_snapshot()) {
             stop_or_kill(&sb, STOP_TIMEOUT)
                 .await
-                .map_err(|_| SandboxError::internal("failed to stop sandbox before removing it"))?;
+                .map_err(|err| stop_before_remove_failed(name, &err))?;
         }
 
         sb.remove().await.map_err(|err| match err {
             MicrosandboxError::SandboxStillRunning(_) => SandboxError::failed_precondition(
                 format!("sandbox {name} is running; stop it first or remove it with force"),
             ),
-            _ => SandboxError::internal("failed to remove sandbox"),
+            err => {
+                tracing::error!(error = ?err, "failed to remove sandbox {name}");
+                SandboxError::internal("failed to remove sandbox")
+            }
         })?;
 
         sync_ssh_config().await;
@@ -187,21 +193,27 @@ impl SandboxManager {
             .await?
             .connect()
             .await
-            .map_err(|_| SandboxError::failed_precondition("sandbox is not running"))
+            .map_err(|err| connect_failed(name, &err))
     }
 
     /// Connects to the sandbox with the SSH host name, starting it when needed.
     pub async fn connect_by_hostname(&self, hostname: &str) -> Result<Sandbox, SandboxError> {
         Sandbox::list_with(|opt| opt.label(ssh::HOSTNAME_LABEL, hostname))
             .await
-            .map_err(|_| SandboxError::internal("failed to list sandboxes"))?
+            .map_err(|err| {
+                tracing::error!(error = ?err, "failed to list sandboxes with host name {hostname}");
+                SandboxError::internal("failed to list sandboxes")
+            })?
             .sandboxes
             .into_iter()
             .next()
             .ok_or_else(|| SandboxError::not_found("couldn't find a sandbox with that host name"))?
             .connect_or_start_detached()
             .await
-            .map_err(|_| SandboxError::failed_precondition("failed to start sandbox"))
+            .map_err(|err| {
+                tracing::error!(error = ?err, "failed to start sandbox with host name {hostname}");
+                SandboxError::failed_precondition("failed to start sandbox")
+            })
     }
 
     /// Stores a secret and adds it to the existing sandboxes. Running sandboxes pick it up the
@@ -218,7 +230,7 @@ impl SandboxManager {
         let _secrets_guard = self.secrets_lock.lock().await;
 
         self.secrets.set(secret.clone()).map_err(|err| {
-            tracing::warn!("failed to store secret {}: {err:#}", secret.name());
+            tracing::error!(error = ?err, "failed to store secret {}", secret.name());
             SandboxError::internal("failed to store secret")
         })?;
 
@@ -261,7 +273,7 @@ impl SandboxManager {
         }
 
         self.secrets.remove(name).map_err(|err| {
-            tracing::warn!("failed to remove secret {name}: {err:#}");
+            tracing::error!(error = ?err, "failed to remove secret {name}");
             SandboxError::internal("failed to remove secret")
         })?;
 
@@ -273,7 +285,7 @@ impl SandboxManager {
     /// Returns the stored secrets.
     fn load_secrets(&self) -> Result<Vec<Secret>, SandboxError> {
         self.secrets.load().map_err(|err| {
-            tracing::warn!("failed to load secrets: {err:#}");
+            tracing::error!(error = ?err, "failed to load secrets");
             SandboxError::internal("failed to load secrets")
         })
     }
@@ -324,7 +336,7 @@ impl SandboxManager {
             .create()
             .await
         {
-            tracing::warn!("failed to create sandbox {}: {err}", request.name);
+            tracing::error!(error = ?err, "failed to create sandbox {}", request.name);
             return Err(create_failed(request.name, &err.to_string()).await);
         }
 
@@ -340,8 +352,29 @@ async fn get_sandbox(name: &str) -> Result<SandboxHandle, SandboxError> {
         MicrosandboxError::SandboxNotFound(_) => {
             SandboxError::not_found("couldn't find specified sandbox")
         }
-        _ => SandboxError::internal("failed to get sandbox"),
+        err => {
+            tracing::error!(error = ?err, "failed to get sandbox {name}");
+            SandboxError::internal("failed to get sandbox")
+        }
     })
+}
+
+/// Logs why connecting to a sandbox failed and returns the error the client sees. A stopped
+/// sandbox is a normal situation, so only other failures are logged as errors.
+fn connect_failed(name: &str, err: &MicrosandboxError) -> SandboxError {
+    if matches!(err, MicrosandboxError::SandboxNotRunning(_)) {
+        tracing::warn!(error = ?err, "failed to connect to sandbox {name}");
+    } else {
+        tracing::error!(error = ?err, "failed to connect to sandbox {name}");
+    }
+
+    SandboxError::failed_precondition("sandbox is not running")
+}
+
+/// Logs why a forced remove couldn't stop the sandbox and returns the error the client sees.
+fn stop_before_remove_failed(name: &str, err: &MicrosandboxError) -> SandboxError {
+    tracing::error!(error = ?err, "failed to stop sandbox {name} before removing it");
+    SandboxError::internal("failed to stop sandbox before removing it")
 }
 
 /// Stops the sandbox gracefully, and kills it when it hasn't stopped within `timeout`.
@@ -392,7 +425,7 @@ async fn start_existing_sandbox(
         // Another request started the sandbox after its status was read.
         Err(MicrosandboxError::SandboxStillRunning(_)) => {}
         Err(err) => {
-            tracing::warn!("failed to start sandbox {}: {err}", request.name);
+            tracing::error!(error = ?err, "failed to start sandbox {}", request.name);
             return Err(SandboxError::internal("failed to start sandbox"));
         }
     }
@@ -436,7 +469,10 @@ async fn list_all_sandboxes() -> Result<Vec<SandboxHandle>, SandboxError> {
             None => opt,
         })
         .await
-        .map_err(|_| SandboxError::internal("failed to list sandboxes"))?;
+        .map_err(|err| {
+            tracing::error!(error = ?err, "failed to list sandboxes");
+            SandboxError::internal("failed to list sandboxes")
+        })?;
 
         sandboxes.extend(result.sandboxes);
 
@@ -481,7 +517,7 @@ async fn update_anvil_sandboxes(change: SecretChange<'_>) -> Result<Vec<String>,
         };
 
         if let Err(err) = result {
-            tracing::warn!("failed to {change} sandbox {}: {err}", handle.name());
+            tracing::warn!(error = ?err, "failed to {change} sandbox {}", handle.name());
             failed.push(handle.name().to_string());
         }
     }

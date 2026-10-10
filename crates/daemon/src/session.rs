@@ -48,6 +48,8 @@ pub async fn attach(
 
 /// An interactive process in a sandbox, with its input and controls.
 struct Session {
+    /// Name of the sandbox the session runs in.
+    sandbox: String,
     handle: ExecHandle,
     stdin: ExecSink,
     control: ExecControl,
@@ -64,7 +66,10 @@ impl Session {
                     .tty(true)
             })
             .await
-            .map_err(|_| Status::internal("failed to start session"))?;
+            .map_err(|err| {
+                tracing::error!(error = ?err, "failed to start session in sandbox {}", sb.name());
+                Status::internal("failed to start session")
+            })?;
 
         let stdin = handle
             .take_stdin()
@@ -72,6 +77,7 @@ impl Session {
         let control = handle.control();
 
         Ok(Self {
+            sandbox: sb.name().to_string(),
             handle,
             stdin,
             control,
@@ -80,7 +86,8 @@ impl Session {
 
     /// Sets the terminal size of the session, ending the session when that fails.
     async fn resize(&self, width: u16, height: u16) -> Result<(), Status> {
-        if self.control.resize(height, width).await.is_err() {
+        if let Err(err) = self.control.resize(height, width).await {
+            tracing::error!(error = ?err, "failed to resize session in sandbox {}", self.sandbox);
             end_session(&self.control).await;
             return Err(Status::internal("failed to resize session"));
         }
@@ -179,7 +186,7 @@ async fn forward_event(
             ControlFlow::Break(())
         }
         Some(ExecEvent::Failed(failed)) => {
-            tracing::warn!("session failed to start: {failed:?}");
+            tracing::error!(error = ?failed, "session failed to start");
             let _ = tx
                 .send(Err(Status::internal("session failed to start")))
                 .await;

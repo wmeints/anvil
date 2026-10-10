@@ -39,12 +39,10 @@ pub enum SecretError {
         #[source]
         source: io::Error,
     },
-    #[error("failed to parse secrets in {path}")]
-    Parse {
-        path: PathBuf,
-        #[source]
-        source: serde_yaml::Error,
-    },
+    /// Keeps only the position of the error, because serde_yaml quotes the values it can't
+    /// parse, and those can be secret values.
+    #[error("failed to parse secrets in {path} at {position}")]
+    Parse { path: PathBuf, position: String },
     #[error("failed to encode secrets")]
     Encode(#[source] serde_yaml::Error),
     #[error("secret {name} appears more than once in {path}")]
@@ -203,9 +201,9 @@ impl SecretStore {
         };
 
         let secrets: Vec<Secret> =
-            serde_yaml::from_str(&content).map_err(|source| SecretError::Parse {
+            serde_yaml::from_str(&content).map_err(|err| SecretError::Parse {
                 path: self.path.clone(),
-                source,
+                position: parse_error_position(&err),
             })?;
 
         // The file can be edited by hand, so check it like new secrets.
@@ -344,6 +342,14 @@ pub fn protect_database(msb_home: &Path) -> io::Result<()> {
 
     fs::create_dir_all(&dir)?;
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+}
+
+/// Returns where in the file a parse error is, without the error message.
+fn parse_error_position(err: &serde_yaml::Error) -> String {
+    match err.location() {
+        Some(location) => format!("line {}, column {}", location.line(), location.column()),
+        None => "an unknown position".to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -556,6 +562,21 @@ mod tests {
         let result = SecretStore::new(&path).load();
 
         assert!(matches!(result, Err(SecretError::Parse { .. })));
+    }
+
+    #[test]
+    fn parse_error_leaves_out_the_file_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.yml");
+
+        for content in ["ghp_SECRET123", "- ghp_SECRET123"] {
+            fs::write(&path, content).unwrap();
+
+            let err = SecretStore::new(&path).load().unwrap_err();
+
+            assert!(!format!("{err:?}").contains("ghp_SECRET123"), "{err:?}");
+            assert!(!format!("{err:#}").contains("ghp_SECRET123"), "{err:#}");
+        }
     }
 
     #[test]
