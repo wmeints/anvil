@@ -1,4 +1,5 @@
 pub mod client;
+pub mod init;
 pub mod manage;
 pub mod secret;
 pub mod session;

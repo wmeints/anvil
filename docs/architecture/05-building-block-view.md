@@ -40,18 +40,20 @@ C4Component
         Component(session, "session", "crossterm", "Terminal sessions")
         Component(ssh, "ssh", "Rust", "SSH proxy")
         Component(validate, "validate", "Rust", "Spec validation")
+        Component(init, "init", "serde_yaml", "Default spec")
         Component(secret, "secret", "Rust", "Secrets")
         Component(table, "table", "ratatui", "Tables")
         Component(client, "client", "Tonic client", "Daemon client")
     }
     Component_Ext(spec, "firebrick-spec", "serde_yaml", "Sandbox spec")
-    Component_Ext(utils, "firebrick-utils", "Rust", "File locations")
+    Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names")
     Container_Ext(fbkd, "fbkd")
 
     Rel(main, manage, "Uses")
     Rel(main, session, "Uses")
     Rel(main, ssh, "Uses")
     Rel(main, validate, "Uses")
+    Rel(main, init, "Uses")
     Rel(main, secret, "Uses")
     Rel(main, client, "Connects")
     Rel(manage, table, "Renders sandboxes")
@@ -59,14 +61,16 @@ C4Component
     Rel(session, manage, "Ensures running")
     Rel(manage, spec, "Loads .firebrick.yml")
     Rel(validate, spec, "Loads .firebrick.yml")
+    Rel(init, spec, "Writes default spec")
+    Rel(init, utils, "Sanitizes name")
     Rel(client, utils, "Finds socket")
     Rel(client, fbkd, "gRPC")
 ```
 
-- `main` - Parses the `start`, `stop`, `ls`, `rm`, `run`, `validate`, `secret
-  set`, `secret ls` and `secret rm` commands, and the hidden `ssh-proxy`
-  command. `validate` and `--version`, which prints the package version, run
-  without the daemon.
+- `main` - Parses the `start`, `stop`, `ls`, `rm`, `run`, `validate`, `init`,
+  `secret set`, `secret ls` and `secret rm` commands, and the hidden `ssh-proxy`
+  command. `validate`, `init` and `--version`, which prints the package version,
+  run without the daemon.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
   waits at most 5 seconds for the socket.
@@ -91,6 +95,10 @@ C4Component
   ([ADR 0003](decisions/0003-render-cli-tables-with-ratatui.md)).
 - `validate` - Checks `.firebrick.yml` and reports problems as
   `file:line:column: error: message`.
+- `init` - Writes `firebrick_spec::default_spec` as YAML to `.firebrick.yml` in
+  the working directory, named after the working directory's leaf with
+  `firebrick_utils::sanitize_label`, the rule that also makes the SSH host
+  names. It refuses to replace an existing file unless `--force` is passed.
 
 ## Level 2 - Daemon
 
@@ -109,7 +117,7 @@ C4Component
         Component(secrets, "secrets", "serde_yaml", "Secrets")
         Component(network, "network", "microsandbox-network", "Egress rules")
     }
-    Component_Ext(utils, "firebrick-utils", "Rust", "File locations")
+    Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
     System_Ext(sshconfig, "~/.ssh/config", "OpenSSH config")
     System_Ext(editors, "settings.json", "VS Code-family user settings")
@@ -179,15 +187,18 @@ C4Component
   name, regenerates the SSH config, the editor settings and Zed's remote
   projects after every start and remove and when the daemon starts, and connects
   to a sandbox by name or host name. `GetSandbox` returns the sandbox's working
-  directory, which is the workspace mount path, as `workspace_path`; it's empty
-  for a sandbox without one. A failed sync only logs a warning. `SetSecret`
-  stores a secret and adds it to the existing sandboxes firebrick created.
-  `ListSecrets` returns the names and allowed hosts, sorted by name, never the
-  values. `RemoveSecret` removes a secret from the existing sandboxes firebrick
-  created and then from the store, keeps it in the store when a sandbox fails so
-  the removal can be retried, and returns `NOT_FOUND` for an unknown name. A
-  lock around the secret store makes sure a sandbox that is being created can't
-  miss a secret that is being set.
+  directory, which is the workspace mount path, as `workspace_path`, and the
+  host directory bind-mounted there, canonicalized, as `workspace_host_path`.
+  Both are empty for a sandbox without a workspace. The CLI compares
+  `workspace_host_path` with the working directory before it uses an existing
+  sandbox. A failed sync only logs a warning. `SetSecret` stores a secret and
+  adds it to the existing sandboxes firebrick created. `ListSecrets` returns the
+  names and allowed hosts, sorted by name, never the values. `RemoveSecret`
+  removes a secret from the existing sandboxes firebrick created and then from
+  the store, keeps it in the store when a sandbox fails so the removal can be
+  retried, and returns `NOT_FOUND` for an unknown name. A lock around the secret
+  store makes sure a sandbox that is being created can't miss a secret that is
+  being set.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and
@@ -218,8 +229,9 @@ C4Component
   ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
 - `ssh` - Creates the ed25519 client and host keys, pins the host key for
   `*.fbk` in a `known_hosts` file, picks a unique `<leaf>.fbk` host name per
-  sandbox (stored in the `firebrick.hostname` label), and writes the generated
-  SSH config that `~/.ssh/config` includes.
+  sandbox (stored in the `firebrick.hostname` label, with the leaf sanitized by
+  `firebrick_utils::sanitize_label`), and writes the generated SSH config that
+  `~/.ssh/config` includes.
 - `vscode` - Keeps `remote.SSH.remotePlatform` in the user `settings.json` of VS
   Code, VS Code Insiders, Cursor and VSCodium in sync with the sandbox host
   names, so Remote-SSH doesn't ask for the platform. Every host maps to
@@ -275,7 +287,9 @@ C4Component
   (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
   (`$XDG_STATE_HOME/firebrick`), the SSH directory
   (`$XDG_DATA_HOME/firebrick/ssh`) and the secrets file
-  (`$XDG_DATA_HOME/firebrick/secrets.yml`).
+  (`$XDG_DATA_HOME/firebrick/secrets.yml`). It also holds `sanitize_label`,
+  which turns a directory's leaf into a lowercase DNS label (or `sandbox` when
+  nothing is left), so the SSH host names and the name `fbk init` writes match.
 
 The image, init, mise setting, resources and network rules apply when a sandbox
 is created. Changing them in `.firebrick.yml` doesn't change an existing

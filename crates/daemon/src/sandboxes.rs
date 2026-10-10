@@ -9,7 +9,9 @@ use crate::ssh;
 use crate::vscode;
 use crate::zed;
 use firebrick_spec::NetworkSpec;
-use microsandbox::sandbox::{HostPermissions, SandboxBuilder, SandboxHandle, SandboxStatus};
+use microsandbox::sandbox::{
+    HostPermissions, SandboxBuilder, SandboxHandle, SandboxStatus, VolumeMount,
+};
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::HashSet;
 use std::fmt;
@@ -87,7 +89,7 @@ pub struct StartSandbox<'a> {
     pub network: &'a NetworkSpec,
 }
 
-/// The name, status, SSH host name and workspace path of a sandbox.
+/// The name, status, SSH host name and workspace paths of a sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxInfo {
     /// Name of the sandbox.
@@ -98,6 +100,8 @@ pub struct SandboxInfo {
     pub hostname: Option<String>,
     /// Guest path the workspace is mounted at, e.g. `/workspaces/project`, if it has one.
     pub workspace_path: Option<String>,
+    /// Host directory mounted as the workspace, e.g. `/home/user/project`, if it has one.
+    pub workspace_host_path: Option<String>,
 }
 
 impl SandboxInfo {
@@ -107,6 +111,7 @@ impl SandboxInfo {
             status: handle.status_snapshot(),
             hostname: ssh::hostname_of(handle),
             workspace_path: workspace_path_of(handle),
+            workspace_host_path: workspace_host_path_of(handle),
         }
     }
 }
@@ -114,6 +119,20 @@ impl SandboxInfo {
 /// Returns the guest path a sandbox mounts its workspace at, which is its working directory.
 fn workspace_path_of(handle: &SandboxHandle) -> Option<String> {
     handle.config().ok()?.spec.runtime.workdir
+}
+
+/// Returns the host directory a sandbox bind-mounts at its workspace path. microsandbox stores
+/// the host path canonicalized when it creates the sandbox.
+fn workspace_host_path_of(handle: &SandboxHandle) -> Option<String> {
+    let config = handle.config().ok()?;
+    let workdir = config.spec.runtime.workdir.as_deref()?;
+
+    config.spec.mounts.iter().find_map(|mount| match mount {
+        VolumeMount::Bind { host, guest, .. } if guest == workdir => {
+            Some(host.to_string_lossy().into_owned())
+        }
+        _ => None,
+    })
 }
 
 /// Manages sandboxes and the secrets they get.

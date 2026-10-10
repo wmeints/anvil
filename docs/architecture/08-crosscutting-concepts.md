@@ -20,6 +20,14 @@ carry secret values anywhere in its chain. serde_yaml quotes the values it can't
 parse, so a parse error of the secrets file only keeps the line and column of
 the error, not the serde_yaml error itself.
 
+The `vm-tests` in `crates/daemon/tests/grpc.rs` run the daemon in-process and
+install a `tracing` subscriber that writes through libtest's output capture, at
+level `info` unless `RUST_LOG` says otherwise. A failing test prints the
+daemon's log lines, including the original error behind a generic status, next
+to its panic message; a passing test prints nothing extra. The tests use the
+current-thread runtime, so the daemon logs on the test's own thread and its
+lines end up under the right test.
+
 ## Securing the daemon socket
 
 Any process that can use the daemon socket can start sandboxes, read workspace

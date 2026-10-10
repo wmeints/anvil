@@ -76,6 +76,8 @@ message GetSandboxResponse {
   string hostname = 3;
   // Guest path the workspace is mounted at, e.g. `/workspaces/project`. Empty when it has none.
   string workspace_path = 4;
+  // Host directory mounted as the workspace, e.g. `/home/user/project`. Empty when it has none.
+  string workspace_host_path = 5;
 }
 
 message SandboxSummary {

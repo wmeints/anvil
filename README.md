@@ -215,6 +215,7 @@ another sandbox from any directory.
 | `fbk ls [--format json]`          | List all sandboxes as a table, or as JSON with `--format json`.                                                                    |
 | `fbk rm [--force] [name]`         | Remove the sandbox, or the one with the name from `fbk ls`. Refuses a running sandbox; `--force` stops it first.                   |
 | `fbk validate`                    | Check the `.firebrick.yml` file in the current directory.                                                                          |
+| `fbk init [--force]`              | Write a `.firebrick.yml` with the defaults to the current directory. `--force` overwrites an existing one.                         |
 | `fbk secret set <name> [<value>]` | Set a secret for all sandboxes. See [Secrets](#secrets).                                                                           |
 | `fbk secret ls [--format json]`   | List the secrets and their allowed hosts, without their values.                                                                    |
 | `fbk secret rm <name>`            | Remove a secret from all sandboxes.                                                                                                |
@@ -238,16 +239,18 @@ mise skip this step. Set `mise: false` in `.firebrick.yml` to turn it off.
 
 ### Configuring a sandbox
 
-Add a `.firebrick.yml` file to the project directory to configure the sandbox:
+Add a `.firebrick.yml` file to the project directory to configure the sandbox.
+`fbk init` creates one with the defaults from the table below, named after the
+project directory. In a directory called `My.App`, it writes:
 
 ```yaml
-name: my-project
-image: ghcr.io/my-org/my-sandbox:1.0
-init: true
-mise: true
+name: my-app
 resources:
   cpu: 2
   memory: 4 GiB
+image: ghcr.io/wmeints/firebrick-base:v<version>
+init: true
+mise: true
 volumes:
   docker: 20 GiB
 network:
@@ -255,6 +258,9 @@ network:
   allow:
     - github.com
 ```
+
+`<version>` is the installed firebrick version. Edit the file to change any of
+the fields, such as `image` to run your own image.
 
 | Field              | Description                                                             | Default                                     |
 | ------------------ | ----------------------------------------------------------------------- | ------------------------------------------- |
@@ -273,6 +279,17 @@ Without `.firebrick.yml`, Firebrick uses the defaults and names the sandbox
 `firebrick-` followed by the first 6 characters of the SHA-256 hash of the full
 path of the working directory, such as `firebrick-d9f287`. A sandbox created by
 an older version keeps its name, such as `home_user_my_project`.
+
+Two directories can, rarely, hash to the same name. `fbk start` and `fbk run`
+then refuse to use the first directory's sandbox from the second one, so an
+agent can't reach the other project's files:
+
+```text
+Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; add a .firebrick.yml with its own name to give this directory a separate sandbox
+```
+
+Add a `.firebrick.yml` with its own `name` to the second directory to give it a
+separate sandbox.
 
 Every sandbox gets a private ext4 disk mounted at `/var/lib/docker`, so Docker
 can store images and containers inside the sandbox; Docker's storage doesn't
@@ -554,13 +571,13 @@ The local registry speaks plain HTTP, so allow it in
 
 The workspace contains five crates:
 
-| Crate              | Folder          | Purpose                                          |
-| ------------------ | --------------- | ------------------------------------------------ |
-| `firebrick-cli`    | `crates/cli`    | The `fbk` CLI.                                   |
-| `firebrick-daemon` | `crates/daemon` | The `fbkd` daemon.                               |
-| `firebrick-proto`  | `crates/proto`  | Generated gRPC code for the daemon API.          |
-| `firebrick-spec`   | `crates/spec`   | Parses and validates `.firebrick.yml`.           |
-| `firebrick-utils`  | `crates/utils`  | Shared paths for the socket, logs and SSH files. |
+| Crate              | Folder          | Purpose                                                                  |
+| ------------------ | --------------- | ------------------------------------------------------------------------ |
+| `firebrick-cli`    | `crates/cli`    | The `fbk` CLI.                                                           |
+| `firebrick-daemon` | `crates/daemon` | The `fbkd` daemon.                                                       |
+| `firebrick-proto`  | `crates/proto`  | Generated gRPC code for the daemon API.                                  |
+| `firebrick-spec`   | `crates/spec`   | Parses and validates `.firebrick.yml`.                                   |
+| `firebrick-utils`  | `crates/utils`  | Shared paths for the socket, logs and SSH files, and the name sanitizer. |
 
 The gRPC contract lives in
 [`crates/proto/proto/daemon.v1.proto`](crates/proto/proto/daemon.v1.proto).
