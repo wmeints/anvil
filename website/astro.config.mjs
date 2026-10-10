@@ -23,8 +23,8 @@ export default defineConfig({
       // Lists the docs in reading order. A slug without a page fails the build.
       sidebar: [
         "docs",
-        "docs/quickstart",
         "docs/installation",
+        "docs/quickstart",
         "docs/configuration",
         "docs/networking",
         "docs/secrets",

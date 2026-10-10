@@ -94,8 +94,8 @@ test("the docs sidebar lists the pages in reading order", async ({ page }) => {
 
   expect(titles).toEqual([
     "Introduction",
-    "Quickstart",
     "Installation",
+    "Quickstart",
     "Configuration",
     "Networking",
     "Secrets",
