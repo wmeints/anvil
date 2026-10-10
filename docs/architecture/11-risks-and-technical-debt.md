@@ -41,6 +41,16 @@
 - **No SSH agent forwarding:** microsandbox's SSH server rejects agent
   forwarding, so git over SSH needs a private key inside the sandbox. Git uses
   HTTPS with a secret instead.
+- **Limits of egress enforcement:** microsandbox serves the deny page only to
+  HTTP/1.x requests to hosts that no rule matched, and only while the policy has
+  no domain `deny` rule. With a domain `deny` rule, denied requests get a TCP
+  reset, and the hosts that rule denies don't resolve. IP and CIDR denies and
+  non-HTTP traffic get a reset or a close. Strict mode blocks protocols other
+  than HTTP(S) on ports 80 and 443, such as SSH, to hosts allowed only by a
+  domain rule; they need an IP or CIDR rule. TLS interception breaks clients
+  that pin certificates or bring their own CA store. microsandbox has no API for
+  denied connections, so the host can't show them to the user
+  ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
 - **Ageing Linux build runners:** Linux releases build on the `ubuntu-22.04`
   runners to support glibc 2.35. GitHub retires runner images before their
   Ubuntu release reaches end of support (April 2027), after which the release

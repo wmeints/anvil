@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
-use firebrick_spec::SandboxSpec;
+use firebrick_spec::{NetworkRule, NetworkSpec, SandboxSpec};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::ops::ControlFlow;
@@ -12,8 +12,8 @@ use tonic::transport::Channel;
 
 use crate::api::{
     GetSandboxRequest, GetSandboxResponse, ListSandboxesRequest, ListSandboxesResponse,
-    RemoveSandboxRequest, SandboxResources, SandboxStatus, SandboxSummary, SandboxVolumes,
-    StartSandboxRequest, StopSandboxRequest,
+    NetworkPolicy, RemoveSandboxRequest, SandboxResources, SandboxStatus, SandboxSummary,
+    SandboxVolumes, StartSandboxRequest, StopSandboxRequest,
     sandbox_management_service_client::SandboxManagementServiceClient,
 };
 use crate::table;
@@ -256,6 +256,18 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> StartSandboxReque
         workspace: workspace.to_string_lossy().into_owned(),
         init: Some(spec.init.unwrap_or(true)),
         mise: Some(spec.mise.unwrap_or(true)),
+        network: spec.network.map(network_policy),
+    }
+}
+
+/// Turns the network section of a spec into its API message.
+fn network_policy(network: NetworkSpec) -> NetworkPolicy {
+    let rules = |rules: Vec<NetworkRule>| rules.iter().map(ToString::to_string).collect();
+
+    NetworkPolicy {
+        enforce: network.enforce,
+        allow: rules(network.allow),
+        deny: rules(network.deny),
     }
 }
 
@@ -832,6 +844,32 @@ mod tests {
     }
 
     #[test]
+    fn start_request_carries_network_from_spec() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join(SPEC_FILE_NAME),
+            "name: dev\nnetwork:\n  enforce: true\n  allow: [github.com, \"*.example.com\", 10.0.0.1, 10.0.0.0/8]\n  deny: [gist.github.com]\n",
+        )
+        .unwrap();
+
+        let request = build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path());
+
+        assert_eq!(
+            request.network,
+            Some(NetworkPolicy {
+                enforce: true,
+                allow: vec![
+                    "github.com".to_string(),
+                    "*.example.com".to_string(),
+                    "10.0.0.1".to_string(),
+                    "10.0.0.0/8".to_string(),
+                ],
+                deny: vec!["gist.github.com".to_string()],
+            })
+        );
+    }
+
+    #[test]
     fn start_request_fills_in_defaults() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(SPEC_FILE_NAME), "name: dev\n").unwrap();
@@ -843,6 +881,7 @@ mod tests {
         assert_eq!(request.image, firebrick_spec::DEFAULT_IMAGE);
         assert_eq!(request.init, Some(true));
         assert_eq!(request.mise, Some(true));
+        assert_eq!(request.network, None);
         assert_eq!(resources.cpu, u32::from(defaults.cpu));
         assert_eq!(resources.memory, defaults.memory);
         assert_eq!(

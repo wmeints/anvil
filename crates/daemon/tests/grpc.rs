@@ -10,9 +10,9 @@ use std::time::Duration;
 use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, GetSandboxRequest,
-    GetSandboxResponse, ListSandboxesRequest, RemoveSandboxRequest, SandboxResources,
-    SandboxStatus, SandboxVolumes, StartSandboxRequest, StopSandboxRequest, attach_request,
-    attach_response,
+    GetSandboxResponse, ListSandboxesRequest, NetworkPolicy, RemoveSandboxRequest,
+    SandboxResources, SandboxStatus, SandboxVolumes, StartSandboxRequest, StopSandboxRequest,
+    attach_request, attach_response,
 };
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{mise, sandboxes, server};
@@ -1294,4 +1294,140 @@ async fn start_sandbox_stores_the_mise_setting() {
     daemon.stop().await;
     remove_sandbox(ENABLED).await;
     remove_sandbox(DISABLED).await;
+}
+
+/// Image with `curl` for the network tests; the default test image has no HTTP client.
+const CURL_IMAGE: &str = "buildpack-deps:trixie-curl";
+
+/// Requests the URL over IPv4 from inside the sandbox and returns the body followed by the
+/// HTTP status code on its own line.
+async fn fetch(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    url: &str,
+) -> String {
+    let (output, _) = run_command(
+        client,
+        name,
+        "curl",
+        &["-4", "-sS", "-m", "30", "-w", "\\n%{http_code}", url],
+    )
+    .await;
+
+    output
+}
+
+/// Starts a sandbox from the curl image that enforces the allow and deny rules.
+async fn start_enforced_sandbox(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    allow: &[&str],
+    deny: &[&str],
+) {
+    let rules = |rules: &[&str]| rules.iter().map(ToString::to_string).collect();
+    let request = StartSandboxRequest {
+        image: CURL_IMAGE.to_string(),
+        network: Some(NetworkPolicy {
+            enforce: true,
+            allow: rules(allow),
+            deny: rules(deny),
+        }),
+        ..start_request(name)
+    };
+
+    start_and_wait(client, request).await;
+}
+
+#[tokio::test]
+async fn enforced_network_policy_answers_hosts_it_does_not_allow_with_deny_page() {
+    const NAME: &str = "fbk-it-network-allow";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("network-allow").await;
+    let mut client = daemon.client().await;
+    start_enforced_sandbox(&mut client, NAME, &["example.com"], &[]).await;
+
+    let allowed = fetch(&mut client, NAME, "https://example.com").await;
+    let not_allowed = fetch(&mut client, NAME, "https://example.org").await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert!(allowed.trim_end().ends_with("200"), "{allowed:?}");
+    assert!(
+        not_allowed.contains(
+            "firebrick blocked the connection to example.org: the network policy of this \
+             sandbox doesn't allow it. To allow it, run `fbk network allow example.org` on the \
+             host, outside the sandbox."
+        ),
+        "{not_allowed:?}"
+    );
+    assert!(not_allowed.trim_end().ends_with("403"), "{not_allowed:?}");
+}
+
+#[tokio::test]
+async fn enforced_network_policy_denies_host_that_is_also_allowed() {
+    const NAME: &str = "fbk-it-network-deny";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("network-deny").await;
+    let mut client = daemon.client().await;
+    start_enforced_sandbox(&mut client, NAME, &["*.example.net"], &["example.net"]).await;
+
+    let allowed = fetch(&mut client, NAME, "https://www.example.net").await;
+    let denied = fetch(&mut client, NAME, "https://example.net").await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    // The allowed subdomain proves the rules apply, so the failure comes from the deny rule.
+    assert!(!allowed.trim_end().ends_with("000"), "{allowed:?}");
+    assert!(denied.trim_end().ends_with("000"), "{denied:?}");
+}
+
+#[tokio::test]
+async fn enforced_network_policy_allows_and_denies_ip_addresses() {
+    const NAME: &str = "fbk-it-network-ip";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("network-ip").await;
+    let mut client = daemon.client().await;
+    // Cloudflare's resolvers answer plain HTTP on their addresses.
+    start_enforced_sandbox(
+        &mut client,
+        NAME,
+        &["1.0.0.0/24", "1.1.1.0/24"],
+        &["1.1.1.1"],
+    )
+    .await;
+
+    let allowed = fetch(&mut client, NAME, "http://1.0.0.1").await;
+    let denied = fetch(&mut client, NAME, "http://1.1.1.1").await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert!(!allowed.trim_end().ends_with("000"), "{allowed:?}");
+    assert!(denied.trim_end().ends_with("000"), "{denied:?}");
+}
+
+#[tokio::test]
+async fn start_sandbox_rejects_invalid_network_rule() {
+    let daemon = TestDaemon::start("network-invalid").await;
+    let mut client = daemon.client().await;
+    let request = StartSandboxRequest {
+        network: Some(NetworkPolicy {
+            enforce: true,
+            allow: vec!["github.com:443".to_string()],
+            deny: vec![],
+        }),
+        ..start_request("fbk-it-network-invalid")
+    };
+
+    let status = client.start_sandbox(request).await.unwrap_err();
+
+    daemon.stop().await;
+
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(status.message().contains("github.com:443"), "{status:?}");
 }

@@ -1997,6 +1997,7 @@ dependencies = [
  "hyper-util",
  "jsonc-parser",
  "microsandbox",
+ "microsandbox-network",
  "russh",
  "serde",
  "serde_yaml",

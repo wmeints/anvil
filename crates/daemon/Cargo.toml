@@ -32,7 +32,9 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 firebrick-utils = { workspace = true }
 tracing-appender = "0.2.5"
-microsandbox = { version = "0.7.6", features = ["ssh", "embed-binaries"] }
+# microsandbox pins microsandbox-network with `=`, so keep both versions equal.
+microsandbox = { version = "0.7.7", features = ["ssh", "embed-binaries"] }
+microsandbox-network = { version = "0.7.7", default-features = false }
 russh = "0.63.1"
 firebrick-proto = { workspace = true }
 firebrick-spec = { workspace = true }

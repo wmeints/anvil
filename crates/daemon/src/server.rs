@@ -7,9 +7,9 @@ use crate::api::sandbox_management_service_server::{
 use crate::api::{
     AttachRequest, AttachResponse, AttachStart, GetSandboxRequest, GetSandboxResponse,
     ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse,
-    RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse,
-    SandboxResources, SandboxStatus, SandboxSummary, SecretSummary, SetSecretRequest,
-    SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
+    NetworkPolicy, RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest,
+    RemoveSecretResponse, SandboxResources, SandboxStatus, SandboxSummary, SecretSummary,
+    SetSecretRequest, SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
     StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, attach_request,
     ssh_tunnel_request,
 };
@@ -19,7 +19,7 @@ use crate::session::{self, SessionCommand};
 use crate::tunnel;
 use anyhow::Result;
 use async_trait::async_trait;
-use firebrick_spec::{SandboxResourcesSpec, VolumesSpec};
+use firebrick_spec::{NetworkRule, NetworkSpec, SandboxResourcesSpec, VolumesSpec};
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -59,16 +59,45 @@ impl FirebrickServer {
     }
 }
 
-/// Reads the sandbox to start from a request. A request without `init` runs the image's init,
-/// and one without `mise` installs the workspace's mise tools.
-fn start_sandbox_from(request: &StartSandboxRequest) -> StartSandbox<'_> {
+/// Reads the sandbox to start from a request with its parsed egress rules. A request without
+/// `init` runs the image's init, and one without `mise` installs the workspace's mise tools.
+fn start_sandbox_from<'a>(
+    request: &'a StartSandboxRequest,
+    network: &'a NetworkSpec,
+) -> StartSandbox<'a> {
     StartSandbox {
         name: &request.name,
         workspace: &request.workspace,
         image: &request.image,
         init: request.init.unwrap_or(true),
         mise: request.mise.unwrap_or(true),
+        network,
     }
+}
+
+/// Parses the egress rules of a request. A request without them gets microsandbox's default
+/// policy. Fails with `InvalidArgument` on the first invalid rule.
+fn network_spec(network: Option<&NetworkPolicy>) -> Result<NetworkSpec, Status> {
+    let Some(network) = network else {
+        return Ok(NetworkSpec::default());
+    };
+
+    Ok(NetworkSpec {
+        enforce: network.enforce,
+        allow: parse_rules(&network.allow)?,
+        deny: parse_rules(&network.deny)?,
+    })
+}
+
+/// Parses network rules, failing with `InvalidArgument` on the first invalid one.
+fn parse_rules(rules: &[String]) -> Result<Vec<NetworkRule>, Status> {
+    rules
+        .iter()
+        .map(|rule| {
+            rule.parse::<NetworkRule>()
+                .map_err(|err| Status::invalid_argument(err.to_string()))
+        })
+        .collect()
 }
 
 impl From<SandboxError> for Status {
@@ -99,9 +128,10 @@ impl SandboxManagementService for FirebrickServer {
         request: Request<StartSandboxRequest>,
     ) -> Result<Response<StartSandboxResponse>, Status> {
         let request_data = request.into_inner();
+        let network = network_spec(request_data.network.as_ref())?;
 
         self.sandboxes
-            .start(start_sandbox_from(&request_data), || {
+            .start(start_sandbox_from(&request_data, &network), || {
                 sandbox_resources(&request_data)
             })
             .await?;
@@ -506,14 +536,14 @@ mod tests {
     fn start_sandbox_from_request_defaults_init_to_true() {
         let request = StartSandboxRequest::default();
 
-        assert!(start_sandbox_from(&request).init);
+        assert!(start_sandbox_from(&request, &NetworkSpec::default()).init);
     }
 
     #[test]
     fn start_sandbox_from_request_defaults_mise_to_true() {
         let request = StartSandboxRequest::default();
 
-        assert!(start_sandbox_from(&request).mise);
+        assert!(start_sandbox_from(&request, &NetworkSpec::default()).mise);
     }
 
     #[test]
@@ -523,7 +553,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(!start_sandbox_from(&request).mise);
+        assert!(!start_sandbox_from(&request, &NetworkSpec::default()).mise);
     }
 
     #[test]
@@ -536,12 +566,68 @@ mod tests {
             ..Default::default()
         };
 
-        let start = start_sandbox_from(&request);
+        let network = NetworkSpec::default();
+        let start = start_sandbox_from(&request, &network);
 
         assert_eq!(
             (start.name, start.image, start.workspace, start.init),
             ("dev", "alpine:3.22", "/home/user/project", false)
         );
+    }
+
+    #[test]
+    fn network_spec_without_network_does_not_enforce() {
+        assert_eq!(network_spec(None).unwrap(), NetworkSpec::default());
+    }
+
+    #[test]
+    fn network_spec_parses_the_rules() {
+        let network = NetworkPolicy {
+            enforce: true,
+            allow: vec!["*.github.com".to_string(), "10.0.0.0/8".to_string()],
+            deny: vec!["gist.github.com".to_string()],
+        };
+
+        let spec = network_spec(Some(&network)).unwrap();
+
+        assert!(spec.enforce);
+        assert_eq!(
+            spec.allow,
+            [
+                NetworkRule::DomainSuffix("github.com".to_string()),
+                NetworkRule::Cidr {
+                    address: "10.0.0.0".parse().unwrap(),
+                    prefix: 8
+                },
+            ]
+        );
+        assert_eq!(
+            spec.deny,
+            [NetworkRule::Domain("gist.github.com".to_string())]
+        );
+    }
+
+    #[test]
+    fn network_spec_rejects_invalid_rules() {
+        for network in [
+            NetworkPolicy {
+                allow: vec!["https://github.com".to_string()],
+                ..Default::default()
+            },
+            NetworkPolicy {
+                deny: vec!["https://github.com".to_string()],
+                ..Default::default()
+            },
+        ] {
+            let status = network_spec(Some(&network)).unwrap_err();
+
+            assert_eq!(status.code(), tonic::Code::InvalidArgument);
+            assert_eq!(
+                status.message(),
+                "invalid network rule \"https://github.com\": use a host name, *.domain, an IP \
+                 address or a CIDR range"
+            );
+        }
     }
 
     #[test]

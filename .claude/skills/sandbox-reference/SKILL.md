@@ -17,7 +17,7 @@ holds the minimum version) or from a version you remember:
 
 ```bash
 V=$(grep -A1 '^name = "microsandbox"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')
-R=$(ls -d ~/.cargo/registry/src/*/ | head -1)
+R=$(ls -d ~/.cargo/registry/src/index.crates.io-*/ | head -1)
 M=${R}microsandbox-$V/lib            # the SDK
 N=${R}microsandbox-network-$V/lib    # network policy, secrets proxy, TLS
 ```
@@ -39,6 +39,8 @@ paths above.
 | Home dir, db and config paths   | `${R}microsandbox-utils-$V/lib/lib.rs`, `$M/config/`            |
 | Network rules                   | `$N/model/policy/` (`builder.rs`, `types.rs`)                   |
 | Secret substitution in requests | `$N/engine/secrets/handler.rs`                                  |
+| Policy evaluation, DNS queries  | `$N/model/policy/types.rs`, `$N/engine/dns/forwarder.rs`        |
+| Deny responses                  | `$N/engine/tcp/proxy.rs`, `$N/engine/netstack/poll.rs`          |
 
 ## How firebrick uses it
 
@@ -48,6 +50,9 @@ All calls live in `crates/daemon/src`. Reuse these before adding new ones:
   .volume()` and `.init(..)` to create, `Sandbox::get`, `Sandbox::list_with`
   (paged, filtered by label), `connect_or_start_detached`, `stop`, `remove`,
   `status_snapshot`, and `modify().label(..)`.
+- `network.rs` - `NetworkPolicy::builder()` from the `microsandbox-network`
+  crate (`microsandbox` doesn't re-export the rule builder or `Destination`),
+  and `builder.network(|n| n.policy(..).tls(|t| t).http(..))` at create time.
 - `secrets.rs` - `builder.secret(..)` at create time, and `modify().secret(..)`
   / `modify().remove_secret(..)` on existing sandboxes.
 - `session.rs` - `exec_stream_with(command, |e| e.args(..).stdin_pipe()
@@ -113,8 +118,35 @@ build on it when `Cargo.lock` has a newer version.
 **Network**
 
 - Rules are an ordered list and the first match decides. Destinations are
-  `.ip(..)`, `.cidr(..)`, `.domain(..)` and `.domain_suffix(..)`, which also
-  matches subdomains. There is no `*.example.com` wildcard syntax.
+  `.ip(..)` (stored as a /32 or /128 `Cidr`), `.cidr(..)`, `.domain(..)` and
+  `.domain_suffix(..)`, which also matches the domain itself and its subdomains.
+  There is no `*.example.com` wildcard syntax, and a suffix with a single label
+  such as `com` fails to build.
+- `NetworkPolicy::builder().default_deny()` also denies ingress; use
+  `.default_egress(Action::Deny)` to deny only egress.
+- Domain rules also match DNS queries to the sandbox's resolver: a domain deny
+  rule makes the name return NXDOMAIN. `Rule::allow_dns()` allows UDP/TCP 53 to
+  the gateway; without it, a default-deny policy resolves nothing.
+- `builder.network(..)` starts from the network config set so far, so it can be
+  combined with `builder.secret(..)`. `.tls(|t| t)` replaces the TLS settings
+  with interception on port 443 enabled. Secrets turn interception on too.
+- The guest trusts the interception CA in its system store
+  (`/etc/ssl/certs/ca-certificates.crt`), so `curl` in a Debian image accepts
+  intercepted HTTPS.
+- `.http(|h| h.deny_response(true).deny_message(..))` answers a denied HTTP/1.x
+  request, also over intercepted HTTPS, with `403 Forbidden` and the message
+  (`{host}` is the denied host). It only does so when the walk ends at the
+  default deny. A domain deny rule defers when the connection opens, and when no
+  later rule can allow the flow microsandbox treats it as an explicit deny: the
+  connection is reset without the page, for every denied host, as soon as the
+  policy has any domain deny rule. IP and CIDR denies and non-HTTP traffic are
+  reset or closed.
+- Strict mode (`NetworkConfig::strict`) is on by default: a host allowed only by
+  a domain rule is only reachable over HTTP(S) whose host name can be checked,
+  so SSH to `github.com:22` needs an IP or CIDR rule. With interception on, QUIC
+  (UDP/443) is dropped.
+- microsandbox has no event API for denied connections; it only logs them at
+  `debug` level.
 - On hosts without IPv6 egress, the guest still gets IPv6 and its IPv6
   connections are reset. `firebrick-base` disables guest IPv6 (ADR 0007).
 
