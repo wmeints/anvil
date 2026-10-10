@@ -1,4 +1,4 @@
-# 22. Stream image pull progress from StartSandbox
+# 24. Stream image pull progress from StartSandbox
 
 ## Status
 
@@ -32,7 +32,7 @@ movement, line clearing, terminal width and rate limiting.
 `ImagePullProgress` messages while the image downloads and ends with
 `SandboxStarted`, which holds the forwards the unary response used to return.
 Errors end the stream with a gRPC status, like the unary RPC returned them;
-[ADR 0023](0023-match-image-pull-errors-on-their-types.md) gives a failed pull
+[ADR 0025](0025-match-image-pull-errors-on-their-types.md) gives a failed pull
 its own codes and messages.
 
 fbkd runs the start in a task of its own and adds up the bytes per layer in the

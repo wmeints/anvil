@@ -45,7 +45,7 @@ pub enum SecretError {
     Parse { path: PathBuf, position: String },
     #[error("failed to encode secrets")]
     Encode(#[source] serde_yaml::Error),
-    #[error("secret {name} appears more than once in {path}")]
+    #[error("secret {name} appears more than once in the same scope in {path}")]
     Duplicate { path: PathBuf, name: String },
     #[error("invalid secret in {path}")]
     Invalid {
@@ -61,12 +61,16 @@ pub enum SecretError {
     },
 }
 
-/// A secret: the environment variable that exposes it, its value and the hosts that may
-/// receive the value.
+/// A secret: the environment variable that exposes it, its scope, its value and the hosts that
+/// may receive the value.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Secret {
     name: String,
+    // The sandbox the secret belongs to, or `None` for a global secret that every firebrick
+    // sandbox gets. Files from before scopes have no `sandbox` field, so they load as global.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sandbox: Option<String>,
     value: String,
     allowed_hosts: Vec<String>,
 }
@@ -104,14 +108,37 @@ impl Secret {
 
         Ok(Self {
             name,
+            sandbox: None,
             value,
             allowed_hosts,
         })
     }
 
+    /// Validates a secret read from the file like a new one, keeping its scope.
+    fn checked(self) -> Result<Self, SecretError> {
+        let sandbox = self.sandbox;
+
+        Ok(Self::new(self.name, self.value, self.allowed_hosts)?.in_scope(sandbox))
+    }
+
+    /// Scopes the secret to the sandbox with the name, or makes it global with `None`.
+    pub fn in_scope(self, sandbox: Option<String>) -> Self {
+        Self { sandbox, ..self }
+    }
+
     /// Returns the environment variable that holds the placeholder in the sandbox.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the sandbox the secret belongs to, or `None` for a global secret.
+    pub fn sandbox(&self) -> Option<&str> {
+        self.sandbox.as_deref()
+    }
+
+    /// Whether the secret has the name and belongs to the scope, where `None` is global.
+    pub fn matches(&self, name: &str, sandbox: Option<&str>) -> bool {
+        self.name == name && self.sandbox() == sandbox
     }
 
     /// Returns the hosts that may receive the real value.
@@ -125,6 +152,7 @@ impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Secret")
             .field("name", &self.name)
+            .field("sandbox", &self.sandbox)
             .field("value", &"<redacted>")
             .field("allowed_hosts", &self.allowed_hosts)
             .finish()
@@ -209,7 +237,7 @@ impl SecretStore {
         // The file can be edited by hand, so check it like new secrets.
         let secrets: Vec<Secret> = secrets
             .into_iter()
-            .map(|secret| Secret::new(secret.name, secret.value, secret.allowed_hosts))
+            .map(Secret::checked)
             .collect::<Result<_, _>>()
             .map_err(|source| SecretError::Invalid {
                 path: self.path.clone(),
@@ -226,10 +254,10 @@ impl SecretStore {
         Ok(secrets)
     }
 
-    /// Adds a secret, or replaces the secret with the same name.
+    /// Adds a secret, or replaces the secret with the same name in the same scope.
     pub fn set(&self, secret: Secret) -> Result<(), SecretError> {
         self.update(|secrets| {
-            secrets.retain(|existing| existing.name != secret.name);
+            secrets.retain(|existing| !existing.matches(&secret.name, secret.sandbox()));
             secrets.push(secret);
             true
         })?;
@@ -237,11 +265,22 @@ impl SecretStore {
         Ok(())
     }
 
-    /// Removes the secret with the given name. Returns whether the secret existed.
-    pub fn remove(&self, name: &str) -> Result<bool, SecretError> {
+    /// Removes the secret with the name from the scope, where `None` is global. Returns whether
+    /// the secret existed.
+    pub fn remove(&self, name: &str, sandbox: Option<&str>) -> Result<bool, SecretError> {
+        self.remove_where(|secret| secret.matches(name, sandbox))
+    }
+
+    /// Removes every secret scoped to the sandbox. Returns whether there were any.
+    pub fn remove_sandbox(&self, sandbox: &str) -> Result<bool, SecretError> {
+        self.remove_where(|secret| secret.sandbox() == Some(sandbox))
+    }
+
+    /// Removes the secrets `remove` returns `true` for. Returns whether there were any.
+    fn remove_where(&self, remove: impl Fn(&Secret) -> bool) -> Result<bool, SecretError> {
         self.update(|secrets| {
             let count = secrets.len();
-            secrets.retain(|existing| existing.name != name);
+            secrets.retain(|secret| !remove(secret));
             secrets.len() < count
         })
     }
@@ -268,10 +307,31 @@ impl SecretStore {
     }
 }
 
-/// Returns the first secret whose name an earlier secret already uses.
+/// Returns the secrets the sandbox with the name gets: the global secrets, where the sandbox's
+/// own sandbox-scoped secrets replace the global ones with the same name. Secrets scoped to
+/// other sandboxes are left out.
+pub fn for_sandbox(secrets: Vec<Secret>, sandbox: &str) -> Vec<Secret> {
+    let overridden: HashSet<String> = secrets
+        .iter()
+        .filter(|secret| secret.sandbox() == Some(sandbox))
+        .map(|secret| secret.name.clone())
+        .collect();
+
+    secrets
+        .into_iter()
+        .filter(|secret| match secret.sandbox() {
+            Some(owner) => owner == sandbox,
+            None => !overridden.contains(&secret.name),
+        })
+        .collect()
+}
+
+/// Returns the first secret whose name an earlier secret in the same scope already uses.
 fn first_duplicate(secrets: &[Secret]) -> Option<&Secret> {
-    let mut names = HashSet::new();
-    secrets.iter().find(|secret| !names.insert(&secret.name))
+    let mut keys = HashSet::new();
+    secrets
+        .iter()
+        .find(|secret| !keys.insert((&secret.name, &secret.sandbox)))
 }
 
 /// Replaces a file with `content` that only the user can read, without leaving a partial file.
@@ -504,7 +564,7 @@ mod tests {
         store.set(secret("A", &["example.com"]).unwrap()).unwrap();
         store.set(secret("B", &["example.com"]).unwrap()).unwrap();
 
-        assert!(store.remove("A").unwrap());
+        assert!(store.remove("A", None).unwrap());
 
         let names: Vec<_> = store.load().unwrap().into_iter().map(|s| s.name).collect();
         assert_eq!(names, ["B"]);
@@ -517,7 +577,7 @@ mod tests {
         let store = SecretStore::new(dir.path().join("secrets.yml"));
         store.set(secret("A", &["example.com"]).unwrap()).unwrap();
 
-        assert!(!store.remove("B").unwrap());
+        assert!(!store.remove("B", None).unwrap());
         assert_eq!(store.load().unwrap().len(), 1);
     }
 
@@ -526,7 +586,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secrets.yml");
 
-        assert!(!SecretStore::new(&path).remove("A").unwrap());
+        assert!(!SecretStore::new(&path).remove("A", None).unwrap());
         assert!(!path.exists());
     }
 
@@ -551,6 +611,156 @@ mod tests {
         let result = SecretStore::new(&path).load();
 
         assert!(matches!(result, Err(SecretError::Duplicate { .. })));
+    }
+
+    fn scoped(name: &str, sandbox: &str, host: &str) -> Secret {
+        secret(name, &[host])
+            .unwrap()
+            .in_scope(Some(sandbox.to_string()))
+    }
+
+    #[test]
+    fn set_keeps_one_secret_per_name_and_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SecretStore::new(dir.path().join("secrets.yml"));
+        let global = secret("X", &["example.com"]).unwrap();
+        let a = scoped("X", "a", "a.example.com");
+        let b = scoped("X", "b", "b.example.com");
+
+        store.set(global.clone()).unwrap();
+        store.set(scoped("X", "a", "old.example.com")).unwrap();
+        store.set(a.clone()).unwrap();
+        store.set(b.clone()).unwrap();
+
+        assert_eq!(store.load().unwrap(), [global, a, b]);
+    }
+
+    #[test]
+    fn set_writes_the_sandbox_field_for_scoped_secrets_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.yml");
+        let store = SecretStore::new(&path);
+
+        store.set(secret("G", &["example.com"]).unwrap()).unwrap();
+        store.set(scoped("S", "dev", "example.com")).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "- name: G\n  value: value\n  allowed_hosts:\n  - example.com\n\
+             - name: S\n  sandbox: dev\n  value: value\n  allowed_hosts:\n  - example.com\n"
+        );
+    }
+
+    #[test]
+    fn load_reads_entries_without_sandbox_as_global() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.yml");
+        fs::write(
+            &path,
+            "- name: X\n  value: v\n  allowed_hosts: [example.com]\n",
+        )
+        .unwrap();
+
+        let secrets = SecretStore::new(&path).load().unwrap();
+
+        assert_eq!(secrets.len(), 1);
+        assert_eq!(secrets[0].sandbox(), None);
+    }
+
+    #[test]
+    fn load_accepts_the_same_name_in_different_scopes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.yml");
+        fs::write(
+            &path,
+            "- name: X\n  value: v\n  allowed_hosts: [example.com]\n\
+             - name: X\n  sandbox: a\n  value: v\n  allowed_hosts: [example.com]\n\
+             - name: X\n  sandbox: b\n  value: v\n  allowed_hosts: [example.com]\n",
+        )
+        .unwrap();
+
+        let scopes: Vec<_> = SecretStore::new(&path)
+            .load()
+            .unwrap()
+            .iter()
+            .map(|secret| secret.sandbox().map(str::to_string))
+            .collect();
+
+        assert_eq!(scopes, [None, Some("a".into()), Some("b".into())]);
+    }
+
+    #[test]
+    fn load_rejects_duplicate_names_in_one_sandbox_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.yml");
+        let entry = "- name: X\n  sandbox: a\n  value: v\n  allowed_hosts: [example.com]\n";
+        fs::write(&path, entry.repeat(2)).unwrap();
+
+        let result = SecretStore::new(&path).load();
+
+        assert!(matches!(result, Err(SecretError::Duplicate { .. })));
+    }
+
+    #[test]
+    fn remove_deletes_only_the_secret_in_the_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SecretStore::new(dir.path().join("secrets.yml"));
+        let global = secret("X", &["example.com"]).unwrap();
+        let b = scoped("X", "b", "example.com");
+        store.set(global.clone()).unwrap();
+        store.set(scoped("X", "a", "example.com")).unwrap();
+        store.set(b.clone()).unwrap();
+
+        assert!(store.remove("X", Some("a")).unwrap());
+        assert!(!store.remove("X", Some("c")).unwrap());
+
+        assert_eq!(store.load().unwrap(), [global.clone(), b]);
+
+        assert!(store.remove("X", None).unwrap());
+        assert_eq!(store.load().unwrap(), [scoped("X", "b", "example.com")]);
+    }
+
+    #[test]
+    fn remove_sandbox_drops_only_that_sandboxes_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SecretStore::new(dir.path().join("secrets.yml"));
+        let global = secret("X", &["example.com"]).unwrap();
+        let other = scoped("X", "b", "example.com");
+        store.set(global.clone()).unwrap();
+        store.set(scoped("X", "a", "example.com")).unwrap();
+        store.set(scoped("Y", "a", "example.com")).unwrap();
+        store.set(other.clone()).unwrap();
+
+        assert!(store.remove_sandbox("a").unwrap());
+        assert!(!store.remove_sandbox("a").unwrap());
+
+        assert_eq!(store.load().unwrap(), [global, other]);
+    }
+
+    #[test]
+    fn for_sandbox_returns_global_secrets_with_the_sandboxes_overrides() {
+        let global_x = secret("X", &["example.com"]).unwrap();
+        let global_y = secret("Y", &["example.com"]).unwrap();
+        let own_x = scoped("X", "a", "a.example.com");
+        let own_z = scoped("Z", "a", "a.example.com");
+        let other_y = scoped("Y", "b", "b.example.com");
+        let secrets = vec![
+            global_x,
+            global_y.clone(),
+            own_x.clone(),
+            own_z.clone(),
+            other_y,
+        ];
+
+        assert_eq!(for_sandbox(secrets, "a"), [global_y, own_x, own_z]);
+    }
+
+    #[test]
+    fn for_sandbox_without_overrides_returns_the_global_secrets() {
+        let global = secret("X", &["example.com"]).unwrap();
+        let secrets = vec![global.clone(), scoped("X", "b", "b.example.com")];
+
+        assert_eq!(for_sandbox(secrets, "a"), [global]);
     }
 
     #[test]

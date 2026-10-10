@@ -287,7 +287,7 @@ the manifest has no layer sizes, the bar shows the downloaded bytes only. When
 the pull or the start fails, fbk clears the bar and shows the error. fbkd runs
 the start in a task of its own, so a client that disconnects doesn't stop it;
 progress that can't be sent is dropped
-([ADR 0022](decisions/0022-stream-image-pull-progress-from-startsandbox.md)).
+([ADR 0024](decisions/0024-stream-image-pull-progress-from-startsandbox.md)).
 
 A failed pull creates no sandbox, and the error names the image:
 
@@ -304,7 +304,7 @@ A failed pull creates no sandbox, and the error names the image:
 
 fbkd matches on the typed errors of `microsandbox-image` and `oci-client`
 instead of their messages
-([ADR 0023](decisions/0023-match-image-pull-errors-on-their-types.md)).
+([ADR 0025](decisions/0025-match-image-pull-errors-on-their-types.md)).
 
 When `StartSandbox` creates a sandbox, or starts one that was stopped or
 crashed, fbkd installs the workspace's mise tools before it returns. It looks
@@ -497,11 +497,87 @@ sends `StartSandbox(name)` with an empty workspace and no ports for a running,
 stopped or crashed sandbox; the daemon then falls back to the sandbox name when
 the sandbox still needs a host name, and opens the stored forwards.
 
+### Forwarding a port
+
+`fbk port forward` and `fbk port rm` change the forwards of the working
+directory's sandbox without `fbk start`, and record the change in
+`.firebrick.yml`, so the file stays the record of the sandbox's ports:
+
+```sh
+fbk port forward 3000          # host localhost:3000 -> sandbox port 3000
+fbk port forward 8080:5173     # host localhost:8080 -> sandbox port 5173
+fbk port rm 8080               # closes the forward on host port 8080
+```
+
+The daemon is the source of truth for what's open, so fbk writes the file only
+after the daemon accepted the change. It edits the `ports` block as text with
+`firebrick_spec::add_port` or `remove_port`, which keeps comments and other
+fields, writes `3000` when host and guest port match and `"8080:5173"`
+otherwise, and checks that the result still parses. Forwarding a host port that
+is already listed replaces its guest port in both the daemon and the file.
+
+- The sandbox is stopped: fbkd only updates the `firebrick.ports` label, and fbk
+  prints `Sandbox <name> isn't running; the port applies when it starts.`
+- The sandbox doesn't exist yet: fbk skips the RPC, updates the file and prints
+  `Sandbox <name> doesn't exist yet; the port applies when it's created.`
+- There's no `.firebrick.yml`: fbk creates one with the resolved sandbox name
+  and the port.
+- The argument isn't `<port>` or `<host>:<guest>` with ports from 1 to 65535:
+  clap rejects it before fbk contacts the daemon.
+- The host port is in use by another process or another sandbox's forward:
+  `ForwardPort` reopens the old forwards and fails with `FAILED_PRECONDITION`,
+  and fbk prints `couldn't forward localhost:<port>: <reason>`. Neither the
+  label nor the file changes.
+- `fbk port rm` with a host port that isn't forwarded: `RemovePort` fails with
+  `NOT_FOUND` (or, for a sandbox that doesn't exist, the file doesn't list it),
+  and fbk prints `port <port> isn't forwarded for sandbox <name>`.
+- `.firebrick.yml` is invalid: fbk prints the diagnostic like `fbk validate` and
+  changes nothing.
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer
+    participant CLI as fbk
+    participant F as .firebrick.yml
+    participant D as fbkd
+    participant MS as microsandbox
+
+    Dev->>CLI: fbk port forward 8080:5173
+    CLI->>F: Read and parse (or resolve the default name)
+    alt Invalid spec
+        CLI-->>Dev: .firebrick.yml:line:column: error: message
+    end
+    CLI->>CLI: Edit the ports block in the text and parse the result
+    CLI->>D: GetSandbox(name)
+    alt NOT_FOUND
+        CLI->>F: Write the edited text
+        CLI-->>Dev: Sandbox <name> doesn't exist yet; the port applies when it's created.
+    else Sandbox exists
+        CLI->>D: ForwardPort(name, 8080 -> 5173)
+        D->>MS: Sandbox::get(name), read firebrick.ports
+        opt Sandbox runs
+            D->>D: Reconcile forwards with the new list
+            alt Host port can't be listened on
+                D->>D: Reconcile forwards with the old list
+                D-->>CLI: FAILED_PRECONDITION(reason)
+                CLI-->>Dev: couldn't forward localhost:8080: reason
+            end
+        end
+        D->>MS: Store firebrick.ports label (next_start, no restart)
+        D-->>CLI: ForwardPortResponse(running)
+        CLI->>F: Write the edited text
+        CLI-->>Dev: Forwarding localhost:8080 -> sandbox port 5173<br/>or: Sandbox <name> isn't running; the port applies when it starts.
+    end
+```
+
+`fbk port rm` follows the same steps with `RemovePort`, which closes the forward
+of a running sandbox.
+
 ## Setting a secret
 
 `fbk secret set <name> <value>` stores a secret that sandboxes use without
 seeing its value. With `--from-stdin`, the CLI reads the value from stdin
-instead.
+instead. Without `--scope`, or with `--scope global`, the secret is global.
 
 ```mermaid
 sequenceDiagram
@@ -528,7 +604,22 @@ sequenceDiagram
     CLI-->>Dev: Secret set, warnings for failed sandboxes
 ```
 
-When `fbkd` creates a sandbox, it adds all secrets from `secrets.yml`.
+The loop skips the sandboxes that have a sandbox-scoped secret with the same
+name, because that one wins in its sandbox (see
+[Secret scopes](08-crosscutting-concepts.md#secret-scopes)).
+
+With `--scope sandbox`, the CLI first resolves the working directory's sandbox
+like `fbk stop` does without a name, and sends its name in `SetSecret`. `fbkd`
+returns `NOT_FOUND` with `sandbox <name> doesn't exist` when the sandbox doesn't
+exist, before it changes `secrets.yml`. Otherwise it stores the secret with the
+sandbox's name and adds it to that sandbox only, replacing the global value
+there.
+
+When `fbkd` creates or recreates a sandbox, it adds the global secrets from
+`secrets.yml`, with the sandbox's own sandbox-scoped secrets in place of the
+global ones with the same name. A brand-new sandbox has none of those, because
+they can only be set for a sandbox that exists, but a sandbox whose scoped
+secrets were left behind, or one that `fbk network` recreates, keeps its own.
 microsandbox enables TLS interception for the sandbox and sets each secret's
 environment variable to a placeholder such as `$MSB_GH_TOKEN`. Its TLS proxy
 replaces the placeholder with the real value in HTTP headers of requests to the
@@ -543,6 +634,18 @@ then from `secrets.yml`. When a sandbox fails, it keeps the secret in
 retries them. microsandbox can't change the secrets of a running sandbox, so a
 running sandbox keeps the placeholder, and its proxy keeps putting in the real
 value, until it restarts.
+
+`fbk secret rm <name>` removes the global secret only and skips the sandboxes
+with a sandbox-scoped secret with that name. `fbk secret rm <name> --scope
+sandbox` removes the working directory's sandbox-scoped secret: `fbkd` returns
+`NOT_FOUND` when the sandbox doesn't exist or has no such secret. When a global
+secret with that name exists, it adds that one to the sandbox instead of
+removing the secret, so the sandbox falls back to the global value after its
+next start.
+
+`fbk rm` removes the sandbox's scoped secrets from `secrets.yml` after
+microsandbox removed the sandbox. When that fails, `RemoveSandbox` returns
+`INTERNAL` with `removed sandbox <name>, but failed to remove its secrets`.
 
 ## Updating the network rules
 
@@ -591,7 +694,7 @@ sequenceDiagram
         D-->>CLI: INTERNAL, keeps its old rules
         CLI-->>Dev: Error
     end
-    D->>MS: Create it from the snapshot with the same settings,<br/>the stored secrets, the new rules and their label
+    D->>MS: Create it from the snapshot with the same settings,<br/>its secrets, the new rules and their label
     alt Recreate fails
         D->>MS: Remove what was created
         D-->>CLI: INTERNAL, names the kept snapshot

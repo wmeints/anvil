@@ -93,13 +93,13 @@ build on it when `Cargo.lock` has a newer version.
   whose tarball is cached sends `LayerDownloadComplete` with its full size and
   no `LayerDownloadProgress`. `Resolved.total_download_bytes` is `None` when the
   manifest has no layer sizes. `fbkd` turns them into progress in `pull.rs` (ADR
-  0022).
+  0024).
 - A failed pull returns `MicrosandboxError::Image(ImageError::Registry(..))`
   with an `oci_client::errors::OciDistributionError`. Docker Hub and GHCR answer
   an unknown repository with `UnauthorizedError`, an unknown tag with
   `RegistryError` whose envelope has `ManifestUnknown`, and an unreachable host
   gives `RequestError`. Neither type is re-exported by `microsandbox`, so the
-  daemon depends on `microsandbox-image` and `oci-client` directly (ADR 0023). A
+  daemon depends on `microsandbox-image` and `oci-client` directly (ADR 0025). A
   failed pull leaves no sandbox behind.
 
 **Volumes**
@@ -225,8 +225,16 @@ build on it when `Cargo.lock` has a newer version.
 
 **Host state**
 
-- State lives in `$MSB_HOME`, or `~/.microsandbox` when it's unset: `bin/msb`,
-  `db/msb.db`, `config.json` and `sandboxes/<name>/logs/`.
+- State lives in `$MSB_HOME`: `bin/msb`, `db/msb.db`, `config.json`, `tls/` (the
+  interception CA) and `sandboxes/<name>/logs/`. microsandbox falls back to
+  `~/.microsandbox`, but `fbkd` sets `MSB_HOME` to firebrick's own home,
+  `$XDG_STATE_HOME/firebrick/msb` (`~/.local/state/firebrick/msb`), when it's
+  unset or empty (ADR 0023). Sandboxes from firebrick 0.3.0 and earlier stay in
+  `~/.microsandbox`.
+- `LocalBackend::builder().home(..)` with `set_default_backend` only moves the
+  home of the SDK process. The `msb` VM processes it spawns only inherit the
+  environment and resolve paths such as the TLS interception CA (`tls/`) from
+  `MSB_HOME`, so changing the home means setting `MSB_HOME`.
 - Unix sockets live under `MSB_HOME`, and their paths can't be longer than 108
   bytes, so an isolated `MSB_HOME` needs a short path under `/tmp`. The session
   scratchpad is too long.

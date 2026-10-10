@@ -1,4 +1,4 @@
-# 23. Match image pull errors on their types
+# 25. Match image pull errors on their types
 
 ## Status
 

@@ -276,7 +276,7 @@ async fn start_if_exists(
 }
 
 /// Returns the status of the sandbox, or `None` when it doesn't exist.
-async fn sandbox_status(
+pub(crate) async fn sandbox_status(
     client: &mut SandboxManagementServiceClient<Channel>,
     name: &str,
 ) -> Result<Option<SandboxStatus>> {
