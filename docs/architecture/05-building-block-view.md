@@ -146,25 +146,30 @@ C4Component
 - `server` - Adapts `SandboxManagementService` to the modules below: it converts
   each request into plain values, calls `sandboxes`, `session` or `tunnel`, and
   converts the result into a response. It converts requested resources to vCPUs
-  and MiB, falling back to the defaults from `firebrick-spec`, and rejects
-  invalid resources with `INVALID_ARGUMENT`. It maps the `SandboxError` of
-  `sandboxes` to gRPC status codes in one place. It refuses to start when the
-  socket already exists, gives the socket mode `0600` after binding it and
-  removes it on shutdown. It only hands a connection to tonic when the peer's
-  UID, read with `SO_PEERCRED`, is the daemon's own UID or root (see
+  and MiB of memory and disk, falling back to the defaults from `firebrick-spec`
+  (for the disk also when the request's `disk` is empty), and rejects invalid
+  resources with `INVALID_ARGUMENT`. It maps the `SandboxError` of `sandboxes`
+  to gRPC status codes in one place. It refuses to start when the socket already
+  exists, gives the socket mode `0600` after binding it and removes it on
+  shutdown. It only hands a connection to tonic when the peer's UID, read with
+  `SO_PEERCRED`, is the daemon's own UID or root (see
   [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
   with the requested vCPUs and memory, mounts the workspace read/write at
-  `/workspaces/<leaf>` and adds the stored secrets. With `init` on, it hands PID
-  1 to the image's `/sbin/init`. When that fails because the image has no init,
-  it removes the half-created sandbox and returns `FAILED_PRECONDITION` with a
-  hint to set `init: false`. Invalid values are rejected before it creates
-  anything. It starts, stops, gets, lists and removes sandboxes, gives each
-  sandbox a unique SSH host name, regenerates the SSH config, the editor
-  settings and Zed's remote projects after every start and remove and when the
-  daemon starts, and connects to a sandbox by name or host name. `GetSandbox`
-  returns the sandbox's working directory, which is the workspace mount path, as
+  `/workspaces/<leaf>`, attaches a sandbox-owned ext4 disk of the requested size
+  at `/var/lib/docker` (see
+  [ADR 0015](decisions/0015-give-each-sandbox-a-docker-data-disk.md)) and adds
+  the stored secrets. The disk survives stops and restarts, and microsandbox
+  deletes it when the sandbox is removed. With `init` on, it hands PID 1 to the
+  image's `/sbin/init`. When that fails because the image has no init, it
+  removes the half-created sandbox and returns `FAILED_PRECONDITION` with a hint
+  to set `init: false`. Invalid values are rejected before it creates anything.
+  It starts, stops, gets, lists and removes sandboxes, gives each sandbox a
+  unique SSH host name, regenerates the SSH config, the editor settings and
+  Zed's remote projects after every start and remove and when the daemon starts,
+  and connects to a sandbox by name or host name. `GetSandbox` returns the
+  sandbox's working directory, which is the workspace mount path, as
   `workspace_path`; it's empty for a sandbox without one. A failed sync only
   logs a warning. `SetSecret` stores a secret and adds it to the existing
   sandboxes firebrick created. `ListSecrets` returns the names and allowed
@@ -237,11 +242,11 @@ C4Component
   CLI and daemon re-export it as their `api` module.
 - `firebrick-spec` (`crates/spec`) - Parses `.firebrick.yml` into a
   `SandboxSpec` with a `name`, an optional `image`, an optional `init` and
-  optional `resources` (`cpu`, `memory`), rejects unknown fields and reports the
-  line and column of a problem. It owns the defaults
-  (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, 2 vCPUs, `4 GiB`)
-  and `parse_memory_mib`, which reads memory sizes in `Mi`/`MiB` or `Gi`/`GiB`.
-  The CLI and daemon both use them.
+  optional `resources` (`cpu`, `memory`, an optional `disk`), rejects unknown
+  fields and reports the line and column of a problem. It owns the defaults
+  (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, 2 vCPUs, `4 GiB`
+  of memory, a `20 GiB` disk) and `parse_size_mib`, which reads memory and disk
+  sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both use them.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
   (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
   (`$XDG_STATE_HOME/firebrick`), the SSH directory

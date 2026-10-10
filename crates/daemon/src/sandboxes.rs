@@ -17,6 +17,9 @@ use thiserror::Error;
 /// How long a sandbox gets to shut down gracefully before it is killed.
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Guest path of the disk that holds Docker's data.
+const DOCKER_DATA_PATH: &str = "/var/lib/docker";
+
 /// Errors of sandbox management. Each variant carries the message the client sees.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum SandboxError {
@@ -59,6 +62,8 @@ pub struct Resources {
     pub cpus: u8,
     /// Memory in MiB.
     pub memory_mib: u32,
+    /// Size of the Docker data disk in MiB.
+    pub disk_mib: u32,
 }
 
 /// The sandbox to start, and the workspace and image to create it from when it doesn't exist.
@@ -319,8 +324,6 @@ impl SandboxManager {
 
         let builder = Sandbox::builder(request.name)
             .image(sandbox_image(request.image))
-            .cpus(resources.cpus)
-            .memory(resources.memory_mib)
             .label(ssh::HOSTNAME_LABEL, &hostname)
             // Mounted read/write; Mirror propagates guest chmod changes to the host files.
             // Mount has the ownership in the guest set to the 1000/1000 (agent) user.
@@ -331,11 +334,9 @@ impl SandboxManager {
             })
             .workdir(&guest_path)
             .detached(true);
+        let builder = with_init(with_resources(builder, resources), request.init);
 
-        if let Err(err) = secrets::add_to_builder(with_init(builder, request.init), &secrets)
-            .create()
-            .await
-        {
+        if let Err(err) = secrets::add_to_builder(builder, &secrets).create().await {
             tracing::error!(error = ?err, "failed to create sandbox {}", request.name);
             return Err(create_failed(request.name, &err.to_string()).await);
         }
@@ -625,6 +626,18 @@ fn sandbox_image(image: &str) -> &str {
 
 /// Path of the init that runs as PID 1 in sandboxes with `init` enabled.
 const INIT_PATH: &str = "/sbin/init";
+
+/// Gives the sandbox its vCPUs, memory and Docker data disk.
+fn with_resources(builder: SandboxBuilder, resources: Resources) -> SandboxBuilder {
+    builder
+        .cpus(resources.cpus)
+        .memory(resources.memory_mib)
+        // A private ext4 disk, because Docker's overlayfs storage can't sit on the overlayfs
+        // root. It lives until the sandbox is removed.
+        .volume(DOCKER_DATA_PATH, |m| {
+            m.owned_with(|v| v.disk().size(resources.disk_mib))
+        })
+}
 
 /// Hands PID 1 to the image's `/sbin/init` when `init` is enabled.
 fn with_init(builder: SandboxBuilder, init: bool) -> SandboxBuilder {

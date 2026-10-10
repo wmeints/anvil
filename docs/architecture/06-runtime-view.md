@@ -237,7 +237,7 @@ sequenceDiagram
         end
         D->>MS: List sandboxes for taken host names
         D->>D: Pick unique project.fbk host name
-        D->>MS: Create detached sandbox (image, init, cpus, memory, label,<br/>workspace mounted at /workspaces/project)
+        D->>MS: Create detached sandbox (image, init, cpus, memory, label,<br/>workspace mounted at /workspaces/project,<br/>owned ext4 disk at /var/lib/docker)
         alt init on and image has no /sbin/init
             D->>MS: Remove the half-created sandbox
             D-->>CLI: FAILED_PRECONDITION (set init: false)

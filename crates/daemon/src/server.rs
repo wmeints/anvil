@@ -276,8 +276,8 @@ fn secret_summary(secret: &Secret) -> SecretSummary {
     }
 }
 
-/// Converts requested resources to vCPUs and MiB of memory, using the default resources when
-/// the request has none.
+/// Converts requested resources to vCPUs and MiB of memory and disk, using the default
+/// resources when the request has none and the default disk when its disk is empty.
 fn sandbox_resources(resources: Option<SandboxResources>) -> Result<Resources, SandboxError> {
     let resources = resources.unwrap_or_else(|| {
         let defaults = SandboxResourcesSpec::default();
@@ -285,6 +285,7 @@ fn sandbox_resources(resources: Option<SandboxResources>) -> Result<Resources, S
         SandboxResources {
             cpu: defaults.cpu.into(),
             memory: defaults.memory,
+            disk: String::new(),
         }
     });
 
@@ -292,10 +293,23 @@ fn sandbox_resources(resources: Option<SandboxResources>) -> Result<Resources, S
         .ok()
         .filter(|cpus| *cpus > 0)
         .ok_or_else(|| SandboxError::InvalidArgument("cpu must be between 1 and 255".into()))?;
-    let memory_mib = firebrick_spec::parse_memory_mib(&resources.memory)
-        .map_err(|err| SandboxError::InvalidArgument(err.to_string()))?;
+    let memory_mib = parse_size_mib(&resources.memory)?;
+    let disk_mib = match resources.disk.as_str() {
+        "" => parse_size_mib(firebrick_spec::DEFAULT_DISK)?,
+        disk => parse_size_mib(disk)?,
+    };
 
-    Ok(Resources { cpus, memory_mib })
+    Ok(Resources {
+        cpus,
+        memory_mib,
+        disk_mib,
+    })
+}
+
+/// Parses a requested size into MiB, reporting a bad size as an invalid argument.
+fn parse_size_mib(size: &str) -> Result<u32, SandboxError> {
+    firebrick_spec::parse_size_mib(size)
+        .map_err(|err| SandboxError::InvalidArgument(err.to_string()))
 }
 
 /// Serves the gRPC API on the socket until SIGINT or SIGTERM is received.
@@ -538,15 +552,28 @@ mod tests {
         let resources = SandboxResources {
             cpu: 4,
             memory: "8 GiB".to_string(),
+            disk: "40 GiB".to_string(),
         };
 
         assert_eq!(
             sandbox_resources(Some(resources)).unwrap(),
             Resources {
                 cpus: 4,
-                memory_mib: 8192
+                memory_mib: 8192,
+                disk_mib: 40960,
             }
         );
+    }
+
+    #[test]
+    fn sandbox_resources_uses_default_disk_when_empty() {
+        let resources = SandboxResources {
+            cpu: 4,
+            memory: "8 GiB".to_string(),
+            disk: String::new(),
+        };
+
+        assert_eq!(sandbox_resources(Some(resources)).unwrap().disk_mib, 20480);
     }
 
     #[test]
@@ -555,25 +582,34 @@ mod tests {
             sandbox_resources(None).unwrap(),
             Resources {
                 cpus: 2,
-                memory_mib: 4096
+                memory_mib: 4096,
+                disk_mib: 20480,
             }
         );
     }
 
     #[test]
     fn sandbox_resources_rejects_invalid_values() {
-        let cases = [(0, "1 GiB"), (256, "1 GiB"), (2, "lots"), (2, "")];
+        let cases = [
+            (0, "1 GiB", ""),
+            (256, "1 GiB", ""),
+            (2, "lots", ""),
+            (2, "", ""),
+            (2, "1 GiB", "20 GB"),
+            (2, "1 GiB", "0 GiB"),
+        ];
 
-        for (cpu, memory) in cases {
+        for (cpu, memory, disk) in cases {
             let resources = SandboxResources {
                 cpu,
                 memory: memory.to_string(),
+                disk: disk.to_string(),
             };
 
             assert_eq!(
                 Status::from(sandbox_resources(Some(resources)).unwrap_err()).code(),
                 tonic::Code::InvalidArgument,
-                "cpu {cpu}, memory {memory:?} should be rejected"
+                "cpu {cpu}, memory {memory:?}, disk {disk:?} should be rejected"
             );
         }
     }

@@ -28,6 +28,8 @@ message StartSandboxRequest {
 message SandboxResources {
   uint32 cpu = 1;
   string memory = 2;
+  // Size of the disk mounted at /var/lib/docker. Empty means the default of 20 GiB.
+  string disk = 3;
 }
 
 message StartSandboxResponse {}

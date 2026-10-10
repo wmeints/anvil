@@ -239,6 +239,7 @@ init: true
 resources:
   cpu: 2
   memory: 4 GiB
+  disk: 20 GiB
 ```
 
 | Field              | Description                                                     | Default                                     |
@@ -248,14 +249,21 @@ resources:
 | `init`             | Run the image's `/sbin/init` as PID 1. See below.               | `true`                                      |
 | `resources.cpu`    | Number of vCPUs.                                                | `2`                                         |
 | `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`. | `4 GiB`                                     |
+| `resources.disk`   | Size of the Docker data disk, in the same units as `memory`.    | `20 GiB`                                    |
 
 Without `.firebrick.yml`, Firebrick uses the defaults and names the sandbox
 `firebrick-` followed by the first 6 characters of the SHA-256 hash of the full
 path of the working directory, such as `firebrick-d9f287`. A sandbox created by
 an older version keeps its name, such as `home_user_my_project`.
 
+Every sandbox gets a private ext4 disk mounted at `/var/lib/docker`, so Docker
+can store images and containers inside the sandbox; Docker's storage doesn't
+work on the sandbox's overlayfs root filesystem. The disk keeps its contents
+when the sandbox stops, and `fbk rm` deletes it with the sandbox.
+
 The image, init and resources apply when the sandbox is created. To change them
-for an existing sandbox, run `fbk rm` and start it again.
+for an existing sandbox, run `fbk rm` and start it again. Sandboxes created by
+an older version have no Docker data disk until you recreate them.
 
 ### Secrets
 
