@@ -708,8 +708,9 @@ WORKDIR /home/agent
 
 ## Development
 
-Install the toolchain (Rust, `buf`, `protoc`, `dprint`, `actionlint` and
-`lefthook`) with [mise](https://mise.jdx.dev). This also installs the git hooks:
+Install the toolchain (Rust, `buf`, `protoc`, `dprint`, `actionlint`,
+`lefthook`, the GitHub CLI and Claude Code) with [mise](https://mise.jdx.dev).
+This also installs the git hooks:
 
 ```sh
 mise install
