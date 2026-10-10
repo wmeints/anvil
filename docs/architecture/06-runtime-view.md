@@ -44,7 +44,7 @@ sequenceDiagram
     loop Until the sandbox runs (max 120s)
         CLI->>D: GetSandbox(name)
         alt NOT_FOUND
-            CLI->>D: StartSandbox(name, image, init, resources, workspace)
+            CLI->>D: StartSandbox(name, image, init, mise, resources, workspace)
             Note over D,MS: Creates the sandbox, see Starting a sandbox
         else Stopped or Crashed
             CLI->>D: StartSandbox(name, workspace)
@@ -191,12 +191,42 @@ sequenceDiagram
 ## Starting a sandbox
 
 `fbk start` creates the sandbox when it doesn't exist yet, or starts the
-existing one. The image and resources from the spec only apply when the sandbox
-is created. Like `fbk run`, the CLI first checks the status of the sandbox: it
-leaves a running sandbox alone, waits for a starting one (max 120s), and fails
-for a stopping or paused one. The daemon's `StartSandbox` is idempotent as well:
-it returns without starting a sandbox that is already running or starting, and
-treats a start that loses a race with another start as a success.
+existing one. The image, init, mise setting and resources from the spec only
+apply when the sandbox is created. Like `fbk run`, the CLI first checks the
+status of the sandbox: it leaves a running sandbox alone, waits for a starting
+one (max 120s), and fails for a stopping or paused one. The daemon's
+`StartSandbox` is idempotent as well: it returns without starting a sandbox that
+is already running or starting, and treats a start that loses a race with
+another start as a success.
+
+When `StartSandbox` creates a sandbox, or starts one that was stopped or
+crashed, fbkd installs the workspace's mise tools before it returns. It looks
+for `mise.toml`, `.mise.toml`, `mise/config.toml`, `.config/mise.toml` and
+`.tool-versions` at the root of the mounted workspace, runs `mise trust <file>`
+for each one that exists, and then `mise install --yes` once, in the workspace
+and as the image's default user. It trusts each file by path, because `mise
+trust --all` would also trust configs in subdirectories. Nothing runs when the
+sandbox was already running or starting, when a start lost the race with another
+start, or when the workspace has none of the files.
+
+The `mise` option in `.firebrick.yml` (default `true`) turns this off. fbkd
+stores it as the `firebrick.mise` label when it creates the sandbox and every
+later start follows the label, because `fbk start <name>`, `fbk run` and SSH
+connections send `StartSandbox` without the spec. A sandbox without the label
+was created before the option existed and installs the tools, like a request
+without `mise`.
+
+- `mise trust` or `mise install` exits non-zero or doesn't finish within 30
+  minutes: `StartSandbox` returns `FAILED_PRECONDITION` with `mise install
+  failed in sandbox <name>:` and the last 10 lines of mise's stderr. The sandbox
+  keeps running, so the developer can connect and fix the config.
+- The image has no `mise` executable: fbkd logs a warning and `StartSandbox`
+  succeeds without telling the client.
+- The exec into the guest fails: fbkd logs the error and returns `INTERNAL`.
+
+The SSH config and editor settings are synced after every `StartSandbox`, also
+when it failed, so the developer can still connect to a sandbox whose mise step
+failed.
 
 ```mermaid
 sequenceDiagram
@@ -213,7 +243,7 @@ sequenceDiagram
     CLI->>D: GetSandbox(name)
     Note over CLI,D: Running: skip StartSandbox. Starting: poll until running.<br/>Stopping or Paused: error.
     alt NOT_FOUND
-        CLI->>D: StartSandbox(name, image, init, resources, workspace)
+        CLI->>D: StartSandbox(name, image, init, mise, resources, workspace)
     else Stopped or Crashed
         CLI->>D: StartSandbox(name, workspace)
     end
@@ -240,8 +270,18 @@ sequenceDiagram
         D->>MS: Create detached sandbox (image, init, cpus, memory, label,<br/>workspace mounted at /workspaces/project,<br/>owned ext4 disk at /var/lib/docker)
         alt init on and image has no /sbin/init
             D->>MS: Remove the half-created sandbox
-            D-->>CLI: FAILED_PRECONDITION (set init: false)
-            CLI-->>Dev: Error
+            Note over D: Result: FAILED_PRECONDITION (set init: false)
+        end
+        D->>MS: Store mise setting as firebrick.mise label
+    end
+
+    opt Sandbox was created or started, mise on, workspace has a mise config file
+        D->>MS: mise trust <file> per config file at the workspace root
+        D->>MS: mise install --yes in /workspaces/project
+        alt mise exits non-zero or times out
+            Note over D: Result: FAILED_PRECONDITION (mise install failed), sandbox keeps running
+        else Image has no mise
+            D->>D: Log a warning
         end
     end
 
@@ -249,7 +289,7 @@ sequenceDiagram
     D->>SSH: Write Host entries for all host names
     D->>Ed: Map all host names to linux in remote.SSH.remotePlatform
     D->>Zed: Write an ssh_connections entry per sandbox host
-    D-->>CLI: StartSandboxResponse
+    D-->>CLI: StartSandboxResponse or the error
     CLI->>D: GetSandbox(name)
     D-->>CLI: GetSandboxResponse(hostname, workspace_path)
     CLI-->>Dev: Connect with: ssh project.fbk<br/>Open in VS Code: code --folder-uri<br/>vscode-remote://ssh-remote+project.fbk/workspaces/project<br/>Open in Zed: zed ssh://project.fbk/workspaces/project

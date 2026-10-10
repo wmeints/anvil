@@ -59,13 +59,15 @@ impl FirebrickServer {
     }
 }
 
-/// Reads the sandbox to start from a request. A request without `init` runs the image's init.
+/// Reads the sandbox to start from a request. A request without `init` runs the image's init,
+/// and one without `mise` installs the workspace's mise tools.
 fn start_sandbox_from(request: &StartSandboxRequest) -> StartSandbox<'_> {
     StartSandbox {
         name: &request.name,
         workspace: &request.workspace,
         image: &request.image,
         init: request.init.unwrap_or(true),
+        mise: request.mise.unwrap_or(true),
     }
 }
 
@@ -504,6 +506,23 @@ mod tests {
         let request = StartSandboxRequest::default();
 
         assert!(start_sandbox_from(&request).init);
+    }
+
+    #[test]
+    fn start_sandbox_from_request_defaults_mise_to_true() {
+        let request = StartSandboxRequest::default();
+
+        assert!(start_sandbox_from(&request).mise);
+    }
+
+    #[test]
+    fn start_sandbox_from_request_keeps_mise() {
+        let request = StartSandboxRequest {
+            mise: Some(false),
+            ..Default::default()
+        };
+
+        assert!(!start_sandbox_from(&request).mise);
     }
 
     #[test]

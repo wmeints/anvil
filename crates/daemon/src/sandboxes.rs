@@ -1,7 +1,8 @@
-//! Sandbox management on top of microsandbox: the sandbox lifecycle, the secrets of
-//! sandboxes, SSH host names, the generated SSH config, the editors' Remote-SSH settings and
+//! Sandbox management on top of microsandbox: the sandbox lifecycle, the workspace's mise
+//! tools, the secrets of sandboxes, SSH host names, the generated SSH config, the editors' Remote-SSH settings and
 //! Zed's remote projects.
 
+use crate::mise::{self, MiseError};
 use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
 use crate::vscode;
@@ -77,6 +78,9 @@ pub struct StartSandbox<'a> {
     pub image: &'a str,
     /// Whether the image's `/sbin/init` runs as PID 1 when the sandbox is created.
     pub init: bool,
+    /// Whether the sandbox trusts and installs its workspace's mise tools on start. Stored when
+    /// the sandbox is created.
+    pub mise: bool,
 }
 
 /// The name, status, SSH host name and workspace path of a sandbox.
@@ -125,21 +129,23 @@ impl SandboxManager {
         }
     }
 
-    /// Starts an existing sandbox or creates a new one when it doesn't exist, then syncs the
-    /// SSH config and the editor settings. `resources` is only called when the sandbox is created.
+    /// Starts an existing sandbox or creates a new one when it doesn't exist, installs the
+    /// workspace's mise tools when it started, then syncs the SSH config and the editor
+    /// settings, also when starting failed. `resources` is only called when the sandbox is
+    /// created.
     pub async fn start(
         &self,
         request: StartSandbox<'_>,
         resources: impl FnOnce() -> Result<Resources, SandboxError>,
     ) -> Result<(), SandboxError> {
-        match Sandbox::get(request.name).await {
-            Ok(existing_sb) => start_existing_sandbox(&existing_sb, request).await?,
-            Err(_) => self.create_sandbox(request, resources).await?,
-        }
+        let result = match Sandbox::get(request.name).await {
+            Ok(existing_sb) => start_existing_sandbox(&existing_sb, request).await,
+            Err(_) => self.create_and_install(request, resources).await,
+        };
 
         sync_ssh_config().await;
 
-        Ok(())
+        result
     }
 
     /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`].
@@ -310,12 +316,28 @@ impl SandboxManager {
         }
     }
 
+    /// Creates a sandbox, then installs its workspace's mise tools when the request enables
+    /// mise.
+    async fn create_and_install(
+        &self,
+        request: StartSandbox<'_>,
+        resources: impl FnOnce() -> Result<Resources, SandboxError>,
+    ) -> Result<(), SandboxError> {
+        let sb = self.create_sandbox(request, resources).await?;
+
+        if request.mise {
+            install_mise_tools(&sb, &workspace_mount_path(request.workspace)?).await?;
+        }
+
+        Ok(())
+    }
+
     /// Creates a sandbox for the workspace with the stored secrets.
     async fn create_sandbox(
         &self,
         request: StartSandbox<'_>,
         resources: impl FnOnce() -> Result<Resources, SandboxError>,
-    ) -> Result<(), SandboxError> {
+    ) -> Result<Sandbox, SandboxError> {
         let guest_path = workspace_mount_path(request.workspace)?;
         let resources = resources()?;
         let hostname = ssh::pick_hostname(request.workspace, &taken_hostnames().await?);
@@ -325,6 +347,7 @@ impl SandboxManager {
         let builder = Sandbox::builder(request.name)
             .image(sandbox_image(request.image))
             .label(ssh::HOSTNAME_LABEL, &hostname)
+            .label(mise::ENABLED_LABEL, mise::label_value(request.mise))
             // Mounted read/write; Mirror propagates guest chmod changes to the host files.
             // Mount has the ownership in the guest set to the 1000/1000 (agent) user.
             .volume(&guest_path, |m| {
@@ -336,14 +359,17 @@ impl SandboxManager {
             .detached(true);
         let builder = with_init(with_resources(builder, resources), request.init);
 
-        if let Err(err) = secrets::add_to_builder(builder, &secrets).create().await {
-            tracing::error!(error = ?err, "failed to create sandbox {}", request.name);
-            return Err(create_failed(request.name, &err.to_string()).await);
-        }
+        let sb = match secrets::add_to_builder(builder, &secrets).create().await {
+            Ok(sb) => sb,
+            Err(err) => {
+                tracing::error!(error = ?err, "failed to create sandbox {}", request.name);
+                return Err(create_failed(request.name, &err.to_string()).await);
+            }
+        };
 
         tracing::info!("created sandbox {} as {hostname}", request.name);
 
-        Ok(())
+        Ok(sb)
     }
 }
 
@@ -403,8 +429,9 @@ fn is_live(status: SandboxStatus) -> bool {
     )
 }
 
-/// Starts an existing sandbox, first giving it a host name when it has none. Does nothing when
-/// the sandbox is already running or starting.
+/// Starts an existing sandbox, first giving it a host name when it has none, then installs its
+/// workspace's mise tools when the sandbox has mise enabled. Does nothing when the sandbox is
+/// already running or starting.
 async fn start_existing_sandbox(
     sb: &SandboxHandle,
     request: StartSandbox<'_>,
@@ -421,17 +448,48 @@ async fn start_existing_sandbox(
         return Ok(());
     }
 
-    match sb.start_detached().await {
-        Ok(_) => tracing::info!("started sandbox {}", request.name),
-        // Another request started the sandbox after its status was read.
-        Err(MicrosandboxError::SandboxStillRunning(_)) => {}
+    let started = match sb.start_detached().await {
+        Ok(started) => started,
+        // Another request started the sandbox after its status was read, and installs the tools.
+        Err(MicrosandboxError::SandboxStillRunning(_)) => return Ok(()),
         Err(err) => {
             tracing::error!(error = ?err, "failed to start sandbox {}", request.name);
             return Err(SandboxError::internal("failed to start sandbox"));
         }
-    }
+    };
 
-    Ok(())
+    tracing::info!("started sandbox {}", request.name);
+
+    match workspace_path_of(sb) {
+        Some(workspace) if mise_enabled(sb) => install_mise_tools(&started, &workspace).await,
+        _ => Ok(()),
+    }
+}
+
+/// Whether the sandbox installs its workspace's mise tools on start.
+fn mise_enabled(sb: &SandboxHandle) -> bool {
+    sb.config()
+        .is_ok_and(|config| mise::is_enabled(&config.spec.labels))
+}
+
+/// Trusts and installs the mise tools of the workspace. An image without mise only logs a
+/// warning, because mise is a convenience the developer of a custom image may leave out.
+async fn install_mise_tools(sb: &Sandbox, workspace: &str) -> Result<(), SandboxError> {
+    match mise::install_tools(sb, workspace).await {
+        Ok(()) => Ok(()),
+        Err(err @ MiseError::Failed { .. }) => {
+            tracing::warn!("{err}");
+            Err(SandboxError::failed_precondition(err.to_string()))
+        }
+        Err(err @ MiseError::NotInstalled(_)) => {
+            tracing::warn!("skipped installing mise tools: {err}");
+            Ok(())
+        }
+        Err(err @ MiseError::Exec { .. }) => {
+            tracing::error!(error = ?err, "failed to install mise tools in {}", sb.name());
+            Err(SandboxError::internal("failed to install mise tools"))
+        }
+    }
 }
 
 /// Gives the sandbox a host name based on its workspace, logging a warning when that fails.

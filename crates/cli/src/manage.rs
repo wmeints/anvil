@@ -185,8 +185,8 @@ async fn start_existing_sandbox(
     }
 }
 
-/// Builds a start request from the spec, filling in the default image, resources, init and
-/// volumes.
+/// Builds a start request from the spec, filling in the default image, resources, init, mise
+/// and volumes.
 /// The workspace is mounted into the sandbox when it's created.
 fn build_start_request(spec: SandboxSpec, workspace: &Path) -> StartSandboxRequest {
     let resources = spec.resources.unwrap_or_default();
@@ -205,6 +205,7 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> StartSandboxReque
         }),
         workspace: workspace.to_string_lossy().into_owned(),
         init: Some(spec.init.unwrap_or(true)),
+        mise: Some(spec.mise.unwrap_or(true)),
     }
 }
 
@@ -732,7 +733,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(
             dir.path().join(SPEC_FILE_NAME),
-            "name: dev\nimage: alpine:3.22\ninit: false\nresources:\n  cpu: 4\n  memory: 8Gi\nvolumes:\n  docker: 40 GiB\n",
+            "name: dev\nimage: alpine:3.22\ninit: false\nmise: false\nresources:\n  cpu: 4\n  memory: 8Gi\nvolumes:\n  docker: 40 GiB\n",
         )
         .unwrap();
 
@@ -741,6 +742,7 @@ mod tests {
 
         assert_eq!(request.image, "alpine:3.22");
         assert_eq!(request.init, Some(false));
+        assert_eq!(request.mise, Some(false));
         assert_eq!((resources.cpu, resources.memory.as_str()), (4, "8Gi"));
         assert_eq!(request.volumes.unwrap().docker, "40 GiB");
     }
@@ -756,6 +758,7 @@ mod tests {
 
         assert_eq!(request.image, firebrick_spec::DEFAULT_IMAGE);
         assert_eq!(request.init, Some(true));
+        assert_eq!(request.mise, Some(true));
         assert_eq!(resources.cpu, u32::from(defaults.cpu));
         assert_eq!(resources.memory, defaults.memory);
         assert_eq!(

@@ -15,7 +15,7 @@ use firebrick_daemon::api::{
     attach_response,
 };
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
-use firebrick_daemon::{sandboxes, server};
+use firebrick_daemon::{mise, sandboxes, server};
 use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
 use microsandbox::sandbox::{OwnedVolumeStorage, RootfsSource, SandboxSpec, VolumeMount};
@@ -1219,4 +1219,59 @@ async fn existing_sandbox_loses_removed_secret_after_restart() {
 
     daemon.stop().await;
     remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
+async fn start_sandbox_skips_mise_when_image_has_none() {
+    const NAME: &str = "fbk-it-mise-missing";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("mise-missing").await;
+    let mut client = daemon.client().await;
+    // The test image has no mise, so both the create and the restart only log a warning.
+    std::fs::write(
+        test_workspace(NAME).join("mise.toml"),
+        "[tools]\nnode = \"22\"\n",
+    )
+    .unwrap();
+
+    start_running_sandbox(&mut client, NAME).await;
+    restart_sandbox(&mut client, NAME).await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+/// Returns the mise label microsandbox stores for the sandbox.
+async fn mise_label(name: &str) -> Option<String> {
+    sandbox_spec(name)
+        .await
+        .labels
+        .get(mise::ENABLED_LABEL)
+        .cloned()
+}
+
+#[tokio::test]
+async fn start_sandbox_stores_the_mise_setting() {
+    const ENABLED: &str = "fbk-it-mise-enabled";
+    const DISABLED: &str = "fbk-it-mise-disabled";
+    remove_sandbox(ENABLED).await;
+    remove_sandbox(DISABLED).await;
+
+    let daemon = TestDaemon::start("mise-setting").await;
+    let mut client = daemon.client().await;
+
+    start_running_sandbox(&mut client, ENABLED).await;
+    let request = StartSandboxRequest {
+        mise: Some(false),
+        ..start_request(DISABLED)
+    };
+    start_and_wait(&mut client, request).await;
+
+    assert_eq!(mise_label(ENABLED).await.as_deref(), Some("true"));
+    assert_eq!(mise_label(DISABLED).await.as_deref(), Some("false"));
+
+    daemon.stop().await;
+    remove_sandbox(ENABLED).await;
+    remove_sandbox(DISABLED).await;
 }

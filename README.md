@@ -228,6 +228,14 @@ fbk run bash
 
 The sandbox keeps running after the command exits.
 
+When the project pins its tools with [mise](https://mise.jdx.dev), Firebrick
+installs them when it creates or starts the sandbox. It trusts the `mise.toml`,
+`.mise.toml`, `mise/config.toml`, `.config/mise.toml` and `.tool-versions` files
+at the root of the project and runs `mise install`, so `fbk start` returns with
+the tools ready. When `mise install` fails, `fbk start` prints mise's error and
+the sandbox keeps running, so you can connect and fix the config. Images without
+mise skip this step. Set `mise: false` in `.firebrick.yml` to turn it off.
+
 ### Configuring a sandbox
 
 Add a `.firebrick.yml` file to the project directory to configure the sandbox:
@@ -236,6 +244,7 @@ Add a `.firebrick.yml` file to the project directory to configure the sandbox:
 name: my-project
 image: ghcr.io/my-org/my-sandbox:1.0
 init: true
+mise: true
 resources:
   cpu: 2
   memory: 4 GiB
@@ -248,6 +257,7 @@ volumes:
 | `name`             | Name of the sandbox.                                            | Required                                    |
 | `image`            | OCI image the sandbox runs.                                     | `ghcr.io/wmeints/firebrick-base:v<version>` |
 | `init`             | Run the image's `/sbin/init` as PID 1. See below.               | `true`                                      |
+| `mise`             | Trust and install the project's mise tools when it starts.      | `true`                                      |
 | `resources.cpu`    | Number of vCPUs.                                                | `2`                                         |
 | `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`. | `4 GiB`                                     |
 | `volumes.docker`   | Size of the Docker data disk, in the same units as `memory`.    | `20 GiB`                                    |
@@ -262,9 +272,10 @@ can store images and containers inside the sandbox; Docker's storage doesn't
 work on the sandbox's overlayfs root filesystem. The disk keeps its contents
 when the sandbox stops, and `fbk rm` deletes it with the sandbox.
 
-The image, init, resources and volumes apply when the sandbox is created. To
-change them for an existing sandbox, run `fbk rm` and start it again. Sandboxes
-created by an older version have no Docker data disk until you recreate them.
+The image, init, mise setting, resources and volumes apply when the sandbox is
+created. To change them for an existing sandbox, run `fbk rm` and start it
+again. Sandboxes created by an older version have no Docker data disk until you
+recreate them.
 
 ### Secrets
 

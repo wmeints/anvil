@@ -1,6 +1,7 @@
 /// Generated gRPC types for the firebrick API.
 pub use firebrick_proto as api;
 
+pub mod mise;
 pub mod runtime;
 pub mod sandboxes;
 pub mod secrets;
