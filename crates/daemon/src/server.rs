@@ -349,7 +349,11 @@ fn accept(conn: &UnixStream, daemon_uid: u32) -> bool {
     match conn.peer_cred() {
         Ok(peer) if is_authorized(peer.uid(), daemon_uid) => true,
         Ok(peer) => {
-            tracing::warn!(peer_uid = peer.uid(), peer_pid = ?peer.pid(), "rejected connection from another user");
+            tracing::warn!(
+                peer_uid = peer.uid(),
+                peer_pid = ?peer.pid(),
+                "rejected connection from another user"
+            );
             false
         }
         Err(err) => {
@@ -396,7 +400,6 @@ mod tests {
     use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
     use hyper_util::rt::TokioIo;
     use microsandbox::sandbox::SandboxStatus as MsbStatus;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use tonic::transport::{Channel, Endpoint, Uri};
 
