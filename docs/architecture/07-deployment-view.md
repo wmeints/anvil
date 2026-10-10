@@ -73,3 +73,12 @@ installed runtime with another version. See
 The macOS binaries aren't signed. When the archive is downloaded through a
 browser, macOS quarantines them; remove the quarantine with `xattr -d
 com.apple.quarantine fbk fbkd`.
+
+## Website
+
+`website/` builds the product website, a landing page and the user docs, into
+static files in `website/dist`. Its `site` and `base` settings point at the
+repository's GitHub Pages URL, `https://wmeints.github.io/firebrick/`, and the
+end-to-end tests serve the build under that base path. Deploying it to GitHub
+Pages is tracked in #76. See
+[ADR 0027](decisions/0027-build-the-website-with-astro-starlight-and-tailwind.md).

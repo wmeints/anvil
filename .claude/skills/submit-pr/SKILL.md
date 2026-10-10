@@ -30,8 +30,10 @@ Before opening the PR, verify the change:
 1. Run the checks from the definition of done in `CLAUDE.md`: `cargo fmt --all
    --check`, `cargo clippy --workspace --all-targets --all-features -- -D
    warnings` and `cargo test --workspace`. Run `cargo test -p firebrick-daemon
-   --features vm-tests` too when the diff touches the files listed in step 2 of
-   the definition of done. If a check fails, stop and report it; don't open a PR
+   --features vm-tests` too when the diff touches the files listed in step 3 of
+   the definition of done. When the diff touches `website/`, run its checks from
+   step 2 too: `pnpm --dir website run format:check`, `lint`, `check`, `test`,
+   `build` and `test:e2e`. If a check fails, stop and report it; don't open a PR
    with failing checks.
 2. Check the documentation rule from the definition of done. When the diff
    changes behavior, the files in `docs/architecture/` must describe the new
@@ -41,11 +43,12 @@ Before opening the PR, verify the change:
    changes how the project is used, `README.md` must describe it. If any of
    these is missing, stop and offer to write it before opening the PR.
 3. Run the `review-branch` workflow with the Workflow tool, by name. It runs the
-   `implementation-reviewer` passes and the `test-reviewer` agent in parallel,
-   and the `reviewer` agent merges their findings into one report with one
-   verdict. Fix confirmed findings with the user's approval, or list the ones
-   you leave open under **Review focus**. When the report names passes as not
-   reviewed, run the workflow again or list them under **Review focus**.
+   `implementation-reviewer` passes, the `website-reviewer` agent and the
+   `test-reviewer` agent in parallel, and the `reviewer` agent merges their
+   findings into one report with one verdict. Fix confirmed findings with the
+   user's approval, or list the ones you leave open under **Review focus**. When
+   the report names passes as not reviewed, run the workflow again or list them
+   under **Review focus**.
 
 ## Steps
 

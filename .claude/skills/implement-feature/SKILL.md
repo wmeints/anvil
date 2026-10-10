@@ -73,12 +73,13 @@ Ask about anything the spec can't answer from the request or the code.
   git fetch origin
   git ls-tree --name-only origin/main docs/architecture/decisions/
   ```
-- Update `README.md` when the usage of the project changes.
+- Update `README.md` when the usage of the project changes, and the user docs in
+  `website/src/content/docs/` once they exist for that part of Firebrick.
 
 ### 6. Verify
 
-- Run the format, lint, and test commands from `CLAUDE.md`, and the `vm-tests`
-  integration tests when the files from step 2 of the definition of done
-  changed. Fix any failures.
+- Run the format, lint, and test commands from `CLAUDE.md`, the website's checks
+  when `website/` changed, and the `vm-tests` integration tests when the files
+  from step 3 of the definition of done changed. Fix any failures.
 - Report what you built, how it maps to the spec, and anything you left out.
 - When the work comes from an issue, end the commit message with `Closes #<N>`.

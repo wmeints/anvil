@@ -1,13 +1,13 @@
 export const meta = {
   name: 'review-branch',
   description:
-    'Review the branch with the implementation-reviewer passes and test-reviewer in parallel, then merge their findings in one reviewer summary',
+    'Review the branch with the implementation-reviewer passes, website-reviewer and test-reviewer in parallel, then merge their findings in one reviewer summary',
   whenToUse:
     'Before opening a pull request, from the submit-pr skill, or when the user asks for a full review of the branch. Optional args: the files or commits to review.',
   phases: [
     {
       title: 'Review',
-      detail: 'six implementation-reviewer categories and test-reviewer, in parallel',
+      detail: 'six implementation-reviewer categories, website-reviewer and test-reviewer, in parallel',
     },
     { title: 'Summarize', detail: 'reviewer merges the findings with its own review' },
   ],
@@ -38,7 +38,8 @@ const FINDINGS_SCHEMA = {
     },
     verdict: {
       type: 'string',
-      description: 'One line: ready, ready after the listed fixes, needs rework, or no Rust changes / no test changes',
+      description:
+        'One line: ready, ready after the listed fixes, needs rework, or no Rust changes / no website changes / no test changes',
     },
   },
   required: ['findings', 'verdict'],
@@ -67,6 +68,11 @@ const passes = [
     agentType: 'implementation-reviewer',
     prompt: `Run only the \`${category}\` category. ${scope} Return every finding with its category and check number.`,
   })),
+  {
+    name: 'website-reviewer',
+    agentType: 'website-reviewer',
+    prompt: `${scope} Use category \`website\` and your own check numbers for the findings.`,
+  },
   {
     name: 'test-reviewer',
     agentType: 'test-reviewer',
@@ -97,7 +103,7 @@ phase('Summarize')
 const summary = await agent(
   [
     `${scope}`,
-    'Do your own general review, then merge these findings from the implementation-reviewer and test-reviewer passes with yours.',
+    'Do your own general review, then merge these findings from the implementation-reviewer, website-reviewer and test-reviewer passes with yours.',
     'Remove duplicates, rank everything from most to least severe, and give one overall verdict.',
     notReviewed.length
       ? `These passes returned no result and count as not reviewed: ${notReviewed.join(', ')}. Name them under "Not reviewed" in the report. The verdict can't be "ready".`
