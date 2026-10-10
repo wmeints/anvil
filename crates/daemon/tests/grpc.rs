@@ -2,19 +2,19 @@
 //!
 //! These tests talk to a real daemon over a unix socket and use the local microsandbox
 //! runtime, so they boot real VMs and pull the sandbox image. They only build with the
-//! `vm-tests` feature; run them with `cargo test -p anvil-daemon --features vm-tests`.
+//! `vm-tests` feature; run them with `cargo test -p firebrick-daemon --features vm-tests`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anvil_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
-use anvil_daemon::api::{
+use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
+use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, GetSandboxRequest,
     GetSandboxResponse, ListSandboxesRequest, RemoveSandboxRequest, SandboxResources,
     SandboxStatus, StartSandboxRequest, StopSandboxRequest, attach_request, attach_response,
 };
-use anvil_daemon::secrets::{self, Secret, SecretStore};
-use anvil_daemon::{sandboxes, server};
+use firebrick_daemon::secrets::{self, Secret, SecretStore};
+use firebrick_daemon::{sandboxes, server};
 use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
 use microsandbox::sandbox::{RootfsSource, SandboxSpec};
@@ -43,7 +43,7 @@ struct TestDaemon {
 impl TestDaemon {
     async fn start(name: &str) -> Self {
         let secrets_path = std::env::temp_dir().join(format!(
-            "anvil-it-{}-{}-secrets.yml",
+            "fbk-it-{}-{}-secrets.yml",
             std::process::id(),
             name
         ));
@@ -54,7 +54,7 @@ impl TestDaemon {
 
     async fn start_with_secrets(name: &str, secrets: SecretStore) -> Self {
         let socket_path =
-            std::env::temp_dir().join(format!("anvil-it-{}-{}.sock", std::process::id(), name));
+            std::env::temp_dir().join(format!("fbk-it-{}-{}.sock", std::process::id(), name));
         let _ = std::fs::remove_file(&socket_path);
 
         let (tx, rx) = oneshot::channel();
@@ -258,7 +258,7 @@ async fn stop_sandbox_returns_not_found_for_unknown_sandbox() {
 
     let status = client
         .stop_sandbox(StopSandboxRequest {
-            name: "anvil-it-does-not-exist".to_string(),
+            name: "fbk-it-does-not-exist".to_string(),
         })
         .await
         .expect_err("stopping an unknown sandbox should fail");
@@ -275,7 +275,7 @@ async fn get_sandbox_returns_not_found_for_unknown_sandbox() {
 
     let status = client
         .get_sandbox(GetSandboxRequest {
-            name: "anvil-it-does-not-exist".to_string(),
+            name: "fbk-it-does-not-exist".to_string(),
         })
         .await
         .expect_err("getting an unknown sandbox should fail");
@@ -287,7 +287,7 @@ async fn get_sandbox_returns_not_found_for_unknown_sandbox() {
 
 #[tokio::test]
 async fn get_sandbox_returns_name_status_and_workspace_path() {
-    const NAME: &str = "anvil-it-get";
+    const NAME: &str = "fbk-it-get";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("get").await;
@@ -317,7 +317,7 @@ async fn get_sandbox_returns_name_status_and_workspace_path() {
 
 #[tokio::test]
 async fn sandbox_lifecycle() {
-    const NAME: &str = "anvil-it-lifecycle";
+    const NAME: &str = "fbk-it-lifecycle";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("lifecycle").await;
@@ -351,7 +351,7 @@ async fn sandbox_lifecycle() {
 
 #[tokio::test]
 async fn start_sandbox_is_a_no_op_for_running_sandbox() {
-    const NAME: &str = "anvil-it-start-twice";
+    const NAME: &str = "fbk-it-start-twice";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("start-twice").await;
@@ -376,7 +376,7 @@ async fn start_sandbox_is_a_no_op_for_running_sandbox() {
 
 #[tokio::test]
 async fn concurrent_starts_of_stopped_sandbox_both_succeed() {
-    const NAME: &str = "anvil-it-start-race";
+    const NAME: &str = "fbk-it-start-race";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("start-race").await;
@@ -402,7 +402,7 @@ async fn concurrent_starts_of_stopped_sandbox_both_succeed() {
 
 #[tokio::test]
 async fn start_sandbox_uses_requested_image_and_resources() {
-    const NAME: &str = "anvil-it-resources";
+    const NAME: &str = "fbk-it-resources";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("resources").await;
@@ -438,7 +438,7 @@ async fn start_sandbox_uses_requested_image_and_resources() {
 
 #[tokio::test]
 async fn start_sandbox_with_init_explains_missing_init() {
-    const NAME: &str = "anvil-it-missing-init";
+    const NAME: &str = "fbk-it-missing-init";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("missing-init").await;
@@ -466,7 +466,7 @@ async fn start_sandbox_with_init_explains_missing_init() {
 
 #[tokio::test]
 async fn start_sandbox_rejects_invalid_resources() {
-    const NAME: &str = "anvil-it-bad-resources";
+    const NAME: &str = "fbk-it-bad-resources";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("bad-resources").await;
@@ -497,7 +497,7 @@ async fn remove_sandbox_returns_not_found_for_unknown_sandbox() {
 
     let status = client
         .remove_sandbox(RemoveSandboxRequest {
-            name: "anvil-it-does-not-exist".to_string(),
+            name: "fbk-it-does-not-exist".to_string(),
             force: false,
         })
         .await
@@ -510,7 +510,7 @@ async fn remove_sandbox_returns_not_found_for_unknown_sandbox() {
 
 #[tokio::test]
 async fn remove_sandbox_removes_stopped_sandbox() {
-    const NAME: &str = "anvil-it-remove";
+    const NAME: &str = "fbk-it-remove";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("remove").await;
@@ -546,7 +546,7 @@ async fn remove_sandbox_removes_stopped_sandbox() {
 
 #[tokio::test]
 async fn remove_sandbox_refuses_running_sandbox() {
-    const NAME: &str = "anvil-it-remove-running";
+    const NAME: &str = "fbk-it-remove-running";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("remove-running").await;
@@ -574,7 +574,7 @@ async fn remove_sandbox_refuses_running_sandbox() {
 
 #[tokio::test]
 async fn remove_sandbox_with_force_stops_and_removes_running_sandbox() {
-    const NAME: &str = "anvil-it-remove-force";
+    const NAME: &str = "fbk-it-remove-force";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("remove-force").await;
@@ -603,7 +603,7 @@ async fn remove_sandbox_with_force_stops_and_removes_running_sandbox() {
 
 #[tokio::test]
 async fn remove_sandbox_with_force_removes_stopped_sandbox() {
-    const NAME: &str = "anvil-it-remove-force-stopped";
+    const NAME: &str = "fbk-it-remove-force-stopped";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("remove-force-stopped").await;
@@ -627,7 +627,7 @@ async fn remove_sandbox_with_force_removes_stopped_sandbox() {
 
 #[tokio::test]
 async fn stop_or_kill_kills_sandbox_that_misses_the_timeout() {
-    const NAME: &str = "anvil-it-stop-or-kill";
+    const NAME: &str = "fbk-it-stop-or-kill";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("stop-or-kill").await;
@@ -776,7 +776,7 @@ async fn attach_returns_not_found_for_unknown_sandbox() {
 
     let (tx, rx) = mpsc::channel(4);
     tx.send(attach_start(
-        "anvil-it-does-not-exist",
+        "fbk-it-does-not-exist",
         "sh",
         &[],
         DEFAULT_SIZE,
@@ -796,7 +796,7 @@ async fn attach_returns_not_found_for_unknown_sandbox() {
 
 #[tokio::test]
 async fn attach_runs_command_and_streams_output() {
-    const NAME: &str = "anvil-it-attach";
+    const NAME: &str = "fbk-it-attach";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("attach").await;
@@ -819,7 +819,7 @@ async fn attach_runs_command_and_streams_output() {
 
 #[tokio::test]
 async fn attach_uses_generic_terminal_type() {
-    const NAME: &str = "anvil-it-attach-term";
+    const NAME: &str = "fbk-it-attach-term";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("attach-term").await;
@@ -839,7 +839,7 @@ async fn attach_uses_generic_terminal_type() {
 
 #[tokio::test]
 async fn attach_applies_window_size_and_resize() {
-    const NAME: &str = "anvil-it-attach-resize";
+    const NAME: &str = "fbk-it-attach-resize";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("attach-resize").await;
@@ -905,7 +905,7 @@ async fn process_output(sb: &Sandbox, command: &str) -> Vec<u8> {
 
 #[tokio::test]
 async fn attach_disconnect_ends_session() {
-    const NAME: &str = "anvil-it-attach-disconnect";
+    const NAME: &str = "fbk-it-attach-disconnect";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("attach-disconnect").await;
@@ -927,7 +927,7 @@ async fn attach_disconnect_ends_session() {
 
 #[tokio::test]
 async fn start_sandbox_rejects_relative_workspace() {
-    const NAME: &str = "anvil-it-relative-workspace";
+    const NAME: &str = "fbk-it-relative-workspace";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("relative-workspace").await;
@@ -949,7 +949,7 @@ async fn start_sandbox_rejects_relative_workspace() {
 
 #[tokio::test]
 async fn workspace_is_mounted_read_write() {
-    const NAME: &str = "anvil-it-workspace";
+    const NAME: &str = "fbk-it-workspace";
     remove_sandbox(NAME).await;
 
     let request = start_request(NAME);
@@ -986,7 +986,7 @@ async fn workspace_is_mounted_read_write() {
 
 #[tokio::test]
 async fn workspace_is_owned_by_agent_user() {
-    const NAME: &str = "anvil-it-workspace-owner";
+    const NAME: &str = "fbk-it-workspace-owner";
     remove_sandbox(NAME).await;
 
     let request = start_request(NAME);
@@ -1020,7 +1020,7 @@ async fn workspace_is_owned_by_agent_user() {
 fn test_secret(name: &str) -> Secret {
     Secret::new(
         name.to_string(),
-        "anvil-it-secret-value".to_string(),
+        "fbk-it-secret-value".to_string(),
         vec!["example.com".to_string()],
     )
     .unwrap()
@@ -1055,24 +1055,24 @@ async fn restart_sandbox(client: &mut SandboxManagementServiceClient<Channel>, n
 
 #[tokio::test]
 async fn new_sandbox_sees_secret_placeholder_only() {
-    const NAME: &str = "anvil-it-secret-new";
+    const NAME: &str = "fbk-it-secret-new";
     remove_sandbox(NAME).await;
 
     let dir = tempfile::tempdir().unwrap();
     let store = SecretStore::new(dir.path().join("secrets.yml"));
-    store.set(test_secret("ANVIL_IT_TOKEN")).unwrap();
+    store.set(test_secret("FIREBRICK_IT_TOKEN")).unwrap();
 
     let daemon = TestDaemon::start_with_secrets("secret-new", store).await;
     let mut client = daemon.client().await;
     start_running_sandbox(&mut client, NAME).await;
 
-    let output = print_env(&mut client, NAME, "ANVIL_IT_TOKEN").await;
+    let output = print_env(&mut client, NAME, "FIREBRICK_IT_TOKEN").await;
 
     assert!(
-        output.contains("$MSB_ANVIL_IT_TOKEN"),
+        output.contains("$MSB_FIREBRICK_IT_TOKEN"),
         "unexpected output: {output:?}"
     );
-    assert!(!output.contains("anvil-it-secret-value"));
+    assert!(!output.contains("fbk-it-secret-value"));
 
     daemon.stop().await;
     remove_sandbox(NAME).await;
@@ -1080,7 +1080,7 @@ async fn new_sandbox_sees_secret_placeholder_only() {
 
 #[tokio::test]
 async fn existing_sandbox_sees_added_secret_after_restart() {
-    const NAME: &str = "anvil-it-secret-existing";
+    const NAME: &str = "fbk-it-secret-existing";
     remove_sandbox(NAME).await;
 
     let daemon = TestDaemon::start("secret-existing").await;
@@ -1088,19 +1088,19 @@ async fn existing_sandbox_sees_added_secret_after_restart() {
     start_running_sandbox(&mut client, NAME).await;
 
     let handle = Sandbox::get(NAME).await.unwrap();
-    secrets::add_to_sandbox(&handle, &test_secret("ANVIL_IT_TOKEN"))
+    secrets::add_to_sandbox(&handle, &test_secret("FIREBRICK_IT_TOKEN"))
         .await
         .expect("failed to add secret");
 
     restart_sandbox(&mut client, NAME).await;
 
-    let output = print_env(&mut client, NAME, "ANVIL_IT_TOKEN").await;
+    let output = print_env(&mut client, NAME, "FIREBRICK_IT_TOKEN").await;
 
     assert!(
-        output.contains("$MSB_ANVIL_IT_TOKEN"),
+        output.contains("$MSB_FIREBRICK_IT_TOKEN"),
         "unexpected output: {output:?}"
     );
-    assert!(!output.contains("anvil-it-secret-value"));
+    assert!(!output.contains("fbk-it-secret-value"));
 
     daemon.stop().await;
     remove_sandbox(NAME).await;
@@ -1108,26 +1108,26 @@ async fn existing_sandbox_sees_added_secret_after_restart() {
 
 #[tokio::test]
 async fn existing_sandbox_loses_removed_secret_after_restart() {
-    const NAME: &str = "anvil-it-secret-removed";
+    const NAME: &str = "fbk-it-secret-removed";
     remove_sandbox(NAME).await;
 
     let dir = tempfile::tempdir().unwrap();
     let store = SecretStore::new(dir.path().join("secrets.yml"));
-    store.set(test_secret("ANVIL_IT_TOKEN")).unwrap();
+    store.set(test_secret("FIREBRICK_IT_TOKEN")).unwrap();
 
     let daemon = TestDaemon::start_with_secrets("secret-removed", store).await;
     let mut client = daemon.client().await;
     start_running_sandbox(&mut client, NAME).await;
 
-    // The RemoveSecret RPC would change every anvil sandbox on the host, so remove the secret
+    // The RemoveSecret RPC would change every firebrick sandbox on the host, so remove the secret
     // from the test sandbox only.
     let handle = Sandbox::get(NAME).await.unwrap();
-    secrets::remove_from_sandbox(&handle, "ANVIL_IT_TOKEN")
+    secrets::remove_from_sandbox(&handle, "FIREBRICK_IT_TOKEN")
         .await
         .expect("failed to remove secret");
     restart_sandbox(&mut client, NAME).await;
 
-    let (output, code) = run_print_env(&mut client, NAME, "ANVIL_IT_TOKEN").await;
+    let (output, code) = run_print_env(&mut client, NAME, "FIREBRICK_IT_TOKEN").await;
 
     assert_ne!(code, 0, "secret is still set: {output:?}");
 

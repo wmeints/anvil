@@ -1,33 +1,33 @@
-# Anvil
+# Firebrick
 
-Anvil runs coding agents safely inside a microVM-based sandbox on your own
-machine. Each project gets its own lightweight VM, built from an OCI image, with
-only the project directory shared from the host. You don't need a cloud account,
-a commercial license or root permissions.
+Firebrick (`fbk`) is an agentic sandbox: it runs coding agents safely inside a
+microVM on your own machine. Each project gets its own lightweight VM, built
+from an OCI image, with only the project directory shared from the host. You
+don't need a cloud account, a commercial license or root permissions.
 
-Anvil supports two ways of working:
+Firebrick supports two ways of working:
 
 - **Terminal agents** such as [Claude Code](https://claude.ai/code),
   [OpenCode](https://opencode.ai) and [Oh-my-pi](https://omp.sh): run them in
-  the sandbox with `anvil run`.
+  the sandbox with `fbk run`.
 - **IDE-integrated agents** such as GitHub Copilot: connect your IDE to the
   sandbox over SSH.
 
 > [!NOTE]
-> Anvil is early in development. Egress control is planned but not available
+> Firebrick is early in development. Egress control is planned but not available
 > yet.
 
 ## How it works
 
-Anvil consists of two executables:
+Firebrick consists of two executables:
 
-- `anvil` - the CLI you use to manage sandboxes and run commands in them.
-- `anvild` - a daemon that manages the sandboxes through
+- `fbk` - the CLI you use to manage sandboxes and run commands in them.
+- `fbkd` - a daemon that manages the sandboxes through
   [microsandbox](https://docs.microsandbox.dev). The CLI starts it automatically
   when it isn't running.
 
-The CLI and daemon talk gRPC over a unix socket (`$XDG_RUNTIME_DIR/anvild.sock`,
-or `anvild.sock` in the temp directory when `XDG_RUNTIME_DIR` isn't set). The
+The CLI and daemon talk gRPC over a unix socket (`$XDG_RUNTIME_DIR/fbkd.sock`,
+or `fbkd.sock` in the temp directory when `XDG_RUNTIME_DIR` isn't set). The
 daemon mounts the working directory read/write in the sandbox at
 `/workspaces/<leaf>`, where `<leaf>` is the name of the directory.
 
@@ -36,13 +36,13 @@ daemon mounts the working directory read/write in the sandbox at
 - Linux with KVM, or macOS on Apple Silicon.
 - On Linux, glibc 2.35 or newer for the release binaries.
 
-Windows isn't supported. `anvild` embeds the microsandbox runtime and installs
-it in `~/.microsandbox` on first start.
+Windows isn't supported. `fbkd` embeds the microsandbox runtime and installs it
+in `~/.microsandbox` on first start.
 
 ## Installation
 
 Each [GitHub release](https://github.com/wmeints/anvil/releases) has an archive
-per platform with the `anvil` and `anvild` binaries:
+per platform with the `fbk` and `fbkd` binaries:
 
 | Platform              | Target                      |
 | --------------------- | --------------------------- |
@@ -51,8 +51,8 @@ per platform with the `anvil` and `anvild` binaries:
 | macOS (Apple Silicon) | `aarch64-apple-darwin`      |
 
 The steps below install both binaries in `~/.local/bin`, which doesn't need root
-permissions. Keep `anvil` and `anvild` in the same directory, because the CLI
-starts the daemon from its own directory.
+permissions. Keep `fbk` and `fbkd` in the same directory, because the CLI starts
+the daemon from its own directory.
 
 ### 1. Download and install the binaries
 
@@ -62,14 +62,14 @@ first and run them in that shell.
 Set the release to install and pick the target for your machine:
 
 ```sh
-VERSION=v0.2.1
+VERSION=v0.3.0
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)  TARGET=x86_64-unknown-linux-gnu ;;
   Linux-aarch64) TARGET=aarch64-unknown-linux-gnu ;;
   Darwin-arm64)  TARGET=aarch64-apple-darwin ;;
   *) echo "Unsupported platform: $(uname -s)-$(uname -m). Stop here and build from source." ;;
 esac
-NAME="anvil-$VERSION-$TARGET"
+NAME="firebrick-$VERSION-$TARGET"
 ```
 
 When this prints `Unsupported platform`, there's no release archive for your
@@ -89,7 +89,7 @@ Extract the archive and copy both binaries to `~/.local/bin`:
 ```sh
 tar -xzf "$NAME.tar.gz"
 mkdir -p ~/.local/bin
-install -m 755 "$NAME/anvil" "$NAME/anvild" ~/.local/bin/
+install -m 755 "$NAME/fbk" "$NAME/fbkd" ~/.local/bin/
 ```
 
 ### 2. Add `~/.local/bin` to your `PATH`
@@ -97,7 +97,7 @@ install -m 755 "$NAME/anvil" "$NAME/anvild" ~/.local/bin/
 Check whether the directory is on your `PATH` already:
 
 ```sh
-command -v anvil
+command -v fbk
 ```
 
 When this prints nothing, add the directory to the startup file of your shell
@@ -124,12 +124,12 @@ and open a new terminal:
 ### 3. Verify the installation
 
 ```sh
-anvil ls
+fbk ls
 ```
 
-This starts `anvild`, which installs the microsandbox runtime in
+This starts `fbkd`, which installs the microsandbox runtime in
 `~/.microsandbox`, and lists your sandboxes (none yet). An error here means
-`anvild` couldn't start, for example because it isn't next to `anvil`.
+`fbkd` couldn't start, for example because it isn't next to `fbk`.
 
 ### macOS: remove the quarantine flag
 
@@ -138,7 +138,7 @@ browser instead of `curl`, macOS quarantines the binaries and refuses to run
 them. Remove the quarantine flag:
 
 ```sh
-xattr -d com.apple.quarantine ~/.local/bin/anvil ~/.local/bin/anvild
+xattr -d com.apple.quarantine ~/.local/bin/fbk ~/.local/bin/fbkd
 ```
 
 ### Upgrading and uninstalling
@@ -147,15 +147,46 @@ To upgrade, repeat step 1 with the new `VERSION`, then stop the running daemon
 so the CLI starts the new one on the next command:
 
 ```sh
-pkill -TERM -x anvild
+pkill -TERM -x fbkd
 ```
 
 To uninstall, stop the daemon and remove the binaries:
 
 ```sh
-pkill -TERM -x anvild
-rm ~/.local/bin/anvil ~/.local/bin/anvild
+pkill -TERM -x fbkd
+rm ~/.local/bin/fbk ~/.local/bin/fbkd
 ```
+
+### Migrating from Anvil
+
+Firebrick was called Anvil before. Firebrick doesn't read any of the old names,
+so move your setup over by hand:
+
+1. Stop the old daemon and remove its binaries:
+
+   ```sh
+   pkill -TERM -x anvild
+   rm ~/.local/bin/anvil ~/.local/bin/anvild
+   ```
+
+   If you installed them with `cargo install`, run `cargo uninstall anvil-cli
+   anvil-daemon` instead of `rm`.
+
+2. Move the data directory with your SSH keys and secrets:
+
+   ```sh
+   mv ~/.local/share/anvil ~/.local/share/firebrick
+   ```
+
+3. Rename `.anvil.yml` to `.firebrick.yml` in each project.
+4. Remove the old `*.anvil` hosts: the `Include` line for
+   `~/.local/share/anvil/ssh/config` in `~/.ssh/config`, the `*.anvil` keys in
+   `remote.SSH.remotePlatform` of your VS Code settings, and the `*.anvil`
+   entries in `ssh_connections` of your Zed settings.
+5. Run `fbk start` once in each project. It gives the existing sandbox a
+   `<leaf>.fbk` host name. Until then, `fbk ls` shows no host name for it, you
+   can't connect to it over SSH, and `fbk secret set` and `fbk secret rm` skip
+   it.
 
 ### Building from source
 
@@ -170,33 +201,33 @@ cargo install-daemon  # cargo install --locked --path crates/daemon
 
 ## Usage
 
-Run the commands from your project directory. Anvil derives the sandbox from
-that directory. Pass a name from `anvil ls` to `start`, `stop` or `rm` to manage
+Run the commands from your project directory. Firebrick derives the sandbox from
+that directory. Pass a name from `fbk ls` to `start`, `stop` or `rm` to manage
 another sandbox from any directory.
 
-| Command                             | Description                                                                                                                          |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `anvil start [name]`                | Start the sandbox for the current directory, or the existing sandbox with the name from `anvil ls`.                                  |
-| `anvil run <cmd> [args...]`         | Start the sandbox when needed and run a command in it with a terminal attached.                                                      |
-| `anvil stop [name]`                 | Stop the sandbox, or the one with the name from `anvil ls`. Files on its disk are kept. Killed when it doesn't shut down within 30s. |
-| `anvil ls [--format json]`          | List all sandboxes as a table, or as JSON with `--format json`.                                                                      |
-| `anvil rm [--force] [name]`         | Remove the sandbox, or the one with the name from `anvil ls`. Refuses a running sandbox; `--force` stops it first.                   |
-| `anvil validate`                    | Check the `.anvil.yml` file in the current directory.                                                                                |
-| `anvil secret set <name> [<value>]` | Set a secret for all sandboxes. See [Secrets](#secrets).                                                                             |
-| `anvil secret ls [--format json]`   | List the secrets and their allowed hosts, without their values.                                                                      |
-| `anvil secret rm <name>`            | Remove a secret from all sandboxes.                                                                                                  |
+| Command                           | Description                                                                                                                        |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `fbk start [name]`                | Start the sandbox for the current directory, or the existing sandbox with the name from `fbk ls`.                                  |
+| `fbk run <cmd> [args...]`         | Start the sandbox when needed and run a command in it with a terminal attached.                                                    |
+| `fbk stop [name]`                 | Stop the sandbox, or the one with the name from `fbk ls`. Files on its disk are kept. Killed when it doesn't shut down within 30s. |
+| `fbk ls [--format json]`          | List all sandboxes as a table, or as JSON with `--format json`.                                                                    |
+| `fbk rm [--force] [name]`         | Remove the sandbox, or the one with the name from `fbk ls`. Refuses a running sandbox; `--force` stops it first.                   |
+| `fbk validate`                    | Check the `.firebrick.yml` file in the current directory.                                                                          |
+| `fbk secret set <name> [<value>]` | Set a secret for all sandboxes. See [Secrets](#secrets).                                                                           |
+| `fbk secret ls [--format json]`   | List the secrets and their allowed hosts, without their values.                                                                    |
+| `fbk secret rm <name>`            | Remove a secret from all sandboxes.                                                                                                |
 
 For example, to open a shell in the sandbox:
 
 ```sh
-anvil run bash
+fbk run bash
 ```
 
 The sandbox keeps running after the command exits.
 
 ### Configuring a sandbox
 
-Add an `.anvil.yml` file to the project directory to configure the sandbox:
+Add a `.firebrick.yml` file to the project directory to configure the sandbox:
 
 ```yaml
 name: my-project
@@ -207,28 +238,28 @@ resources:
   memory: 4 GiB
 ```
 
-| Field              | Description                                                     | Default                                 |
-| ------------------ | --------------------------------------------------------------- | --------------------------------------- |
-| `name`             | Name of the sandbox.                                            | Required                                |
-| `image`            | OCI image the sandbox runs.                                     | `ghcr.io/wmeints/anvil-base:v<version>` |
-| `init`             | Run the image's `/sbin/init` as PID 1. See below.               | `true`                                  |
-| `resources.cpu`    | Number of vCPUs.                                                | `2`                                     |
-| `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`. | `4 GiB`                                 |
+| Field              | Description                                                     | Default                                     |
+| ------------------ | --------------------------------------------------------------- | ------------------------------------------- |
+| `name`             | Name of the sandbox.                                            | Required                                    |
+| `image`            | OCI image the sandbox runs.                                     | `ghcr.io/wmeints/firebrick-base:v<version>` |
+| `init`             | Run the image's `/sbin/init` as PID 1. See below.               | `true`                                      |
+| `resources.cpu`    | Number of vCPUs.                                                | `2`                                         |
+| `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`. | `4 GiB`                                     |
 
-Without `.anvil.yml`, Anvil names the sandbox after the full path of the working
-directory and uses the defaults.
+Without `.firebrick.yml`, Firebrick names the sandbox after the full path of the
+working directory and uses the defaults.
 
 The image, init and resources apply when the sandbox is created. To change them
-for an existing sandbox, run `anvil rm` and start it again.
+for an existing sandbox, run `fbk rm` and start it again.
 
 ### Secrets
 
 Give agents tokens without letting the real values into the sandbox:
 
 ```sh
-gh auth token | anvil secret set GH_TOKEN --from-stdin
-anvil secret set ANTHROPIC_API_KEY --from-stdin < ~/anthropic-key.txt
-anvil secret set MY_TOKEN --from-stdin --allow-host api.example.com
+gh auth token | fbk secret set GH_TOKEN --from-stdin
+fbk secret set ANTHROPIC_API_KEY --from-stdin < ~/anthropic-key.txt
+fbk secret set MY_TOKEN --from-stdin --allow-host api.example.com
 ```
 
 In the sandbox, the environment variable holds a placeholder such as
@@ -247,10 +278,10 @@ you can repeat:
 | `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` | `api.anthropic.com`                                   |
 
 Secrets apply to all sandboxes. A running sandbox gets a new or changed secret
-after `anvil stop` and `anvil start`.
+after `fbk stop` and `fbk start`.
 
-`anvil secret ls` shows the names and allowed hosts of the secrets, never their
-values. `anvil secret rm <name>` removes a secret, but a running sandbox keeps
+`fbk secret ls` shows the names and allowed hosts of the secrets, never their
+values. `fbk secret rm <name>` removes a secret, but a running sandbox keeps
 using it until it restarts. If a token leaked, revoke it where you created it as
 well.
 
@@ -277,34 +308,34 @@ Keep in mind that:
 
 ### Connecting over SSH
 
-`anvild` generates SSH keys and an SSH config, and includes that config in
+`fbkd` generates SSH keys and an SSH config, and includes that config in
 `~/.ssh/config`. Each sandbox gets a host name after its project directory, such
-as `my-project.anvil`. When two projects share a directory name, the second gets
-`my-project-2.anvil`:
+as `my-project.fbk`. When two projects share a directory name, the second gets
+`my-project-2.fbk`:
 
 ```sh
-ssh my-project.anvil
+ssh my-project.fbk
 ```
 
 Point your IDE's remote SSH support at the same host name to work in the sandbox
-from your editor. For VS Code, VS Code Insiders, Cursor and VSCodium, `anvild`
-also registers each host as a Linux host in the Remote-SSH settings, and `anvil
+from your editor. For VS Code, VS Code Insiders, Cursor and VSCodium, `fbkd`
+also registers each host as a Linux host in the Remote-SSH settings, and `fbk
 start` prints a command that opens the workspace in the sandbox:
 
 ```sh
-$ anvil start
-Connect with: ssh my-project.anvil
-Open in VS Code: code --folder-uri vscode-remote://ssh-remote+my-project.anvil/workspaces/my-project
+$ fbk start
+Connect with: ssh my-project.fbk
+Open in VS Code: code --folder-uri vscode-remote://ssh-remote+my-project.fbk/workspaces/my-project
 ```
 
 Run the printed `code` command, or pick the host in Remote-SSH and open
 `/workspaces/my-project`.
 
-For Zed, `anvild` adds each sandbox with its workspace to the `ssh_connections`
-in Zed's settings, and `anvil start` prints a command that opens it:
+For Zed, `fbkd` adds each sandbox with its workspace to the `ssh_connections` in
+Zed's settings, and `fbk start` prints a command that opens it:
 
 ```sh
-Open in Zed: zed ssh://my-project.anvil/workspaces/my-project
+Open in Zed: zed ssh://my-project.fbk/workspaces/my-project
 ```
 
 Run the printed `zed` command, or pick the sandbox in Zed's Remote Projects
@@ -314,26 +345,26 @@ dialog.
 
 The [`Dockerfile`](Dockerfile) describes a base image for sandboxes with `git`,
 `curl`, `sudo`, [mise](https://mise.jdx.dev) and an unprivileged `agent` user.
-Releases publish it as `ghcr.io/wmeints/anvil-base:<tag>`, and sandboxes run the
-image that matches the installed anvil version unless the `image` field in
-`.anvil.yml` names another one, such as an image built on top of it.
+Releases publish it as `ghcr.io/wmeints/firebrick-base:<tag>`, and sandboxes run
+the image that matches the installed firebrick version unless the `image` field
+in `.firebrick.yml` names another one, such as an image built on top of it.
 
 ### Bringing your own image
 
-Anvil runs everything in a sandbox as the `agent` user. A custom image must:
+Firebrick runs everything in a sandbox as the `agent` user. A custom image must:
 
 - Have a user named `agent` with UID `1000` and GID `1000` and a home directory,
   such as `/home/agent`. Images based on Ubuntu ship an `ubuntu` user with UID
   1000; remove it first.
-- Set `USER agent`. `anvil run` runs commands as the image's user, while SSH
+- Set `USER agent`. `fbk run` runs commands as the image's user, while SSH
   always logs in as `agent`.
 - Install `sudo` and allow `agent` to use it without a password, if agents
   should be able to install system packages.
-- Provide an executable `/sbin/init`, or set `init: false` in `.anvil.yml`. With
-  `init` on, which is the default, Anvil runs `/sbin/init` as PID 1, and `anvil
-  start` fails with a hint when the image has none. The base image's init
-  disables guest IPv6 and then runs [tini](https://github.com/krallin/tini) to
-  reap zombie processes. It works around a microsandbox bug that resets IPv6
+- Provide an executable `/sbin/init`, or set `init: false` in `.firebrick.yml`.
+  With `init` on, which is the default, Firebrick runs `/sbin/init` as PID 1,
+  and `fbk start` fails with a hint when the image has none. The base image's
+  init disables guest IPv6 and then runs [tini](https://github.com/krallin/tini)
+  to reap zombie processes. It works around a microsandbox bug that resets IPv6
   connections on hosts without IPv6 internet access
   ([microsandbox#1226](https://github.com/superradcompany/microsandbox/issues/1226)).
   Images built on the base image inherit it; with `init: false`, such hosts
@@ -342,14 +373,14 @@ Anvil runs everything in a sandbox as the `agent` user. A custom image must:
 The workspace is mounted at `/workspaces/<project>`, and its files show up as
 owned by `agent`, whatever the UID of your user on the host is.
 
-Sandboxes created by an older version of Anvil run `ubuntu:26.04`, which has no
-`agent` user, so SSH can no longer log in to them. Recreate them with `anvil rm`
-and `anvil start`, or connect with `ssh root@<name>.anvil`.
+Sandboxes created by an older version of Firebrick run `ubuntu:26.04`, which has
+no `agent` user, so SSH can no longer log in to them. Recreate them with `fbk
+rm` and `fbk start`, or connect with `ssh root@<name>.fbk`.
 
 The simplest way to meet these requirements is to build on the base image:
 
 ```dockerfile
-FROM ghcr.io/wmeints/anvil-base:v0.2.1
+FROM ghcr.io/wmeints/firebrick-base:v0.3.0
 
 USER root
 RUN apt-get update \
@@ -359,7 +390,7 @@ USER agent
 ```
 
 For another distribution, create the user yourself, and set `init: false` in
-`.anvil.yml` or add an init like the base image's:
+`.firebrick.yml` or add an init like the base image's:
 
 ```dockerfile
 FROM alpine:3.22
@@ -390,29 +421,29 @@ instead.
 
 | Command                   | Description                                   |
 | ------------------------- | --------------------------------------------- |
-| `cargo build`             | Build the `anvil` and `anvild` binaries.      |
+| `cargo build`             | Build the `fbk` and `fbkd` binaries.          |
 | `cargo unit-tests`        | Run the unit tests.                           |
 | `cargo integration-tests` | Run the integration tests that boot real VMs. |
 | `cargo lint`              | Run the linter.                               |
 | `cargo fmt --all`         | Format the code.                              |
 
-Cargo commands in this repository use `/tmp/anvil-msb` as the microsandbox home
-(`MSB_HOME`, set in `.cargo/config.toml`), so the integration tests don't share
-a runtime or database with your own `~/.microsandbox`.
+Cargo commands in this repository use `/tmp/firebrick-msb` as the microsandbox
+home (`MSB_HOME`, set in `.cargo/config.toml`), so the integration tests don't
+share a runtime or database with your own `~/.microsandbox`.
 
-The default sandbox image is the `anvil-base` image of the same release, so it
-doesn't exist for a version that hasn't been released yet. To run a development
-build, push an image built from the [`Dockerfile`](Dockerfile) to a local
-registry and set `image` in `.anvil.yml` to it:
+The default sandbox image is the `firebrick-base` image of the same release, so
+it doesn't exist for a version that hasn't been released yet. To run a
+development build, push an image built from the [`Dockerfile`](Dockerfile) to a
+local registry and set `image` in `.firebrick.yml` to it:
 
 ```sh
 docker run -d -p 127.0.0.1:5000:5000 --name registry registry:2
-docker build -t localhost:5000/anvil-base:dev .
-docker push localhost:5000/anvil-base:dev
+docker build -t localhost:5000/firebrick-base:dev .
+docker push localhost:5000/firebrick-base:dev
 ```
 
 The local registry speaks plain HTTP, so allow it in
-`~/.microsandbox/config.json` before `anvild` starts:
+`~/.microsandbox/config.json` before `fbkd` starts:
 
 ```json
 { "registries": { "hosts": { "localhost:5000": { "insecure": true } } } }
@@ -420,12 +451,12 @@ The local registry speaks plain HTTP, so allow it in
 
 The workspace contains four crates:
 
-| Crate          | Folder          | Purpose                                          |
-| -------------- | --------------- | ------------------------------------------------ |
-| `anvil-cli`    | `crates/cli`    | The `anvil` CLI.                                 |
-| `anvil-daemon` | `crates/daemon` | The `anvild` daemon.                             |
-| `anvil-spec`   | `crates/spec`   | Parses and validates `.anvil.yml`.               |
-| `anvil-utils`  | `crates/utils`  | Shared paths for the socket, logs and SSH files. |
+| Crate              | Folder          | Purpose                                          |
+| ------------------ | --------------- | ------------------------------------------------ |
+| `firebrick-cli`    | `crates/cli`    | The `fbk` CLI.                                   |
+| `firebrick-daemon` | `crates/daemon` | The `fbkd` daemon.                               |
+| `firebrick-spec`   | `crates/spec`   | Parses and validates `.firebrick.yml`.           |
+| `firebrick-utils`  | `crates/utils`  | Shared paths for the socket, logs and SSH files. |
 
 The gRPC contract lives in [`proto/daemon.v1.proto`](proto/daemon.v1.proto).
 
@@ -438,4 +469,4 @@ The gRPC contract lives in [`proto/daemon.v1.proto`](proto/daemon.v1.proto).
 
 ## License
 
-Anvil is licensed under the [MIT License](LICENSE).
+Firebrick is licensed under the [MIT License](LICENSE).

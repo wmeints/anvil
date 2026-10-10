@@ -27,9 +27,12 @@ pub enum MemorySizeError {
     TooLarge(String),
 }
 
-/// Image a sandbox runs when its spec doesn't name one: the `anvil-base` image that the
+/// Image a sandbox runs when its spec doesn't name one: the `firebrick-base` image that the
 /// release workflow publishes with the same version as this crate.
-pub const DEFAULT_IMAGE: &str = concat!("ghcr.io/wmeints/anvil-base:v", env!("CARGO_PKG_VERSION"));
+pub const DEFAULT_IMAGE: &str = concat!(
+    "ghcr.io/wmeints/firebrick-base:v",
+    env!("CARGO_PKG_VERSION")
+);
 
 /// A problem in a spec file, pinned to the 1-based line and column it occurs at.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -9,7 +9,7 @@ that, it first logs the original error with `tracing::error!(error = ?err,
 "<message>")`, naming the sandbox, secret or host name involved. The error is
 logged with its `Debug` representation, because the `Display` representation of
 these errors leaves out their source, which is what's needed to debug an
-internal error. The log is written to the console and to `anvild.log` in the
+internal error. The log is written to the console and to `fbkd.log` in the
 daemon's log directory.
 
 A failure the user can cause and fix, such as connecting to a stopped sandbox,

@@ -5,10 +5,10 @@ lint = "clippy --workspace --all-targets --all-features -- -D warnings"
 # Run the unit tests.
 unit-tests = "test --workspace"
 # Run the integration tests that boot real microsandbox VMs.
-integration-tests = "test -p anvil-daemon --features vm-tests"
-# Install the `anvil` CLI into `~/.cargo/bin`.
+integration-tests = "test -p firebrick-daemon --features vm-tests"
+# Install the `fbk` CLI into `~/.cargo/bin`.
 install-cli = "install --locked --path crates/cli"
-# Install the `anvild` daemon into `~/.cargo/bin`.
+# Install the `fbkd` daemon into `~/.cargo/bin`.
 install-daemon = "install --locked --path crates/daemon"
 
 [env]
@@ -19,7 +19,7 @@ install-daemon = "install --locked --path crates/daemon"
 # when it changes, so a per-command value would rebuild it on each switch. The
 # path is short because unix socket paths can't exceed 108 bytes. An `MSB_HOME`
 # set in the environment takes precedence.
-MSB_HOME = "/tmp/anvil-msb"
+MSB_HOME = "/tmp/firebrick-msb"
 # Keep the VS Code-family and Zed settings that the in-process daemon of the
 # `vm-tests` syncs out of the user's own, on Linux and macOS.
-ANVIL_EDITOR_CONFIG_ROOT = { value = "/tmp/anvil-test/config", force = true }
+FIREBRICK_EDITOR_CONFIG_ROOT = { value = "/tmp/firebrick-test/config", force = true }

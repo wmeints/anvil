@@ -33,7 +33,7 @@ pub async fn set(
 
     for sandbox in response.failed_sandboxes {
         eprintln!(
-            "warning: couldn't add secret {name} to sandbox {sandbox}, see the anvild log for details"
+            "warning: couldn't add secret {name} to sandbox {sandbox}, see the fbkd log for details"
         );
     }
 
@@ -77,8 +77,8 @@ pub async fn remove(
 
     if !response.failed_sandboxes.is_empty() {
         bail!(
-            "couldn't remove secret {name} from sandboxes {}, see the anvild log for details. \
-             The secret is kept, so run `anvil secret rm {name}` again to retry",
+            "couldn't remove secret {name} from sandboxes {}, see the fbkd log for details. \
+             The secret is kept, so run `fbk secret rm {name}` again to retry",
             response.failed_sandboxes.join(", ")
         );
     }

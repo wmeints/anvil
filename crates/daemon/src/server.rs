@@ -17,9 +17,9 @@ use crate::sandboxes::{Resources, SandboxError, SandboxInfo, SandboxManager, Sta
 use crate::secrets::{Secret, SecretStore};
 use crate::session::{self, SessionCommand};
 use crate::tunnel;
-use anvil_spec::SandboxResourcesSpec;
 use anyhow::Result;
 use async_trait::async_trait;
+use firebrick_spec::SandboxResourcesSpec;
 use std::fs;
 use std::path::Path;
 use std::pin::Pin;
@@ -43,11 +43,11 @@ pub enum ServerError {
 }
 
 /// gRPC service implementation that manages sandboxes.
-pub struct AnvilServer {
+pub struct FirebrickServer {
     sandboxes: SandboxManager,
 }
 
-impl AnvilServer {
+impl FirebrickServer {
     /// Creates a server that adds the secrets from `secrets` to sandboxes.
     pub fn new(secrets: SecretStore) -> Self {
         Self {
@@ -84,7 +84,7 @@ type AttachStream = Pin<Box<dyn Stream<Item = Result<AttachResponse, Status>> + 
 type SshTunnelStream = Pin<Box<dyn Stream<Item = Result<SshTunnelResponse, Status>> + Send>>;
 
 #[async_trait]
-impl SandboxManagementService for AnvilServer {
+impl SandboxManagementService for FirebrickServer {
     type AttachStream = AttachStream;
     type SshTunnelStream = SshTunnelStream;
 
@@ -289,7 +289,7 @@ fn sandbox_resources(resources: Option<SandboxResources>) -> Result<Resources, S
         .ok()
         .filter(|cpus| *cpus > 0)
         .ok_or_else(|| SandboxError::InvalidArgument("cpu must be between 1 and 255".into()))?;
-    let memory_mib = anvil_spec::parse_memory_mib(&resources.memory)
+    let memory_mib = firebrick_spec::parse_memory_mib(&resources.memory)
         .map_err(|err| SandboxError::InvalidArgument(err.to_string()))?;
 
     Ok(Resources { cpus, memory_mib })
@@ -315,7 +315,7 @@ pub async fn serve(
 
     Server::builder()
         .trace_fn(|req| tracing::info_span!("grpc", path = %req.uri().path()))
-        .add_service(SandboxManagementServiceServer::new(AnvilServer::new(
+        .add_service(SandboxManagementServiceServer::new(FirebrickServer::new(
             secrets,
         )))
         .serve_with_incoming_shutdown(incoming, shutdown)
@@ -364,7 +364,7 @@ mod tests {
     }
 
     fn temp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("anvil-test-{}-{}", std::process::id(), name))
+        std::env::temp_dir().join(format!("firebrick-test-{}-{}", std::process::id(), name))
     }
 
     /// Returns a store at `path` with a secret for `example.com` under each name.
@@ -542,7 +542,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_fails_when_socket_directory_does_not_exist() {
-        let path = temp_path("missing-dir").join("anvil.sock");
+        let path = temp_path("missing-dir").join("firebrick.sock");
 
         let result = run(&path, unused_store()).await;
 
@@ -554,7 +554,7 @@ mod tests {
     async fn set_secret_rejects_invalid_secret_without_storing_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secrets.yml");
-        let server = AnvilServer::new(SecretStore::new(&path));
+        let server = FirebrickServer::new(SecretStore::new(&path));
 
         let status = server
             .set_secret(Request::new(SetSecretRequest {
@@ -573,7 +573,7 @@ mod tests {
     async fn list_secrets_returns_names_and_hosts_sorted() {
         let dir = tempfile::tempdir().unwrap();
         let store = store_with_secrets(&dir.path().join("secrets.yml"), &["B_TOKEN", "A_TOKEN"]);
-        let server = AnvilServer::new(store);
+        let server = FirebrickServer::new(store);
 
         let secrets = server
             .list_secrets(Request::new(ListSecretsRequest {}))
@@ -593,7 +593,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_secret_rejects_invalid_name() {
-        let server = AnvilServer::new(unused_store());
+        let server = FirebrickServer::new(unused_store());
 
         let status = server
             .remove_secret(Request::new(RemoveSecretRequest {
@@ -612,7 +612,7 @@ mod tests {
         let store = SecretStore::new(&path);
         let secret = Secret::new("A".into(), "value".into(), vec!["example.com".into()]).unwrap();
         store.set(secret).unwrap();
-        let server = AnvilServer::new(store);
+        let server = FirebrickServer::new(store);
 
         let status = server
             .remove_secret(Request::new(RemoveSecretRequest {

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package anvil;
+package firebrick;
 
 service SandboxManagementService {
   rpc StartSandbox(StartSandboxRequest) returns (StartSandboxResponse);
@@ -51,7 +51,7 @@ message GetSandboxRequest {
 message GetSandboxResponse {
   string name = 1;
   SandboxStatus status = 2;
-  // SSH host name of the sandbox, e.g. `project.anvil`. Empty when it has none.
+  // SSH host name of the sandbox, e.g. `project.fbk`. Empty when it has none.
   string hostname = 3;
   // Guest path the workspace is mounted at, e.g. `/workspaces/project`. Empty when it has none.
   string workspace_path = 4;
@@ -60,7 +60,7 @@ message GetSandboxResponse {
 message SandboxSummary {
   string name = 1;
   SandboxStatus status = 2;
-  // SSH host name of the sandbox, e.g. `project.anvil`. Empty when it has none.
+  // SSH host name of the sandbox, e.g. `project.fbk`. Empty when it has none.
   string hostname = 3;
 }
 

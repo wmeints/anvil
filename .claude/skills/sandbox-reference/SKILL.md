@@ -5,10 +5,10 @@ description: "Look up how the microsandbox crate behaves before relying on it: i
 
 # Sandbox reference
 
-`anvild` drives sandboxes through the `microsandbox` crate. Its docs site
-doesn't cover everything the code relies on, so answer questions from the crate
-source of the exact version in `Cargo.lock`, and start from the facts below
-instead of rediscovering them.
+`fbkd` drives sandboxes through the `microsandbox` crate. Its docs site doesn't
+cover everything the code relies on, so answer questions from the crate source
+of the exact version in `Cargo.lock`, and start from the facts below instead of
+rediscovering them.
 
 ## Find the source
 
@@ -40,7 +40,7 @@ paths above.
 | Network rules                   | `$N/model/policy/` (`builder.rs`, `types.rs`)                   |
 | Secret substitution in requests | `$N/engine/secrets/handler.rs`                                  |
 
-## How anvil uses it
+## How firebrick uses it
 
 All calls live in `crates/daemon/src`. Reuse these before adding new ones:
 
@@ -51,8 +51,8 @@ All calls live in `crates/daemon/src`. Reuse these before adding new ones:
 - `secrets.rs` - `builder.secret(..)` at create time, and `modify().secret(..)`
   / `modify().remove_secret(..)` on existing sandboxes.
 - `session.rs` - `exec_stream_with(command, |e| e.args(..).stdin_pipe()
-  .tty(true))` for `anvil run`.
-- `tunnel.rs` / `ssh.rs` - `microsandbox::sandbox::ssh::SshServer` behind `anvil
+  .tty(true))` for `fbk run`.
+- `tunnel.rs` / `ssh.rs` - `microsandbox::sandbox::ssh::SshServer` behind `fbk
   ssh-proxy`.
 - `runtime.rs` - `setup::ensure_runtime`, `setup::install_runtime` and
   `setup::resolve_runtime_version` with the runtime embedded through the
@@ -73,7 +73,7 @@ build on it when `Cargo.lock` has a newer version.
   cursor of the previous page.
 - `.init(path)` hands PID 1 to an init binary in the image after agentd's setup.
   `.init("auto")` probes common init paths and refuses to boot an image that has
-  none, so anvil passes an explicit path (ADR 0007).
+  none, so firebrick passes an explicit path (ADR 0007).
 
 **Changing existing sandboxes**
 
@@ -96,7 +96,7 @@ build on it when `Cargo.lock` has a newer version.
   `.ip(..)`, `.cidr(..)`, `.domain(..)` and `.domain_suffix(..)`, which also
   matches subdomains. There is no `*.example.com` wildcard syntax.
 - On hosts without IPv6 egress, the guest still gets IPv6 and its IPv6
-  connections are reset. `anvil-base` disables guest IPv6 (ADR 0007).
+  connections are reset. `firebrick-base` disables guest IPv6 (ADR 0007).
 
 **SSH**
 
@@ -107,7 +107,7 @@ build on it when `Cargo.lock` has a newer version.
 **Terminals**
 
 - A TTY exec without a `TERM` env gets the host process's `TERM` (or `xterm`
-  when it's unset or `dumb`), so `anvild` passes on the terminal it was started
+  when it's unset or `dumb`), so `fbkd` passes on the terminal it was started
   from. `session.rs` sets `TERM` explicitly.
 - The SSH server sets `TERM` in the guest from the client's PTY request
   (`ssh.rs`), so the host side can't choose it for SSH sessions.
@@ -120,20 +120,20 @@ build on it when `Cargo.lock` has a newer version.
   bytes, so an isolated `MSB_HOME` needs a short path under `/tmp`. The session
   scratchpad is too long.
 - A newer `msb` migrates `db/msb.db` in place, and an older crate then fails
-  every call with "database schema is newer than this msb binary". In anvil that
-  surfaces as `Internal: failed to list sandboxes`. `.cargo/config.toml` sets
-  `MSB_HOME=/tmp/anvil-msb` for cargo commands so the tests don't use the user's
-  database; never move or change `~/.microsandbox` to make them pass.
-- To run anvil or `msb` against real VMs, use the `smoke-test` skill. It
+  every call with "database schema is newer than this msb binary". In firebrick
+  that surfaces as `Internal: failed to list sandboxes`. `.cargo/config.toml`
+  sets `MSB_HOME=/tmp/firebrick-msb` for cargo commands so the tests don't use
+  the user's database; never move or change `~/.microsandbox` to make them pass.
+- To run firebrick or `msb` against real VMs, use the `smoke-test` skill. It
   isolates `MSB_HOME` and the daemon from the user's, and loads locally built
   images with `msb load`, so no registry is needed.
 
 **Debugging**
 
-- `anvild` maps many errors to a generic gRPC `Internal` status. Read the daemon
-  log (`$XDG_STATE_HOME/anvil/`, by default `~/.local/state/anvil/`) or call the
-  crate directly to see the real `MicrosandboxError`.
-- `msb` reproduces behavior without anvil, for example `msb run <image> --
+- `fbkd` maps many errors to a generic gRPC `Internal` status. Read the daemon
+  log (`$XDG_STATE_HOME/firebrick/`, by default `~/.local/state/firebrick/`) or
+  call the crate directly to see the real `MicrosandboxError`.
+- `msb` reproduces behavior without firebrick, for example `msb run <image> --
   <cmd>`, `msb create --name <n> --log-level debug <image>` and `msb exec <n> --
   <cmd>`. Run it as `$MSB` inside a `smoke-test` environment, and remove what
   you create with `msb stop` and `msb rm`.

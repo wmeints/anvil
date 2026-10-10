@@ -1,13 +1,13 @@
 //! Installation of the microsandbox runtime (`msb` and `libkrunfw`) the daemon runs sandboxes with.
 //!
-//! The runtime archive is embedded in `anvild` at build time, so installing it never needs
+//! The runtime archive is embedded in `fbkd` at build time, so installing it never needs
 //! network access.
 
 use anyhow::{Context, Result, bail};
 use microsandbox::config::GlobalConfig;
 use microsandbox::setup::{InstallOptions, InstallSource, ResolvedRuntime, RuntimeOrigin, Version};
 
-/// Makes sure the microsandbox runtime matches the one embedded in `anvild`.
+/// Makes sure the microsandbox runtime matches the one embedded in `fbkd`.
 ///
 /// A missing runtime is extracted from the embedded archive, and a runtime in the microsandbox
 /// home with another version is replaced by it. A runtime configured outside the home with
@@ -22,7 +22,7 @@ pub async fn ensure(config: &GlobalConfig) -> Result<ResolvedRuntime> {
         Some(ref version) if *version == expected => runtime,
         _ if runtime.origin == RuntimeOrigin::Home => upgrade(config, installed, &expected).await?,
         _ => bail!(
-            "microsandbox runtime {} has version {}, but anvild needs {expected}",
+            "microsandbox runtime {} has version {}, but fbkd needs {expected}",
             runtime.msb_path.display(),
             describe(installed.as_ref())
         ),
@@ -60,7 +60,7 @@ fn embedded(force: bool) -> InstallOptions {
     }
 }
 
-/// Returns the runtime version embedded in `anvild`.
+/// Returns the runtime version embedded in `fbkd`.
 fn expected_version() -> Result<Version> {
     let version = InstallOptions::default().version;
     Version::parse(&version)
@@ -193,7 +193,7 @@ mod tests {
 
         let error = ensure(&config).await.unwrap_err();
 
-        assert!(format!("{error:#}").contains("anvild needs"), "{error:#}");
+        assert!(format!("{error:#}").contains("fbkd needs"), "{error:#}");
         assert!(!home.path().join("bin").exists());
     }
 

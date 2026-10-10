@@ -1,4 +1,4 @@
-# Instructions for working on Anvil
+# Instructions for working on Firebrick
 
 ## Purpose of this project
 
@@ -21,8 +21,8 @@ safe inside a microVM-based sandbox.
 
 - `cargo build` - compiles all crates into the required executables.
 - `cargo test --workspace` - runs the unit tests.
-- `cargo test -p anvil-daemon --features vm-tests` - runs the integration tests
-  that boot real microsandbox VMs.
+- `cargo test -p firebrick-daemon --features vm-tests` - runs the integration
+  tests that boot real microsandbox VMs.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` - runs
   the linter, including the `vm-tests` integration tests.
 - `cargo fmt --all` - formats the code; `cargo fmt --all --check` verifies it.
@@ -85,8 +85,8 @@ A change is done when:
 1. `cargo fmt --all --check`, `dprint check`, `cargo clippy --workspace
    --all-targets --all-features -- -D warnings` and `cargo test --workspace`
    pass.
-2. `cargo test -p anvil-daemon --features vm-tests` passes when a crate other
-   than `crates/cli`, `proto/`, a `Cargo.toml`, `Cargo.lock` or
+2. `cargo test -p firebrick-daemon --features vm-tests` passes when a crate
+   other than `crates/cli`, `proto/`, a `Cargo.toml`, `Cargo.lock` or
    `.cargo/config.toml` changed.
 3. The [Architecture Docs](docs/architecture/01-introduction-and-goals.md)
    describe the new behavior, and a decision record exists in
@@ -98,7 +98,7 @@ A change is done when:
   implement without further questions.
 - Use the `fix-bug` skill for bugs: reproduce, find the root cause, write a
   failing test, then fix.
-- Use the `smoke-test` skill to run `anvil` and `anvild` against real VMs, for
+- Use the `smoke-test` skill to run `fbk` and `fbkd` against real VMs, for
   example to reproduce a bug or try a change by hand. It isolates the daemon,
   microsandbox state and SSH config from the user's own.
 - Use the `implement-feature` skill for new behavior: agree on a spec first,
@@ -116,11 +116,12 @@ These checks enforce the rules above, so don't try to bypass them:
 
 - `mise install` provides the Rust toolchain, `buf`, `dprint`, `actionlint` and
   `lefthook`.
-- `.cargo/config.toml` sets `MSB_HOME=/tmp/anvil-msb` for every cargo command,
-  so builds and the `vm-tests` use their own microsandbox runtime, database and
-  images instead of `~/.microsandbox`. A `msb` that migrated the user's database
-  can't break the tests. Don't point the tests at `~/.microsandbox`; if the
-  isolated home is broken, remove `/tmp/anvil-msb` and run the tests again.
+- `.cargo/config.toml` sets `MSB_HOME=/tmp/firebrick-msb` for every cargo
+  command, so builds and the `vm-tests` use their own microsandbox runtime,
+  database and images instead of `~/.microsandbox`. A `msb` that migrated the
+  user's database can't break the tests. Don't point the tests at
+  `~/.microsandbox`; if the isolated home is broken, remove `/tmp/firebrick-msb`
+  and run the tests again.
 - Claude Code hooks in `.claude/settings.json` run `cargo fmt` on Rust files
   after each edit (`.claude/hooks/format-rust.sh`) and `dprint fmt` on Markdown
   files after each edit (`.claude/hooks/format-markdown.sh`). Before a turn ends
@@ -134,6 +135,6 @@ These checks enforce the rules above, so don't try to bypass them:
 - GitHub Actions (`.github/workflows/ci.yaml`) runs the format checks,
   `actionlint`, build, clippy, unit tests and the `vm-tests` integration tests
   on every pull request and every push to `main`.
-- `.github/workflows/image.yaml` builds the `anvil-base` image for both
+- `.github/workflows/image.yaml` builds the `firebrick-base` image for both
   platforms, without pushing it, on pull requests and pushes to `main` that
   change the `Dockerfile`.

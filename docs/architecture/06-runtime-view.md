@@ -1,38 +1,39 @@
 # Runtime view
 
 Every command except `validate` starts by connecting to the daemon over
-`$XDG_RUNTIME_DIR/anvild.sock`. When nobody listens on the socket, the CLI
-removes a stale socket file, spawns `anvild` and polls the socket for at most 5
-seconds. The diagrams below show this step once, in
+`$XDG_RUNTIME_DIR/fbkd.sock`. When nobody listens on the socket, the CLI removes
+a stale socket file, spawns `fbkd` and polls the socket for at most 5 seconds.
+The diagrams below show this step once, in
 [Running a session](#running-a-session), and leave it out of the others.
 
-Before `anvild` listens, it exits when the socket already exists, and then makes
+Before `fbkd` listens, it exits when the socket already exists, and then makes
 sure the microsandbox runtime matches the runtime embedded in its binary. It
 extracts the embedded runtime when the runtime is missing or has another
 version. When `MSB_PATH` or `paths.msb` selects a runtime with another version,
-`anvild` exits instead, and the CLI reports a timeout.
+`fbkd` exits instead, and the CLI reports a timeout.
 
-The CLI resolves the sandbox name from `.anvil.yml` in the working directory, or
-derives it from the full working directory path when there's no spec file.
+The CLI resolves the sandbox name from `.firebrick.yml` in the working
+directory, or derives it from the full working directory path when there's no
+spec file.
 
 ## Running a session
 
-`anvil run <command> [args...]` makes sure the sandbox runs, then attaches the
+`fbk run <command> [args...]` makes sure the sandbox runs, then attaches the
 local terminal to a command in the sandbox through the bidirectional `Attach`
 stream.
 
 ```mermaid
 sequenceDiagram
     actor Dev as Developer
-    participant CLI as anvil
-    participant D as anvild
+    participant CLI as fbk
+    participant D as fbkd
     participant MS as microsandbox
     participant VM as Sandbox VM
 
-    Dev->>CLI: anvil run COMMAND [ARGS...]
+    Dev->>CLI: fbk run COMMAND [ARGS...]
     opt Daemon isn't listening
         CLI->>CLI: Remove stale socket
-        CLI->>D: Spawn anvild
+        CLI->>D: Spawn fbkd
         CLI->>CLI: Poll socket (max 5s)
     end
     CLI->>CLI: Resolve spec
@@ -95,24 +96,24 @@ the guest may have no terminfo entry for, so programs like `clear` fail.
 
 ## Stopping a sandbox
 
-`anvil stop` stops the sandbox for the working directory. The sandbox and its
-disk stay, so it can be started again later. `anvil stop <name>` stops the
-sandbox with that name, as listed by `anvil ls`, from any directory: the CLI
-uses the name as is and doesn't read `.anvil.yml`.
+`fbk stop` stops the sandbox for the working directory. The sandbox and its disk
+stay, so it can be started again later. `fbk stop <name>` stops the sandbox with
+that name, as listed by `fbk ls`, from any directory: the CLI uses the name as
+is and doesn't read `.firebrick.yml`.
 
-`anvild` asks the guest to shut down and gives it 30 seconds (`STOP_TIMEOUT` in
+`fbkd` asks the guest to shut down and gives it 30 seconds (`STOP_TIMEOUT` in
 `crates/daemon/src/sandboxes.rs`). When the sandbox hasn't stopped by then,
-`anvild` kills it, so a guest that ignores the shutdown can't make `anvil stop`
+`fbkd` kills it, so a guest that ignores the shutdown can't make `fbk stop`
 hang. A killed sandbox can lose writes the guest hadn't flushed to its disk yet.
 
 ```mermaid
 sequenceDiagram
     actor Dev as Developer
-    participant CLI as anvil
-    participant D as anvild
+    participant CLI as fbk
+    participant D as fbkd
     participant MS as microsandbox
 
-    Dev->>CLI: anvil stop [name]
+    Dev->>CLI: fbk stop [name]
     opt No name given
         CLI->>CLI: Resolve spec
     end
@@ -137,24 +138,24 @@ sequenceDiagram
 
 ## Removing a sandbox
 
-`anvil rm [name]` resolves the name like `anvil stop` and sends `RemoveSandbox`.
+`fbk rm [name]` resolves the name like `fbk stop` and sends `RemoveSandbox`.
 microsandbox refuses to remove a sandbox that is starting, running, draining or
-paused, so `anvild` turns that refusal into `FAILED_PRECONDITION` and the CLI
-explains how to remove the sandbox. With `anvil rm --force`, the request carries
-`force: true` and `anvild` first stops a live sandbox the same way as `anvil
-stop`, killing it after 30 seconds. When that stop fails, `anvild` returns
-`INTERNAL` and leaves the sandbox in place. A stopped or crashed sandbox is
-removed with or without `--force`. After a removal, `anvild` syncs the SSH
-config and the editors' Remote-SSH settings, so they drop the sandbox's host.
+paused, so `fbkd` turns that refusal into `FAILED_PRECONDITION` and the CLI
+explains how to remove the sandbox. With `fbk rm --force`, the request carries
+`force: true` and `fbkd` first stops a live sandbox the same way as `fbk stop`,
+killing it after 30 seconds. When that stop fails, `fbkd` returns `INTERNAL` and
+leaves the sandbox in place. A stopped or crashed sandbox is removed with or
+without `--force`. After a removal, `fbkd` syncs the SSH config and the editors'
+Remote-SSH settings, so they drop the sandbox's host.
 
 ```mermaid
 sequenceDiagram
     actor Dev as Developer
-    participant CLI as anvil
-    participant D as anvild
+    participant CLI as fbk
+    participant D as fbkd
     participant MS as microsandbox
 
-    Dev->>CLI: anvil rm [--force] [name]
+    Dev->>CLI: fbk rm [--force] [name]
     opt No name given
         CLI->>CLI: Resolve spec
     end
@@ -174,7 +175,7 @@ sequenceDiagram
         alt Sandbox is still live
             MS-->>D: SandboxStillRunning
             D-->>CLI: FAILED_PRECONDITION
-            CLI-->>Dev: Error: sandbox name is running. Stop it with anvil stop, or remove it with anvil rm --force.
+            CLI-->>Dev: Error: sandbox name is running. Stop it with fbk stop, or remove it with fbk rm --force.
         else Sandbox is stopped
             MS-->>D: Removed
             D->>D: Sync SSH config and editor settings
@@ -186,9 +187,9 @@ sequenceDiagram
 
 ## Starting a sandbox
 
-`anvil start` creates the sandbox when it doesn't exist yet, or starts the
+`fbk start` creates the sandbox when it doesn't exist yet, or starts the
 existing one. The image and resources from the spec only apply when the sandbox
-is created. Like `anvil run`, the CLI first checks the status of the sandbox: it
+is created. Like `fbk run`, the CLI first checks the status of the sandbox: it
 leaves a running sandbox alone, waits for a starting one (max 120s), and fails
 for a stopping or paused one. The daemon's `StartSandbox` is idempotent as well:
 it returns without starting a sandbox that is already running or starting, and
@@ -197,14 +198,14 @@ treats a start that loses a race with another start as a success.
 ```mermaid
 sequenceDiagram
     actor Dev as Developer
-    participant CLI as anvil
-    participant D as anvild
+    participant CLI as fbk
+    participant D as fbkd
     participant MS as microsandbox
     participant SSH as SSH config
     participant Ed as Editor settings
     participant Zed as Zed settings
 
-    Dev->>CLI: anvil start
+    Dev->>CLI: fbk start
     CLI->>CLI: Resolve spec, fill in default image, init and resources
     CLI->>D: GetSandbox(name)
     Note over CLI,D: Running: skip StartSandbox. Starting: poll until running.<br/>Stopping or Paused: error.
@@ -216,10 +217,10 @@ sequenceDiagram
     D->>MS: Sandbox::get(name)
 
     alt Sandbox exists
-        opt Sandbox has no anvil.hostname label
+        opt Sandbox has no firebrick.hostname label
             D->>MS: List sandboxes for taken host names
-            D->>D: Pick unique project.anvil host name
-            D->>MS: Set anvil.hostname label
+            D->>D: Pick unique project.fbk host name
+            D->>MS: Set firebrick.hostname label
         end
         opt Sandbox isn't running or starting
             D->>MS: start_detached()
@@ -232,7 +233,7 @@ sequenceDiagram
             CLI-->>Dev: Error
         end
         D->>MS: List sandboxes for taken host names
-        D->>D: Pick unique project.anvil host name
+        D->>D: Pick unique project.fbk host name
         D->>MS: Create detached sandbox (image, init, cpus, memory, label,<br/>workspace mounted at /workspaces/project)
         alt init on and image has no /sbin/init
             D->>MS: Remove the half-created sandbox
@@ -248,7 +249,7 @@ sequenceDiagram
     D-->>CLI: StartSandboxResponse
     CLI->>D: GetSandbox(name)
     D-->>CLI: GetSandboxResponse(hostname, workspace_path)
-    CLI-->>Dev: Connect with: ssh project.anvil<br/>Open in VS Code: code --folder-uri<br/>vscode-remote://ssh-remote+project.anvil/workspaces/project<br/>Open in Zed: zed ssh://project.anvil/workspaces/project
+    CLI-->>Dev: Connect with: ssh project.fbk<br/>Open in VS Code: code --folder-uri<br/>vscode-remote://ssh-remote+project.fbk/workspaces/project<br/>Open in Zed: zed ssh://project.fbk/workspaces/project
 ```
 
 The editor settings are synced for VS Code, VS Code Insiders, Cursor and
@@ -259,34 +260,34 @@ stop the other syncs. The `Open in VS Code` and `Open in Zed` lines need both
 the host name and the workspace path, so they're left out for a sandbox without
 a workspace path.
 
-`anvil run` and SSH connections start a sandbox the same way when it isn't
-running, so `anvil start` is optional.
+`fbk run` and SSH connections start a sandbox the same way when it isn't
+running, so `fbk start` is optional.
 
-`anvil start <name>` starts the existing sandbox with that name, as listed by
-`anvil ls`, from any directory. It doesn't read `.anvil.yml`, and it never
-creates a sandbox: creating one needs the image, resources and workspace from a
-spec. When `GetSandbox` returns `NOT_FOUND`, the CLI fails with `sandbox <name>
-doesn't exist; run anvil start in its project directory to create it` without
-sending `StartSandbox`. Otherwise it handles the status like `anvil start`, and
+`fbk start <name>` starts the existing sandbox with that name, as listed by `fbk
+ls`, from any directory. It doesn't read `.firebrick.yml`, and it never creates
+a sandbox: creating one needs the image, resources and workspace from a spec.
+When `GetSandbox` returns `NOT_FOUND`, the CLI fails with `sandbox <name>
+doesn't exist; run fbk start in its project directory to create it` without
+sending `StartSandbox`. Otherwise it handles the status like `fbk start`, and
 sends `StartSandbox(name)` with an empty workspace for a stopped or crashed
 sandbox; the daemon then falls back to the sandbox name when the sandbox still
 needs a host name.
 
 ## Setting a secret
 
-`anvil secret set <name> <value>` stores a secret that sandboxes use without
+`fbk secret set <name> <value>` stores a secret that sandboxes use without
 seeing its value. With `--from-stdin`, the CLI reads the value from stdin
 instead.
 
 ```mermaid
 sequenceDiagram
     actor Dev as Developer
-    participant CLI as anvil
-    participant D as anvild
+    participant CLI as fbk
+    participant D as fbkd
     participant F as secrets.yml
     participant MS as microsandbox
 
-    Dev->>CLI: anvil secret set GH_TOKEN --from-stdin
+    Dev->>CLI: fbk secret set GH_TOKEN --from-stdin
     CLI->>CLI: Read value from stdin
     CLI->>D: SetSecret(name, value, allowed_hosts)
     D->>D: Validate name, value and hosts,<br/>use default hosts when none are given
@@ -296,33 +297,33 @@ sequenceDiagram
     end
     D->>F: Replace secret (mode 0600)
     D->>MS: List sandboxes
-    loop For each sandbox with an anvil.hostname label
+    loop For each sandbox with a firebrick.hostname label
         D->>MS: modify().secret(name, value, hosts).next_start()
     end
     D-->>CLI: SetSecretResponse(failed_sandboxes)
     CLI-->>Dev: Secret set, warnings for failed sandboxes
 ```
 
-When `anvild` creates a sandbox, it adds all secrets from `secrets.yml`.
+When `fbkd` creates a sandbox, it adds all secrets from `secrets.yml`.
 microsandbox enables TLS interception for the sandbox and sets each secret's
 environment variable to a placeholder such as `$MSB_GH_TOKEN`. Its TLS proxy
 replaces the placeholder with the real value in HTTP headers of requests to the
 allowed hosts, and blocks requests that carry the placeholder to other hosts. A
 running sandbox gets a new or changed secret the next time it starts.
 
-`anvil secret rm <name>` works the same way with `RemoveSecret`. `anvild`
-returns `NOT_FOUND` when the secret isn't in `secrets.yml`. Otherwise it removes
-the secret from each sandbox with `modify().remove_secret(name).next_start()`,
-and then from `secrets.yml`. When a sandbox fails, it keeps the secret in
-`secrets.yml` and returns the failed sandboxes, so running `anvil secret rm`
-again retries them. microsandbox can't change the secrets of a running sandbox,
-so a running sandbox keeps the placeholder, and its proxy keeps putting in the
-real value, until it restarts.
+`fbk secret rm <name>` works the same way with `RemoveSecret`. `fbkd` returns
+`NOT_FOUND` when the secret isn't in `secrets.yml`. Otherwise it removes the
+secret from each sandbox with `modify().remove_secret(name).next_start()`, and
+then from `secrets.yml`. When a sandbox fails, it keeps the secret in
+`secrets.yml` and returns the failed sandboxes, so running `fbk secret rm` again
+retries them. microsandbox can't change the secrets of a running sandbox, so a
+running sandbox keeps the placeholder, and its proxy keeps putting in the real
+value, until it restarts.
 
 ## Connecting via SSH
 
-`ssh <leaf>.anvil`, `scp` and IDEs reach a sandbox through the SSH config the
-daemon generates. It sets `anvil ssh-proxy <host>` as `ProxyCommand`, so the SSH
+`ssh <leaf>.fbk`, `scp` and IDEs reach a sandbox through the SSH config the
+daemon generates. It sets `fbk ssh-proxy <host>` as `ProxyCommand`, so the SSH
 protocol runs over the `SshTunnel` gRPC stream instead of a network port. The
 daemon serves each connection with microsandbox's SSH server over an in-memory
 pipe.
@@ -331,29 +332,29 @@ VS Code's Remote-SSH extension uses the same OpenSSH config. The daemon maps
 every sandbox host to `"linux"` in `remote.SSH.remotePlatform` of the user
 settings, so the extension doesn't ask for the platform, and the `code
 --folder-uri vscode-remote://ssh-remote+<host>/workspaces/<leaf>` command that
-`anvil start` prints opens the mounted workspace directly.
+`fbk start` prints opens the mounted workspace directly.
 
 Zed's remote development shells out to the system `ssh`, so it uses the same
 config too. The daemon keeps one entry per sandbox in the `ssh_connections` of
 Zed's user settings, with the host name, the sandbox name as nickname and the
 workspace path as its project, so the sandbox shows up in Zed's Remote Projects.
-The `zed ssh://<host>/workspaces/<leaf>` command that `anvil start` prints opens
+The `zed ssh://<host>/workspaces/<leaf>` command that `fbk start` prints opens
 the mounted workspace directly.
 
 ```mermaid
 sequenceDiagram
     actor Dev as Developer
     participant SSHC as OpenSSH client
-    participant CLI as anvil ssh-proxy
-    participant D as anvild
+    participant CLI as fbk ssh-proxy
+    participant D as fbkd
     participant MS as microsandbox
     participant VM as Sandbox VM
 
-    Dev->>SSHC: ssh project.anvil
-    SSHC->>SSHC: Read ~/.ssh/config and the included anvil config
-    SSHC->>CLI: Spawn ProxyCommand: anvil ssh-proxy project.anvil
+    Dev->>SSHC: ssh project.fbk
+    SSHC->>SSHC: Read ~/.ssh/config and the included firebrick config
+    SSHC->>CLI: Spawn ProxyCommand: fbk ssh-proxy project.fbk
     CLI->>D: SshTunnel: hostname
-    D->>MS: List sandboxes with label anvil.hostname=project.anvil
+    D->>MS: List sandboxes with label firebrick.hostname=project.fbk
     alt No sandbox has that host name
         D-->>CLI: NOT_FOUND
         CLI-->>SSHC: Exit with error
@@ -385,10 +386,10 @@ sequenceDiagram
 ```
 
 The SSH client sends its own `TERM` when it requests a PTY, and microsandbox
-sets it in the guest, so the daemon can't choose it. The `anvil-base` image
+sets it in the guest, so the daemon can't choose it. The `firebrick-base` image
 handles this in `/etc/bash.bashrc` instead: interactive shells switch to
 `xterm-256color` when the guest has no terminfo entry for the client's `TERM`.
 
 The client authenticates with the client key the daemon created, and checks the
-sandbox against the host key pinned for `*.anvil` in the `known_hosts` file. The
+sandbox against the host key pinned for `*.fbk` in the `known_hosts` file. The
 sandbox keeps running after the connection closes.

@@ -3,10 +3,10 @@ resolver = "3"
 members = ["crates/cli", "crates/daemon", "crates/spec", "crates/utils"]
 
 [workspace.dependencies]
-anvil-utils = { path = "crates/utils" }
+firebrick-utils = { path = "crates/utils" }
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 authors = ["Willem Meints"]
 edition = "2024"
 license = "MIT"

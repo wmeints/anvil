@@ -26,7 +26,7 @@
   so the down time is zero if the sandbox is running.
 
 - **Compatibility:** Sandboxes use OCI images to ensure developers can easily
-  build sandboxes on the `anvil-base` image or their own custom images. Each
+  build sandboxes on the `firebrick-base` image or their own custom images. Each
   image provides an unprivileged `agent` user with UID and GID `1000`.
 
   We'll use container images as the basis because it's so well-known in the
@@ -46,10 +46,10 @@
 - [Microsandbox][MICROSANDBOX]: Sandboxes run as microVMs managed through
   microsandbox. It boots OCI images as lightweight VMs, which gives us the
   flexibility of container images with the isolation of a VM. Its built-in SSH
-  server backs the `<name>.anvil` host names.
+  server backs the `<name>.fbk` host names.
 
-- [Clap][CLAP]: The `anvil` CLI and the `anvild` command line are built with
-  clap's derive API.
+- [Clap][CLAP]: The `fbk` CLI and the `fbkd` command line are built with clap's
+  derive API.
 
 - [Tokio][TOKIO]: Both executables use tokio as their async runtime.
 
@@ -57,7 +57,7 @@
   defined in `proto/daemon.v1.proto` and compiled at build time with
   `tonic-prost-build`.
 
-- [Serde YAML][SERDE_YAML]: The `.anvil.yml` sandbox spec is parsed with
+- [Serde YAML][SERDE_YAML]: The `.firebrick.yml` sandbox spec is parsed with
   serde_yaml.
 
 - [Tracing][TRACING]: Both executables emit logs and diagnostics through
@@ -67,11 +67,11 @@
 
 The application has two executables:
 
-- `anvild` - The daemon process managing the lifecycle of the sandboxes. It
+- `fbkd` - The daemon process managing the lifecycle of the sandboxes. It
   exposes the `SandboxManagementService` gRPC API on a unix socket and
   provisions the SSH keys and config used to reach the sandboxes.
 
-- `anvil` - The CLI for working with sandboxes. It is a client of the daemon,
+- `fbk` - The CLI for working with sandboxes. It is a client of the daemon,
   starts the daemon when it isn't running, and houses the commands to start,
   stop, list, remove and validate sandboxes, run commands in them and tunnel SSH
   connections to them.
@@ -79,12 +79,12 @@ The application has two executables:
 Both executables live in a single Cargo workspace. Each crate has its own folder
 under `crates/`:
 
-| Crate          | Folder          | Purpose                                                                        |
-| -------------- | --------------- | ------------------------------------------------------------------------------ |
-| `anvil-cli`    | `crates/cli`    | The `anvil` executable: commands, daemon client, terminal sessions, SSH proxy. |
-| `anvil-daemon` | `crates/daemon` | The `anvild` executable: gRPC server, sandbox lifecycle, SSH provisioning.     |
-| `anvil-spec`   | `crates/spec`   | Parses and validates the `.anvil.yml` sandbox spec.                            |
-| `anvil-utils`  | `crates/utils`  | Shared helpers, such as the paths of the daemon socket, logs and SSH files.    |
+| Crate              | Folder          | Purpose                                                                      |
+| ------------------ | --------------- | ---------------------------------------------------------------------------- |
+| `firebrick-cli`    | `crates/cli`    | The `fbk` executable: commands, daemon client, terminal sessions, SSH proxy. |
+| `firebrick-daemon` | `crates/daemon` | The `fbkd` executable: gRPC server, sandbox lifecycle, SSH provisioning.     |
+| `firebrick-spec`   | `crates/spec`   | Parses and validates the `.firebrick.yml` sandbox spec.                      |
+| `firebrick-utils`  | `crates/utils`  | Shared helpers, such as the paths of the daemon socket, logs and SSH files.  |
 
 The gRPC contract shared by the CLI and the daemon lives in
 `proto/daemon.v1.proto`. Each executable generates its own client and server

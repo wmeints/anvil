@@ -1,6 +1,6 @@
 name: Image
 
-# Build the anvil-base image when the Dockerfile changes. The release workflow
+# Build the firebrick-base image when the Dockerfile changes. The release workflow
 # only builds it for a tag, so this catches a broken Dockerfile before merging.
 on:
   push:
@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   build:
-    name: Build anvil-base image
+    name: Build firebrick-base image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

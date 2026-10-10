@@ -32,7 +32,7 @@ net.ipv6.conf.all.disable_ipv6=1
 net.ipv6.conf.default.disable_ipv6=1
 EOF
 
-# anvild hands PID 1 to /sbin/init in sandboxes that run this image. The script applies the
+# fbkd hands PID 1 to /sbin/init in sandboxes that run this image. The script applies the
 # sysctl settings and hands PID 1 to tini, which reaps zombie processes.
 COPY --chmod=755 <<EOF /sbin/init
 #!/bin/sh

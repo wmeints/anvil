@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/anvil.iml" filepath="$PROJECT_DIR$/.idea/anvil.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/firebrick.iml" filepath="$PROJECT_DIR$/.idea/firebrick.iml" />
     </modules>
   </component>
 </project>

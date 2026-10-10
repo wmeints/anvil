@@ -12,7 +12,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// Environment variable that overrides the editors' config root, so the `vm-tests` can keep the
 /// daemon they run away from the developer's own editor settings on every platform.
-const CONFIG_ROOT_ENV: &str = "ANVIL_EDITOR_CONFIG_ROOT";
+const CONFIG_ROOT_ENV: &str = "FIREBRICK_EDITOR_CONFIG_ROOT";
 
 /// Parse options that accept what the editors accept in `settings.json`: JSON with comments and
 /// trailing commas. Anything else is left unchanged rather than rewritten.
@@ -38,7 +38,7 @@ pub(crate) fn lock() -> MutexGuard<'static, ()> {
     SYNC_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Returns `$ANVIL_EDITOR_CONFIG_ROOT` when it's set, or `platform_root` otherwise.
+/// Returns `$FIREBRICK_EDITOR_CONFIG_ROOT` when it's set, or `platform_root` otherwise.
 pub(crate) fn config_root_or(platform_root: impl FnOnce() -> Option<PathBuf>) -> Option<PathBuf> {
     std::env::var_os(CONFIG_ROOT_ENV)
         .filter(|dir| !dir.is_empty())
@@ -88,7 +88,7 @@ pub(crate) fn write(path: &Path, content: &str) -> io::Result<()> {
         Err(err) => return Err(err),
     };
     let file_name = target.file_name().unwrap_or_default().to_string_lossy();
-    let temp = target.with_file_name(format!(".{file_name}.anvil-tmp"));
+    let temp = target.with_file_name(format!(".{file_name}.firebrick-tmp"));
 
     let result = fs::write(&temp, content)
         .and_then(|()| keep_permissions(&target, &temp))

@@ -47,7 +47,7 @@ run_check unit-tests cargo test --workspace
 
 if grep -qE ' (crates/[^/]+/|proto/)' <<<"$(grep -v ' crates/cli/' <<<"$changed")" ||
   grep -qE 'Cargo\.(toml|lock)$|\.cargo/config\.toml$' <<<"$changed"; then
-  run_check integration-tests cargo test -p anvil-daemon --features vm-tests
+  run_check integration-tests cargo test -p firebrick-daemon --features vm-tests
 fi
 
 exit 0

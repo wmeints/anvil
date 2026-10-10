@@ -29,7 +29,7 @@ Before opening the PR, verify the change:
 
 1. Run the checks from the definition of done in `CLAUDE.md`: `cargo fmt --all
    --check`, `cargo clippy --workspace --all-targets --all-features -- -D
-   warnings` and `cargo test --workspace`. Run `cargo test -p anvil-daemon
+   warnings` and `cargo test --workspace`. Run `cargo test -p firebrick-daemon
    --features vm-tests` too when the diff touches the files listed in step 2 of
    the definition of done. If a check fails, stop and report it; don't open a PR
    with failing checks.

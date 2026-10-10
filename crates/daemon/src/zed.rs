@@ -3,7 +3,7 @@
 //! Zed's remote development connects with the system `ssh`, so the sandbox hosts in the SSH
 //! config already work. The daemon keeps one `ssh_connections` entry per sandbox in Zed's user
 //! settings, with the sandbox's workspace as its project, so the user can pick the sandbox in
-//! Remote Projects. The daemon owns the entries whose `host` ends in `.anvil`, and leaves the
+//! Remote Projects. The daemon owns the entries whose `host` ends in `.fbk`, and leaves the
 //! rest of the file, comments and formatting included, as the user wrote it.
 
 use crate::settings_file::{self, PARSE_OPTIONS};
@@ -64,7 +64,7 @@ pub enum SettingsError {
 /// A sandbox as a Zed remote project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteProject {
-    /// SSH host name of the sandbox, e.g. `project.anvil`.
+    /// SSH host name of the sandbox, e.g. `project.fbk`.
     pub host: String,
     /// Name Zed shows for the connection: the sandbox name.
     pub nickname: String,
@@ -74,11 +74,11 @@ pub struct RemoteProject {
 
 const CONNECTIONS_KEY: &str = "ssh_connections";
 const HOST_KEY: &str = "host";
-const HOST_SUFFIX: &str = ".anvil";
+const HOST_SUFFIX: &str = ".fbk";
 const ZED_DIR: &str = "zed";
 const SETTINGS_FILE: &str = "settings.json";
 
-/// Returns the directory that holds Zed's `zed` config directory: `$ANVIL_EDITOR_CONFIG_ROOT`
+/// Returns the directory that holds Zed's `zed` config directory: `$FIREBRICK_EDITOR_CONFIG_ROOT`
 /// when it's set, or the directory Zed uses on the platform otherwise.
 pub fn config_root() -> Option<PathBuf> {
     settings_file::config_root_or(platform_config_root)
@@ -97,7 +97,7 @@ fn platform_config_root() -> Option<PathBuf> {
 }
 
 /// Writes one `ssh_connections` entry per project into `<config_root>/zed/settings.json`,
-/// rewrites the `*.anvil` entries that differ and removes the stale ones. Does nothing when Zed
+/// rewrites the `*.fbk` entries that differ and removes the stale ones. Does nothing when Zed
 /// isn't installed, that is when the `zed` directory doesn't exist.
 pub fn sync_settings(config_root: &Path, projects: &[RemoteProject]) -> Result<(), SettingsError> {
     let zed_dir = config_root.join(ZED_DIR);
@@ -209,8 +209,8 @@ fn connection_objects(
         .collect()
 }
 
-/// Syncs one entry: keeps other hosts, rewrites an anvil host that is still `missing` when it
-/// differs, and removes the stale and duplicate anvil hosts.
+/// Syncs one entry: keeps other hosts, rewrites a firebrick host that is still `missing` when it
+/// differs, and removes the stale and duplicate firebrick hosts.
 fn sync_entry(entry: CstObject, missing: &mut Vec<&RemoteProject>) {
     let Some(host) = entry_host(&entry).filter(|host| host.ends_with(HOST_SUFFIX)) else {
         return;
@@ -285,7 +285,7 @@ mod tests {
 
     fn project(leaf: &str) -> RemoteProject {
         RemoteProject {
-            host: format!("{leaf}.anvil"),
+            host: format!("{leaf}.fbk"),
             nickname: leaf.to_string(),
             workspace_path: Some(format!("/workspaces/{leaf}")),
         }
@@ -326,7 +326,7 @@ mod tests {
             &content,
             "{\"ui_font_size\": 16, \"ssh_connections\": [\
              {\"host\": \"myserver\", \"projects\": [{\"paths\": [\"~/code\"]}]},\
-             {\"host\": \"project.anvil\", \"nickname\": \"project\", \
+             {\"host\": \"project.fbk\", \"nickname\": \"project\", \
              \"projects\": [{\"paths\": [\"/workspaces/project\"]}]}]}"
         ));
     }
@@ -336,9 +336,9 @@ mod tests {
         let (root, settings) = zed_root();
         fs::write(
             &settings,
-            "{\n  \"ssh_connections\": [\n    { \"host\": \"old.anvil\", \"projects\": [] },\n    \
+            "{\n  \"ssh_connections\": [\n    { \"host\": \"old.fbk\", \"projects\": [] },\n    \
              { \"host\": \"myserver\", \"projects\": [] },\n    \
-             { \"host\": \"web.anvil\", \"nickname\": \"stale\", \"projects\": [] }\n  ]\n}\n",
+             { \"host\": \"web.fbk\", \"nickname\": \"stale\", \"projects\": [] }\n  ]\n}\n",
         )
         .unwrap();
 
@@ -348,15 +348,15 @@ mod tests {
         assert!(same_json(
             &content,
             "{\"ssh_connections\": [{\"host\": \"myserver\", \"projects\": []},\
-             {\"host\": \"web.anvil\", \"nickname\": \"web\", \
+             {\"host\": \"web.fbk\", \"nickname\": \"web\", \
              \"projects\": [{\"paths\": [\"/workspaces/web\"]}]}]}"
         ));
     }
 
     #[test]
-    fn removes_duplicate_anvil_entries() {
+    fn removes_duplicate_firebrick_entries() {
         let (root, settings) = zed_root();
-        let entry = "{\"host\": \"web.anvil\", \"nickname\": \"web\", \
+        let entry = "{\"host\": \"web.fbk\", \"nickname\": \"web\", \
                      \"projects\": [{\"paths\": [\"/workspaces/web\"]}]}";
         fs::write(
             &settings,
@@ -386,7 +386,7 @@ mod tests {
         let content = fs::read_to_string(&settings).unwrap();
         assert!(same_json(
             &content,
-            "{\"ssh_connections\": [{\"host\": \"named.anvil\", \"nickname\": \"named\", \
+            "{\"ssh_connections\": [{\"host\": \"named.fbk\", \"nickname\": \"named\", \
              \"projects\": []}]}"
         ));
     }
@@ -395,7 +395,7 @@ mod tests {
     fn leaves_up_to_date_file_untouched() {
         let (root, settings) = zed_root();
         let content = "{\"ssh_connections\": [{\n  // mine\n  \"nickname\": \"project\",\n  \
-                       \"host\": \"project.anvil\", \
+                       \"host\": \"project.fbk\", \
                        \"projects\": [{\"paths\": [\"/workspaces/project\"]}]}]}";
         fs::write(&settings, content).unwrap();
 
@@ -413,7 +413,7 @@ mod tests {
         let content = fs::read_to_string(&settings).unwrap();
         assert!(same_json(
             &content,
-            "{\"ssh_connections\": [{\"host\": \"project.anvil\", \"nickname\": \"project\", \
+            "{\"ssh_connections\": [{\"host\": \"project.fbk\", \"nickname\": \"project\", \
              \"projects\": [{\"paths\": [\"/workspaces/project\"]}]}]}"
         ));
     }
@@ -456,7 +456,7 @@ mod tests {
         let (root, settings) = zed_root();
         for content in [
             "{ \"ssh_connections\": {} }\n",
-            "{ \"ssh_connections\": [{ \"host\": \"old.anvil\" }, \"myserver\"] }\n",
+            "{ \"ssh_connections\": [{ \"host\": \"old.fbk\" }, \"myserver\"] }\n",
             "{ \"ssh_connections\": [], \"ssh_connections\": [] }\n",
         ] {
             fs::write(&settings, content).unwrap();

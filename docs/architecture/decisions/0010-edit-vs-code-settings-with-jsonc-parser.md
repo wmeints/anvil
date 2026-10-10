@@ -24,12 +24,12 @@ in the user settings of VS Code, VS Code Insiders, Cursor and VSCodium, whenever
 it syncs the SSH config. It edits the file with the concrete syntax tree of the
 [`jsonc-parser`](https://docs.rs/jsonc-parser) crate (`cst` feature), which
 changes only the touched keys and keeps comments, trailing commas and
-formatting. It only adds and removes `*.anvil` keys, writes only when the
-content changes, and leaves a file it can't parse unchanged.
+formatting. It only adds and removes `*.fbk` keys, writes only when the content
+changes, and leaves a file it can't parse unchanged.
 
 ## Consequences
 
-- Connecting from Remote-SSH takes one step, and `anvil start` can print a `code
+- Connecting from Remote-SSH takes one step, and `fbk start` can print a `code
   --folder-uri` command that opens the workspace.
 - The daemon writes to a file the user owns. A change to the settings format, or
   a bug in the edit, affects the user's editor; the edit is limited to one key

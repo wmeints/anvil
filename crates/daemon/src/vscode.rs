@@ -55,13 +55,13 @@ pub enum SettingsError {
 
 const PLATFORM_KEY: &str = "remote.SSH.remotePlatform";
 const PLATFORM: &str = "linux";
-const HOST_SUFFIX: &str = ".anvil";
+const HOST_SUFFIX: &str = ".fbk";
 const SETTINGS_FILE: &str = "settings.json";
 
 /// Configuration directories of the supported editors, relative to the config root.
 const EDITORS: [&str; 4] = ["Code", "Code - Insiders", "Cursor", "VSCodium"];
 
-/// Returns the directory the editors keep their configuration in: `$ANVIL_EDITOR_CONFIG_ROOT`
+/// Returns the directory the editors keep their configuration in: `$FIREBRICK_EDITOR_CONFIG_ROOT`
 /// when it's set, or the platform's config directory otherwise.
 pub fn config_root() -> Option<PathBuf> {
     settings_file::config_root_or(platform_config_root)
@@ -80,7 +80,7 @@ fn platform_config_root() -> Option<PathBuf> {
 }
 
 /// Maps every host name to `"linux"` in the user settings of each editor installed under
-/// `config_root`, and removes the stale `*.anvil` hosts. Returns the errors of the editors
+/// `config_root`, and removes the stale `*.fbk` hosts. Returns the errors of the editors
 /// whose settings couldn't be synced; their files are left unchanged.
 pub fn sync_settings(config_root: &Path, hostnames: &[String]) -> Vec<SettingsError> {
     let _guard = settings_file::lock();
@@ -111,7 +111,7 @@ fn sync_file(path: &Path, hostnames: &[String]) -> Result<(), SettingsError> {
     }
 }
 
-/// Returns the settings text with the host names mapped to `"linux"` and the stale anvil hosts
+/// Returns the settings text with the host names mapped to `"linux"` and the stale firebrick hosts
 /// removed, or `None` when nothing changes.
 fn update_platforms(
     path: &Path,
@@ -169,7 +169,7 @@ fn platforms_object(
     }
 }
 
-/// Removes the anvil hosts that aren't in `hostnames`, keeping every other host.
+/// Removes the firebrick hosts that aren't in `hostnames`, keeping every other host.
 fn remove_stale_hosts(platforms: &CstObject, hostnames: &[String]) {
     for prop in platforms.properties() {
         if prop
@@ -234,14 +234,14 @@ mod tests {
         )
         .unwrap();
 
-        let errors = sync_settings(root.path(), &hosts(&["project.anvil"]));
+        let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
 
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(
             fs::read_to_string(&settings).unwrap(),
             "{\n  // my own comment stays\n  \"editor.fontSize\": 14,\n  \
              \"remote.SSH.remotePlatform\": {\n    \"myserver\": \"linux\",\n    \
-             \"project.anvil\": \"linux\",\n  },\n}\n"
+             \"project.fbk\": \"linux\",\n  },\n}\n"
         );
     }
 
@@ -250,17 +250,17 @@ mod tests {
         let (root, settings) = vscode_root();
         fs::write(
             &settings,
-            "{\n  \"remote.SSH.remotePlatform\": {\n    \"old.anvil\": \"linux\",\n    \
-             \"myserver\": \"linux\",\n    \"web.anvil\": \"linux\"\n  }\n}\n",
+            "{\n  \"remote.SSH.remotePlatform\": {\n    \"old.fbk\": \"linux\",\n    \
+             \"myserver\": \"linux\",\n    \"web.fbk\": \"linux\"\n  }\n}\n",
         )
         .unwrap();
 
-        sync_settings(root.path(), &hosts(&["web.anvil"]));
+        sync_settings(root.path(), &hosts(&["web.fbk"]));
 
         assert_eq!(
             fs::read_to_string(&settings).unwrap(),
             "{\n  \"remote.SSH.remotePlatform\": {\n    \"myserver\": \"linux\",\n    \
-             \"web.anvil\": \"linux\"\n  }\n}\n"
+             \"web.fbk\": \"linux\"\n  }\n}\n"
         );
     }
 
@@ -268,11 +268,11 @@ mod tests {
     fn creates_missing_settings_file() {
         let (root, settings) = vscode_root();
 
-        sync_settings(root.path(), &hosts(&["project.anvil"]));
+        sync_settings(root.path(), &hosts(&["project.fbk"]));
 
         let content = fs::read_to_string(&settings).unwrap();
         let value: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
-        assert_eq!(value[PLATFORM_KEY]["project.anvil"], "linux", "{content}");
+        assert_eq!(value[PLATFORM_KEY]["project.fbk"], "linux", "{content}");
     }
 
     #[test]
@@ -289,7 +289,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         fs::create_dir_all(root.path().join("Cursor")).unwrap();
 
-        let errors = sync_settings(root.path(), &hosts(&["project.anvil"]));
+        let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
 
         assert!(errors.is_empty(), "{errors:?}");
         assert!(!root.path().join("Cursor/User").exists());
@@ -303,14 +303,14 @@ mod tests {
             fs::create_dir_all(root.path().join(editor).join("User")).unwrap();
         }
 
-        sync_settings(root.path(), &hosts(&["project.anvil"]));
+        sync_settings(root.path(), &hosts(&["project.fbk"]));
 
         for editor in ["Code - Insiders", "Cursor", "VSCodium"] {
             let settings = root.path().join(editor).join("User/settings.json");
             assert!(
                 fs::read_to_string(settings)
                     .unwrap()
-                    .contains("\"project.anvil\": \"linux\""),
+                    .contains("\"project.fbk\": \"linux\""),
                 "{editor}"
             );
         }
@@ -323,7 +323,7 @@ mod tests {
         fs::write(&settings, invalid).unwrap();
         fs::create_dir_all(root.path().join("Cursor/User")).unwrap();
 
-        let errors = sync_settings(root.path(), &hosts(&["project.anvil"]));
+        let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
 
         assert!(
             matches!(errors.as_slice(), [SettingsError::Parse { path, .. }] if *path == settings),
@@ -339,7 +339,7 @@ mod tests {
         let content = "{ \"remote.SSH.remotePlatform\": \"linux\" }\n";
         fs::write(&settings, content).unwrap();
 
-        let errors = sync_settings(root.path(), &hosts(&["project.anvil"]));
+        let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
 
         assert!(
             matches!(
@@ -358,13 +358,13 @@ mod tests {
         fs::write(&target, "{}\n").unwrap();
         std::os::unix::fs::symlink(&target, &settings).unwrap();
 
-        sync_settings(root.path(), &hosts(&["project.anvil"]));
+        sync_settings(root.path(), &hosts(&["project.fbk"]));
 
         assert!(fs::symlink_metadata(&settings).unwrap().is_symlink());
         assert!(
             fs::read_to_string(&target)
                 .unwrap()
-                .contains("\"project.anvil\": \"linux\"")
+                .contains("\"project.fbk\": \"linux\"")
         );
     }
 
@@ -379,7 +379,7 @@ mod tests {
         ] {
             fs::write(&settings, invalid).unwrap();
 
-            let errors = sync_settings(root.path(), &hosts(&["project.anvil"]));
+            let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
 
             assert!(
                 matches!(errors.as_slice(), [SettingsError::Parse { .. }]),
@@ -396,7 +396,7 @@ mod tests {
                        \"remote.SSH.remotePlatform\": {}\n}\n";
         fs::write(&settings, content).unwrap();
 
-        let errors = sync_settings(root.path(), &hosts(&["project.anvil"]));
+        let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
 
         assert!(
             matches!(
@@ -414,7 +414,7 @@ mod tests {
         let target = root.path().join("dotfiles/settings.json");
         std::os::unix::fs::symlink(&target, &settings).unwrap();
 
-        let errors = sync_settings(root.path(), &hosts(&["project.anvil"]));
+        let errors = sync_settings(root.path(), &hosts(&["project.fbk"]));
 
         assert!(
             matches!(errors.as_slice(), [SettingsError::Read { .. }]),
@@ -427,10 +427,10 @@ mod tests {
     #[test]
     fn leaves_up_to_date_file_untouched() {
         let (root, settings) = vscode_root();
-        let content = "{\"remote.SSH.remotePlatform\": {\"project.anvil\": \"linux\"}}";
+        let content = "{\"remote.SSH.remotePlatform\": {\"project.fbk\": \"linux\"}}";
         fs::write(&settings, content).unwrap();
 
-        sync_settings(root.path(), &hosts(&["project.anvil"]));
+        sync_settings(root.path(), &hosts(&["project.fbk"]));
 
         assert_eq!(fs::read_to_string(&settings).unwrap(), content);
     }
