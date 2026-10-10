@@ -89,21 +89,3 @@ secrets too. If a token leaked, revoke it where you created it as well.
 write (mode `0600`). The values never leave your machine and never enter the
 sandbox. If your machine may be compromised, rotate the tokens where you created
 them and set the new values.
-
-## Git over HTTPS
-
-To let `git` push and pull over HTTPS with `GH_TOKEN`, configure a credential
-helper in the sandbox that hands git the placeholder as the password:
-
-```sh
-git config --global credential.https://github.com.helper \
-  '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
-```
-
-git sends the placeholder base64-encoded in a Basic `Authorization` header, and
-the host decodes it, replaces the placeholder and encodes it again. If `gh` is
-installed in the sandbox, `gh auth setup-git` configures an equivalent helper.
-
-Don't use SSH keys for git: the sandbox's SSH server doesn't support agent
-forwarding (`ssh -A`), and copying a private key into the sandbox puts the real
-key where the agent can read it.

@@ -35,7 +35,7 @@ sandbox starts it.
 
 The sandbox's SSH server doesn't support agent forwarding (`ssh -A`), so your
 SSH keys stay on the host. Use git over HTTPS with a secret instead; see
-[Secrets](/firebrick/docs/secrets/#git-over-https).
+[Secrets](/firebrick/docs/secrets/).
 
 ## VS Code, VS Code Insiders, Cursor and VSCodium
 
