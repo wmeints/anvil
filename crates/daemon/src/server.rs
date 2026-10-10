@@ -193,6 +193,7 @@ impl SandboxManagementService for FirebrickServer {
             status: map_sandbox_status(sandbox.status),
             hostname: sandbox.hostname.unwrap_or_default(),
             workspace_path: sandbox.workspace_path.unwrap_or_default(),
+            workspace_host_path: sandbox.workspace_host_path.unwrap_or_default(),
         }))
     }
 

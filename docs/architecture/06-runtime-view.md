@@ -19,6 +19,23 @@ keeps using it when it exists. Otherwise it names the sandbox `firebrick-`
 followed by the first 6 hex digits of the SHA-256 hash of the full working
 directory path, such as `firebrick-d9f287`.
 
+Before `fbk start` without a name, or `fbk run`, uses an existing sandbox, the
+CLI checks that the sandbox belongs to the working directory. `GetSandbox`
+returns the host directory the sandbox bind-mounts as its workspace in
+`workspace_host_path`, which microsandbox stores canonicalized. The CLI compares
+it with the canonicalized working directory, whether the sandbox is running,
+starting or stopped. When they differ, for example because two paths share a
+hashed name, the command fails without starting or attaching:
+
+```text
+Error: sandbox firebrick-d9f287 belongs to /home/user/my-project; add a .firebrick.yml with its own name to give this directory a separate sandbox
+```
+
+A sandbox without a workspace mount, such as one created outside `fbk`, isn't
+checked. `fbk start <name>`, `fbk stop` and `fbk rm` don't check either. The
+check lives in the CLI rather than in `StartSandbox`, because the CLI never
+calls `StartSandbox` for a sandbox that already runs.
+
 ## Running a session
 
 `fbk run <command> [args...]` makes sure the sandbox runs, then attaches the

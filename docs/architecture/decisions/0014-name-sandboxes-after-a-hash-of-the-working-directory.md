@@ -30,7 +30,9 @@ old path-derived name exists, and keeps using that sandbox when it does.
 - Each command without a spec file or explicit name makes an extra `GetSandbox`
   call to look for the old name.
 - Two paths can share a hashed name, with a chance of about 1 in 16 million per
-  pair. They then share a sandbox. A spec file with its own `name` avoids that.
+  pair. `fbk start` and `fbk run` then refuse to use the sandbox from the second
+  path, because it mounts the first one as its workspace, instead of sharing it.
+  A spec file with its own `name` gives the second path its own sandbox.
 - Opening the same directory through a symlink gives another sandbox, as it did
   before.
 - `firebrick-cli` depends on `sha2` directly. It was already in the dependency
