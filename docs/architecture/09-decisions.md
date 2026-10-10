@@ -12,3 +12,4 @@
 - [ADR 0010 - Edit VS Code settings with jsonc-parser](decisions/0010-edit-vs-code-settings-with-jsonc-parser.md)
 - [ADR 0011 - Own the firebrick entries in Zed's ssh_connections](decisions/0011-own-the-anvil-entries-in-zeds-ssh-connections.md)
 - [ADR 0012 - Rename Anvil to Firebrick](decisions/0012-rename-anvil-to-firebrick.md)
+- [ADR 0013 - Share the gRPC code through a proto crate](decisions/0013-share-the-grpc-code-through-a-proto-crate.md)

@@ -86,7 +86,7 @@ A change is done when:
    --all-targets --all-features -- -D warnings` and `cargo test --workspace`
    pass.
 2. `cargo test -p firebrick-daemon --features vm-tests` passes when a crate
-   other than `crates/cli`, `proto/`, a `Cargo.toml`, `Cargo.lock` or
+   other than `crates/cli`, `crates/proto`, a `Cargo.toml`, `Cargo.lock` or
    `.cargo/config.toml` changed.
 3. The [Architecture Docs](docs/architecture/01-introduction-and-goals.md)
    describe the new behavior, and a decision record exists in

@@ -1,15 +1,24 @@
 [workspace]
 resolver = "3"
-members = ["crates/cli", "crates/daemon", "crates/spec", "crates/utils"]
+members = [
+    "crates/cli",
+    "crates/daemon",
+    "crates/proto",
+    "crates/spec",
+    "crates/utils",
+]
 
 [workspace.dependencies]
-firebrick-utils = { path = "crates/utils" }
+firebrick-proto = { path = "crates/proto", version = "0.3.0" }
+firebrick-spec = { path = "crates/spec", version = "0.3.0" }
+firebrick-utils = { path = "crates/utils", version = "0.3.0" }
 
 [workspace.package]
 version = "0.3.0"
 authors = ["Willem Meints"]
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/wmeints/anvil"
 
 [workspace.lints.clippy]
 too_many_lines = "warn"           # pedantic, so off by default

@@ -23,11 +23,12 @@ C4Container
 - `fbkd` - Daemon that manages the lifecycle of the sandboxes and sessions,
   provisions the SSH keys and writes the SSH config for the sandboxes.
 
-The CLI and daemon speak gRPC (`proto/daemon.v1.proto`) over the unix socket
-`$XDG_RUNTIME_DIR/fbkd.sock`. The workspace is a Cargo workspace with four
-crates: `firebrick-cli`, `firebrick-daemon`, `firebrick-spec` and
-`firebrick-utils`. The CLI and daemon each generate their gRPC code from the
-proto file in their `build.rs`.
+The CLI and daemon speak gRPC (`crates/proto/proto/daemon.v1.proto`) over the
+unix socket `$XDG_RUNTIME_DIR/fbkd.sock`. The workspace is a Cargo workspace
+with five crates: `firebrick-cli`, `firebrick-daemon`, `firebrick-proto`,
+`firebrick-spec` and `firebrick-utils`. The `firebrick-proto` crate generates
+the gRPC client and server code from the proto file, and the CLI and daemon both
+depend on it.
 
 ## Level 2 - CLI
 
@@ -227,6 +228,9 @@ C4Component
 
 ## Shared crates
 
+- `firebrick-proto` (`crates/proto`) - The gRPC client and server code that
+  `tonic-prost-build` generates from `crates/proto/proto/daemon.v1.proto`. The
+  CLI and daemon re-export it as their `api` module.
 - `firebrick-spec` (`crates/spec`) - Parses `.firebrick.yml` into a
   `SandboxSpec` with a `name`, an optional `image`, an optional `init` and
   optional `resources` (`cpu`, `memory`), rejects unknown fields and reports the

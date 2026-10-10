@@ -1967,18 +1967,16 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "firebrick-proto",
  "firebrick-spec",
  "firebrick-utils",
  "hyper-util",
- "prost",
  "ratatui",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tonic",
- "tonic-prost",
- "tonic-prost-build",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -1991,12 +1989,12 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "firebrick-proto",
  "firebrick-spec",
  "firebrick-utils",
  "hyper-util",
  "jsonc-parser",
  "microsandbox",
- "prost",
  "russh",
  "serde",
  "serde_yaml",
@@ -2004,12 +2002,20 @@ dependencies = [
  "thiserror",
  "tokio",
  "tonic",
- "tonic-prost",
- "tonic-prost-build",
  "tower",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "firebrick-proto"
+version = "0.3.0"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]

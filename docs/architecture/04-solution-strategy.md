@@ -54,8 +54,8 @@
 - [Tokio][TOKIO]: Both executables use tokio as their async runtime.
 
 - [Tonic][TONIC]: The CLI talks to the daemon over gRPC using tonic. The API is
-  defined in `proto/daemon.v1.proto` and compiled at build time with
-  `tonic-prost-build`.
+  defined in `crates/proto/proto/daemon.v1.proto` and compiled at build time
+  with `tonic-prost-build`.
 
 - [Serde YAML][SERDE_YAML]: The `.firebrick.yml` sandbox spec is parsed with
   serde_yaml.
@@ -83,12 +83,16 @@ under `crates/`:
 | ------------------ | --------------- | ---------------------------------------------------------------------------- |
 | `firebrick-cli`    | `crates/cli`    | The `fbk` executable: commands, daemon client, terminal sessions, SSH proxy. |
 | `firebrick-daemon` | `crates/daemon` | The `fbkd` executable: gRPC server, sandbox lifecycle, SSH provisioning.     |
+| `firebrick-proto`  | `crates/proto`  | Generated gRPC client and server code for the daemon API.                    |
 | `firebrick-spec`   | `crates/spec`   | Parses and validates the `.firebrick.yml` sandbox spec.                      |
 | `firebrick-utils`  | `crates/utils`  | Shared helpers, such as the paths of the daemon socket, logs and SSH files.  |
 
 The gRPC contract shared by the CLI and the daemon lives in
-`proto/daemon.v1.proto`. Each executable generates its own client and server
-code from it in its `build.rs`.
+`crates/proto/proto/daemon.v1.proto`. The `firebrick-proto` crate generates the
+client and server code from it in its `build.rs`, and both executables re-export
+it as their `api` module. Keeping the proto file inside a crate lets the crates
+be published to crates.io; see
+[ADR 0013](decisions/0013-share-the-grpc-code-through-a-proto-crate.md).
 
 [MICROSANDBOX]: https://docs.microsandbox.dev/getting-started/introduction
 [CLAP]: https://docs.rs/clap/latest/clap/

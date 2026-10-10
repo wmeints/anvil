@@ -4,6 +4,8 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Shared file locations for the Firebrick CLI and daemon."
 
 [lints]
 workspace = true

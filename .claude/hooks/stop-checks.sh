@@ -45,7 +45,7 @@ run_check format cargo fmt --all --check
 run_check clippy cargo clippy --workspace --all-targets --all-features -- -D warnings
 run_check unit-tests cargo test --workspace
 
-if grep -qE ' (crates/[^/]+/|proto/)' <<<"$(grep -v ' crates/cli/' <<<"$changed")" ||
+if grep -qE ' crates/[^/]+/' <<<"$(grep -vE ' crates/(cli|proto)/' <<<"$changed")" ||
   grep -qE 'Cargo\.(toml|lock)$|\.cargo/config\.toml$' <<<"$changed"; then
   run_check integration-tests cargo test -p firebrick-daemon --features vm-tests
 fi

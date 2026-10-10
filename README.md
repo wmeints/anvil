@@ -449,16 +449,18 @@ The local registry speaks plain HTTP, so allow it in
 { "registries": { "hosts": { "localhost:5000": { "insecure": true } } } }
 ```
 
-The workspace contains four crates:
+The workspace contains five crates:
 
 | Crate              | Folder          | Purpose                                          |
 | ------------------ | --------------- | ------------------------------------------------ |
 | `firebrick-cli`    | `crates/cli`    | The `fbk` CLI.                                   |
 | `firebrick-daemon` | `crates/daemon` | The `fbkd` daemon.                               |
+| `firebrick-proto`  | `crates/proto`  | Generated gRPC code for the daemon API.          |
 | `firebrick-spec`   | `crates/spec`   | Parses and validates `.firebrick.yml`.           |
 | `firebrick-utils`  | `crates/utils`  | Shared paths for the socket, logs and SSH files. |
 
-The gRPC contract lives in [`proto/daemon.v1.proto`](proto/daemon.v1.proto).
+The gRPC contract lives in
+[`crates/proto/proto/daemon.v1.proto`](crates/proto/proto/daemon.v1.proto).
 
 ## Documentation
 
