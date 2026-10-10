@@ -165,19 +165,23 @@ C4Component
   image's `/sbin/init`. When that fails because the image has no init, it
   removes the half-created sandbox and returns `FAILED_PRECONDITION` with a hint
   to set `init: false`. Invalid values are rejected before it creates anything.
-  It starts, stops, gets, lists and removes sandboxes, gives each sandbox a
-  unique SSH host name, regenerates the SSH config, the editor settings and
-  Zed's remote projects after every start and remove and when the daemon starts,
-  and connects to a sandbox by name or host name. `GetSandbox` returns the
-  sandbox's working directory, which is the workspace mount path, as
-  `workspace_path`; it's empty for a sandbox without one. A failed sync only
-  logs a warning. `SetSecret` stores a secret and adds it to the existing
-  sandboxes firebrick created. `ListSecrets` returns the names and allowed
-  hosts, sorted by name, never the values. `RemoveSecret` removes a secret from
-  the existing sandboxes firebrick created and then from the store, keeps it in
-  the store when a sandbox fails so the removal can be retried, and returns
-  `NOT_FOUND` for an unknown name. A lock around the secret store makes sure a
-  sandbox that is being created can't miss a secret that is being set.
+  When it creates or starts a sandbox, it uses the `mise` module to trust the
+  mise config files at the workspace root and run `mise install`, unless the
+  sandbox's `firebrick.mise` label, stored at create time, turns mise off (see
+  [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It starts,
+  stops, gets, lists and removes sandboxes, gives each sandbox a unique SSH host
+  name, regenerates the SSH config, the editor settings and Zed's remote
+  projects after every start and remove and when the daemon starts, and connects
+  to a sandbox by name or host name. `GetSandbox` returns the sandbox's working
+  directory, which is the workspace mount path, as `workspace_path`; it's empty
+  for a sandbox without one. A failed sync only logs a warning. `SetSecret`
+  stores a secret and adds it to the existing sandboxes firebrick created.
+  `ListSecrets` returns the names and allowed hosts, sorted by name, never the
+  values. `RemoveSecret` removes a secret from the existing sandboxes firebrick
+  created and then from the store, keeps it in the store when a sandbox fails so
+  the removal can be retried, and returns `NOT_FOUND` for an unknown name. A
+  lock around the secret store makes sure a sandbox that is being created can't
+  miss a secret that is being set.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and
@@ -241,23 +245,23 @@ C4Component
   `tonic-prost-build` generates from `crates/proto/proto/daemon.v1.proto`. The
   CLI and daemon re-export it as their `api` module.
 - `firebrick-spec` (`crates/spec`) - Parses `.firebrick.yml` into a
-  `SandboxSpec` with a `name`, an optional `image`, an optional `init` and
-  optional `resources` (`cpu`, `memory`) and `volumes` (`docker`, the size of
-  the Docker data disk), rejects unknown fields and reports the line and column
-  of a problem. It owns the defaults
-  (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, 2 vCPUs, `4 GiB`
-  of memory, a `20 GiB` Docker volume in `VolumesSpec::default()`) and
-  `parse_size_mib`, which reads memory and volume sizes in `Mi`/`MiB` or
-  `Gi`/`GiB`. The CLI and daemon both use them.
+  `SandboxSpec` with a `name`, an optional `image`, optional `init` and `mise`
+  flags and optional `resources` (`cpu`, `memory`) and `volumes` (`docker`, the
+  size of the Docker data disk), rejects unknown fields and reports the line and
+  column of a problem. It owns the defaults
+  (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, `mise: true`, 2
+  vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
+  `VolumesSpec::default()`) and `parse_size_mib`, which reads memory and volume
+  sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both use them.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
   (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
   (`$XDG_STATE_HOME/firebrick`), the SSH directory
   (`$XDG_DATA_HOME/firebrick/ssh`) and the secrets file
   (`$XDG_DATA_HOME/firebrick/secrets.yml`).
 
-The image, init and resources apply when a sandbox is created. Changing them in
-`.firebrick.yml` doesn't change an existing sandbox; remove it with `fbk rm` and
-start it again.
+The image, init, mise setting and resources apply when a sandbox is created.
+Changing them in `.firebrick.yml` doesn't change an existing sandbox; remove it
+with `fbk rm` and start it again.
 
 ## Base image
 

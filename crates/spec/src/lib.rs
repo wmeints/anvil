@@ -79,6 +79,9 @@ pub struct SandboxSpec {
     pub image: Option<String>,
     /// Whether the sandbox runs the image's `/sbin/init` as PID 1. Defaults to `true`.
     pub init: Option<bool>,
+    /// Whether fbkd trusts and installs the workspace's mise tools when the sandbox starts.
+    /// Defaults to `true`.
+    pub mise: Option<bool>,
     /// Sizes of the volumes the sandbox gets. Missing fields use their defaults.
     #[serde(default)]
     pub volumes: VolumesSpec,
@@ -201,6 +204,7 @@ pub fn default_spec(name: String) -> SandboxSpec {
         image: Some(DEFAULT_IMAGE.to_string()),
         resources: Some(SandboxResourcesSpec::default()),
         init: Some(true),
+        mise: Some(true),
         volumes: VolumesSpec::default(),
     }
 }
@@ -443,6 +447,7 @@ pub mod tests {
         assert_eq!(spec.image.as_deref(), Some(DEFAULT_IMAGE));
         assert_eq!((resources.cpu, resources.memory.as_str()), (2, "4 GiB"));
         assert_eq!(spec.init, Some(true));
+        assert_eq!(spec.mise, Some(true));
         assert_eq!(spec.volumes, VolumesSpec::default());
     }
 
@@ -473,6 +478,38 @@ pub mod tests {
         assert_eq!(diagnostic.line, 2);
         assert!(
             diagnostic.message.contains("init"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn mise_is_optional() {
+        let file = write_spec("name: dev\n");
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert!(spec.mise.is_none());
+    }
+
+    #[test]
+    fn parses_mise() {
+        let file = write_spec("name: dev\nmise: false\n");
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert_eq!(spec.mise, Some(false));
+    }
+
+    #[test]
+    fn invalid_mise_returns_diagnostic() {
+        let file = write_spec("name: dev\nmise: sometimes\n");
+
+        let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
+
+        assert_eq!((diagnostic.line, diagnostic.column), (2, 7));
+        assert!(
+            diagnostic.message.contains("mise"),
             "{}",
             diagnostic.message
         );

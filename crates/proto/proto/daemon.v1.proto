@@ -25,6 +25,8 @@ message StartSandboxRequest {
   optional bool init = 5;
   // Unset means the default volume sizes.
   optional SandboxVolumes volumes = 6;
+  // Whether fbkd trusts and installs the workspace's mise tools on start. Unset means true.
+  optional bool mise = 7;
 }
 
 message SandboxResources {
