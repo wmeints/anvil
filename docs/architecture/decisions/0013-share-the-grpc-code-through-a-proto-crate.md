@@ -29,5 +29,9 @@ their `api` module. The internal crates are declared in
 - The CLI also compiles the generated server code, which it doesn't use. The
   server code needs no extra dependencies, because tonic's default features
   already include the server transport.
+- Building `firebrick-proto` from crates.io, for example with `cargo install
+  firebrick-cli`, needs `protoc` 3.15 or newer, which supports proto3 optional
+  fields. Older distributions ship an older `protoc`, such as 3.12 on Ubuntu
+  22.04.
 - The internal crates' versions in `[workspace.dependencies]` have to be bumped
   together with `[workspace.package]`.

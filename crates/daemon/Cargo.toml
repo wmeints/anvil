@@ -41,7 +41,6 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_yaml = "0.9.34"
 jsonc-parser = { version = "0.34.0", features = ["cst"] }
 
-
 [dev-dependencies]
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 tower = "0.5.3"

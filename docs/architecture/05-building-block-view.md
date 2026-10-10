@@ -229,8 +229,8 @@ C4Component
 ## Shared crates
 
 - `firebrick-proto` (`crates/proto`) - The gRPC client and server code that
-  `tonic-prost-build` generates from `proto/daemon.v1.proto`. The CLI and daemon
-  re-export it as their `api` module.
+  `tonic-prost-build` generates from `crates/proto/proto/daemon.v1.proto`. The
+  CLI and daemon re-export it as their `api` module.
 - `firebrick-spec` (`crates/spec`) - Parses `.firebrick.yml` into a
   `SandboxSpec` with a `name`, an optional `image`, an optional `init` and
   optional `resources` (`cpu`, `memory`), rejects unknown fields and reports the
