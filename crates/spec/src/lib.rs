@@ -649,10 +649,228 @@ pub fn from_file(path: &Path) -> Result<SandboxSpec, SandboxSpecError> {
 
     let file_content = fs::read_to_string(path).map_err(SandboxSpecError::CantReadInputFile)?;
 
-    let spec = serde_yaml::from_str::<SandboxSpec>(file_content.as_str())
-        .map_err(SandboxSpecError::InvalidSpec)?;
+    from_str(&file_content)
+}
 
-    Ok(spec)
+/// Parses a sandbox spec from the YAML text of a spec file.
+pub fn from_str(text: &str) -> Result<SandboxSpec, SandboxSpecError> {
+    serde_yaml::from_str::<SandboxSpec>(text).map_err(SandboxSpecError::InvalidSpec)
+}
+
+/// Returns the ports with `port` in place of the one with the same host port, or added at the
+/// end when there is none.
+pub fn with_port(ports: &[PortMapping], port: PortMapping) -> Vec<PortMapping> {
+    let mut ports = ports.to_vec();
+
+    match ports.iter_mut().find(|p| p.host == port.host) {
+        Some(existing) => *existing = port,
+        None => ports.push(port),
+    }
+
+    ports
+}
+
+/// Returns the text of a spec file with `port` in its `ports` list, in place of the entry with
+/// the same host port or added at the end. Adds a `ports` key when the spec has none. Only the
+/// `ports` block changes, so comments and formatting elsewhere are kept. Fails when the text
+/// isn't a valid spec.
+pub fn add_port(text: &str, port: PortMapping) -> Result<String, SandboxSpecError> {
+    let ports = from_str(text)?.ports;
+    let mut lines = Lines::of(text);
+
+    match (
+        lines.ports_block(ports.len()),
+        ports_index(&ports, port.host),
+    ) {
+        (None, _) => lines.write_block(&with_port(&ports, port)),
+        (Some(block), Some(index)) => lines.set_entry(block.entries[index], port),
+        (Some(block), None) => lines.insert_entry(&block, port),
+    }
+
+    lines.into_spec()
+}
+
+/// Returns the text of a spec file without the entry of the host port in its `ports` list, or
+/// `None` when the spec doesn't list the host port. Writes `ports: []` when the last entry is
+/// removed. Only the `ports` block changes, so comments and formatting elsewhere are kept.
+/// Fails when the text isn't a valid spec.
+pub fn remove_port(text: &str, host: u16) -> Result<Option<String>, SandboxSpecError> {
+    let ports = from_str(text)?.ports;
+    let Some(index) = ports_index(&ports, host) else {
+        return Ok(None);
+    };
+    let remaining: Vec<PortMapping> = ports.iter().filter(|p| p.host != host).copied().collect();
+    let mut lines = Lines::of(text);
+
+    match lines.ports_block(ports.len()) {
+        Some(block) if !remaining.is_empty() => lines.remove_line(block.entries[index]),
+        _ => lines.write_block(&remaining),
+    }
+
+    lines.into_spec().map(Some)
+}
+
+/// Returns the position of the host port in the ports.
+fn ports_index(ports: &[PortMapping], host: u16) -> Option<usize> {
+    ports.iter().position(|p| p.host == host)
+}
+
+/// Writes a mapping the way Docker Compose does: `3000` when the host and guest port match,
+/// and `"8080:5173"` otherwise.
+fn compose_entry(port: PortMapping) -> String {
+    if port.host == port.guest {
+        port.host.to_string()
+    } else {
+        format!("\"{port}\"")
+    }
+}
+
+/// The top-level `ports` key of a spec file written as a block list, one entry per line.
+struct PortsBlock {
+    /// Line of the `ports:` key.
+    key: usize,
+    /// Line of each entry, in the order of the list.
+    entries: Vec<usize>,
+}
+
+/// The lines of a spec file, each with its line ending.
+struct Lines(Vec<String>);
+
+impl Lines {
+    fn of(text: &str) -> Self {
+        Self(text.split_inclusive('\n').map(str::to_string).collect())
+    }
+
+    /// Finds the `ports` key when it holds a block list with one line per entry, `count` entries
+    /// in all.
+    fn ports_block(&self, count: usize) -> Option<PortsBlock> {
+        let key = self.ports_key()?;
+        let after_key = self.0[key]["ports:".len()..].trim();
+        let values: Vec<usize> = (key + 1..key + 1 + self.block_len(key))
+            .filter(|line| is_value(&self.0[*line]))
+            .collect();
+        let one_entry_per_line = values.len() == count
+            && values
+                .iter()
+                .all(|line| self.0[*line].trim_start().starts_with('-'));
+
+        let block_list = after_key.is_empty() || after_key.starts_with('#');
+        (block_list && one_entry_per_line).then_some(PortsBlock {
+            key,
+            entries: values,
+        })
+    }
+
+    /// Returns the line of the top-level `ports` key.
+    fn ports_key(&self) -> Option<usize> {
+        self.0.iter().position(|line| line.starts_with("ports:"))
+    }
+
+    /// Replaces the `ports` key and its entries with a block list of the ports, keeping the
+    /// comments between them, or appends one when the spec has no `ports` key.
+    fn write_block(&mut self, ports: &[PortMapping]) {
+        let block = ports_block_text(ports);
+
+        let Some(key) = self.ports_key() else {
+            self.ensure_trailing_newline();
+            self.0.push(block);
+            return;
+        };
+
+        let end = key + 1 + self.block_len(key);
+        let comments: Vec<String> = self.0[key + 1..end]
+            .iter()
+            .filter(|line| !is_value(line))
+            .cloned()
+            .collect();
+
+        self.0
+            .splice(key..end, std::iter::once(block).chain(comments))
+            .for_each(drop);
+    }
+
+    /// Returns the number of lines after the key that belong to its value.
+    fn block_len(&self, key: usize) -> usize {
+        self.0[key + 1..]
+            .iter()
+            .take_while(|line| in_block(line))
+            .count()
+    }
+
+    /// Replaces the entry on the line with the port, keeping its indentation.
+    fn set_entry(&mut self, line: usize, port: PortMapping) {
+        self.0[line] = entry_line(indentation(&self.0[line]), port);
+    }
+
+    /// Adds the port after the last entry of the block, with the same indentation.
+    fn insert_entry(&mut self, block: &PortsBlock, port: PortMapping) {
+        let last = block.entries.last().copied().unwrap_or(block.key);
+        let indent = block
+            .entries
+            .last()
+            .map_or("  ", |line| indentation(&self.0[*line]))
+            .to_string();
+
+        self.ensure_newline_at(last);
+        self.0.insert(last + 1, entry_line(&indent, port));
+    }
+
+    fn remove_line(&mut self, line: usize) {
+        self.0.remove(line);
+    }
+
+    fn ensure_trailing_newline(&mut self) {
+        if let Some(last) = self.0.len().checked_sub(1) {
+            self.ensure_newline_at(last);
+        }
+    }
+
+    fn ensure_newline_at(&mut self, line: usize) {
+        if !self.0[line].ends_with('\n') {
+            self.0[line].push('\n');
+        }
+    }
+
+    /// Joins the lines and checks that they are still a valid spec.
+    fn into_spec(self) -> Result<String, SandboxSpecError> {
+        let text = self.0.concat();
+        from_str(&text)?;
+
+        Ok(text)
+    }
+}
+
+/// Whether the line belongs to the value of the top-level key above it: it's indented, an
+/// entry of a list at the key's own indentation, a comment or blank.
+fn in_block(line: &str) -> bool {
+    line.starts_with([' ', '\t', '-', '#']) || line.trim().is_empty()
+}
+
+/// Whether the line holds a value, rather than only a comment or whitespace.
+fn is_value(line: &str) -> bool {
+    let trimmed = line.trim_start();
+
+    !trimmed.is_empty() && !trimmed.starts_with('#')
+}
+
+/// Returns the leading whitespace of the line.
+fn indentation(line: &str) -> &str {
+    &line[..line.len() - line.trim_start().len()]
+}
+
+fn entry_line(indent: &str, port: PortMapping) -> String {
+    format!("{indent}- {}\n", compose_entry(port))
+}
+
+/// Returns a `ports` key with a block list of the ports, or `ports: []` without ports.
+fn ports_block_text(ports: &[PortMapping]) -> String {
+    if ports.is_empty() {
+        return "ports: []\n".to_string();
+    }
+
+    let entries: String = ports.iter().map(|port| entry_line("  ", *port)).collect();
+
+    format!("ports:\n{entries}")
 }
 
 /// Writes the spec to a YAML file, replacing the file's contents. Comments and formatting of an
@@ -1166,6 +1384,145 @@ pub mod tests {
         let spec = from_file(file.path()).unwrap();
 
         assert!(spec.ports.is_empty());
+    }
+
+    fn port(host: u16, guest: u16) -> PortMapping {
+        PortMapping { host, guest }
+    }
+
+    #[test]
+    fn with_port_adds_a_new_host_port_at_the_end() {
+        assert_eq!(
+            with_port(&[port(3000, 3000)], port(8080, 5173)),
+            [port(3000, 3000), port(8080, 5173)]
+        );
+    }
+
+    #[test]
+    fn with_port_replaces_the_guest_port_of_a_listed_host_port() {
+        assert_eq!(
+            with_port(&[port(3000, 3000), port(8080, 5173)], port(3000, 4000)),
+            [port(3000, 4000), port(8080, 5173)]
+        );
+    }
+
+    const SPEC_WITH_PORTS: &str = "# my sandbox\n\
+        name: dev # the name\n\
+        ports:\n\
+        \x20 # web\n\
+        \x20 - 3000\n\
+        \x20 - \"8080:5173\" # vite\n\
+        \n\
+        # resources\n\
+        image: alpine:3.22\n";
+
+    #[test]
+    fn add_port_appends_to_an_existing_list_and_keeps_comments() {
+        let edited = add_port(SPEC_WITH_PORTS, port(9000, 9001)).unwrap();
+
+        assert_eq!(
+            edited,
+            "# my sandbox\n\
+             name: dev # the name\n\
+             ports:\n\
+             \x20 # web\n\
+             \x20 - 3000\n\
+             \x20 - \"8080:5173\" # vite\n\
+             \x20 - \"9000:9001\"\n\
+             \n\
+             # resources\n\
+             image: alpine:3.22\n"
+        );
+    }
+
+    #[test]
+    fn add_port_replaces_the_entry_of_a_listed_host_port() {
+        let edited = add_port(SPEC_WITH_PORTS, port(8080, 8080)).unwrap();
+
+        assert_eq!(
+            edited,
+            "# my sandbox\n\
+             name: dev # the name\n\
+             ports:\n\
+             \x20 # web\n\
+             \x20 - 3000\n\
+             \x20 - 8080\n\
+             \n\
+             # resources\n\
+             image: alpine:3.22\n"
+        );
+    }
+
+    #[test]
+    fn add_port_keeps_the_indentation_of_a_list_at_the_key_level() {
+        let edited = add_port("name: dev\nports:\n- 3000\n", port(4000, 4000)).unwrap();
+
+        assert_eq!(edited, "name: dev\nports:\n- 3000\n- 4000\n");
+    }
+
+    #[test]
+    fn add_port_adds_a_missing_ports_key() {
+        let edited =
+            add_port("name: dev # the name\nimage: alpine:3.22", port(3000, 3000)).unwrap();
+
+        assert_eq!(
+            edited,
+            "name: dev # the name\nimage: alpine:3.22\nports:\n  - 3000\n"
+        );
+    }
+
+    #[test]
+    fn add_port_rewrites_a_flow_list_as_a_block_list() {
+        let edited = add_port(
+            "name: dev\nports: [3000]\nimage: alpine:3.22\n",
+            port(8080, 5173),
+        )
+        .unwrap();
+
+        assert_eq!(
+            edited,
+            "name: dev\nports:\n  - 3000\n  - \"8080:5173\"\nimage: alpine:3.22\n"
+        );
+    }
+
+    #[test]
+    fn add_port_rejects_an_invalid_spec() {
+        let result = add_port("image: alpine:3.22\n", port(3000, 3000));
+
+        assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
+    }
+
+    #[test]
+    fn remove_port_removes_the_entry_and_keeps_comments() {
+        let edited = remove_port(SPEC_WITH_PORTS, 3000).unwrap().unwrap();
+
+        assert_eq!(
+            edited,
+            "# my sandbox\n\
+             name: dev # the name\n\
+             ports:\n\
+             \x20 # web\n\
+             \x20 - \"8080:5173\" # vite\n\
+             \n\
+             # resources\n\
+             image: alpine:3.22\n"
+        );
+    }
+
+    #[test]
+    fn remove_port_writes_an_empty_list_for_the_last_entry() {
+        let edited = remove_port("name: dev\nports:\n  # web\n  - 3000\nimage: x\n", 3000)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(edited, "name: dev\nports: []\n  # web\nimage: x\n");
+        assert!(from_str(&edited).unwrap().ports.is_empty());
+    }
+
+    #[test]
+    fn remove_port_returns_none_for_an_unlisted_host_port() {
+        assert_eq!(remove_port(SPEC_WITH_PORTS, 5173).unwrap(), None);
+        assert_eq!(remove_port("name: dev\n", 3000).unwrap(), None);
     }
 
     #[test]

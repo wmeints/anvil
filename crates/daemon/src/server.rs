@@ -5,17 +5,21 @@ use crate::api::sandbox_management_service_server::{
     SandboxManagementService, SandboxManagementServiceServer,
 };
 use crate::api::{
-    AttachRequest, AttachResponse, AttachStart, GetSandboxRequest, GetSandboxResponse,
-    ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse, Mount,
-    NetworkPolicy, PortForward, PortForwardFailure, PortForwards, RemoveSandboxRequest,
-    RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SandboxResources,
-    SandboxStatus, SandboxSummary, SecretSummary, SetSecretRequest, SetSecretResponse,
-    SshTunnelRequest, SshTunnelResponse, StartSandboxRequest, StartSandboxResponse,
-    StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest, UpdateNetworkResponse,
-    attach_request, ssh_tunnel_request,
+    AttachRequest, AttachResponse, AttachStart, ForwardPortRequest, ForwardPortResponse,
+    GetSandboxRequest, GetSandboxResponse, ImagePullProgress, ListSandboxesRequest,
+    ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse, Mount, NetworkPolicy,
+    PortForward, PortForwardFailure, PortForwards, RemovePortRequest, RemovePortResponse,
+    RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse,
+    SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary, SecretSummary,
+    SetSecretRequest, SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
+    StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, UpdateNetworkRequest,
+    UpdateNetworkResponse, attach_request, ssh_tunnel_request, start_sandbox_response,
 };
 use crate::forward::{ForwardFailure, ForwardReport};
-use crate::sandboxes::{Resources, SandboxError, SandboxInfo, SandboxManager, StartSandbox};
+use crate::pull::PullUpdate;
+use crate::sandboxes::{
+    NewSecret, Resources, SandboxError, SandboxInfo, SandboxManager, StartSandbox,
+};
 use crate::secrets::{Secret, SecretStore};
 use crate::session::{self, SessionCommand};
 use crate::tunnel;
@@ -29,10 +33,12 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{SignalKind, signal};
-use tonic::codegen::tokio_stream::wrappers::UnixListenerStream;
+use tokio::sync::mpsc;
+use tonic::codegen::tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
 use tonic::codegen::tokio_stream::{Stream, StreamExt};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
@@ -52,14 +58,15 @@ pub enum ServerError {
 
 /// gRPC service implementation that manages sandboxes.
 pub struct FirebrickServer {
-    sandboxes: SandboxManager,
+    // Shared with the tasks that start sandboxes, so a start finishes when its client is gone.
+    sandboxes: Arc<SandboxManager>,
 }
 
 impl FirebrickServer {
     /// Creates a server that adds the secrets from `secrets` to sandboxes.
     pub fn new(secrets: SecretStore) -> Self {
         Self {
-            sandboxes: SandboxManager::new(secrets),
+            sandboxes: Arc::new(SandboxManager::new(secrets)),
         }
     }
 }
@@ -119,9 +126,9 @@ fn port_number(port: u32) -> Result<u16, Status> {
         .ok_or_else(|| Status::invalid_argument(format!("invalid port {port}: use 1 to 65535")))
 }
 
-/// Converts the forwards of a sandbox to the start response.
-fn start_response(report: ForwardReport) -> StartSandboxResponse {
-    StartSandboxResponse {
+/// Converts the forwards of a sandbox to the message that ends the start stream.
+fn sandbox_started(report: ForwardReport) -> SandboxStarted {
+    SandboxStarted {
         forwards: report.open.into_iter().map(port_forward).collect(),
         failed_forwards: report
             .failed
@@ -132,6 +139,25 @@ fn start_response(report: ForwardReport) -> StartSandboxResponse {
             })
             .collect(),
     }
+}
+
+/// Wraps a message in the response of the start stream.
+fn start_sandbox_response(message: start_sandbox_response::Message) -> StartSandboxResponse {
+    StartSandboxResponse {
+        message: Some(message),
+    }
+}
+
+/// Converts the progress of an image pull to a response of the start stream.
+fn pull_progress_response(update: PullUpdate) -> StartSandboxResponse {
+    start_sandbox_response(start_sandbox_response::Message::PullProgress(
+        ImagePullProgress {
+            image: update.image,
+            downloaded_bytes: update.downloaded_bytes,
+            total_bytes: update.total_bytes,
+            complete: update.complete,
+        },
+    ))
 }
 
 /// Converts a mapping to its protobuf message.
@@ -186,6 +212,7 @@ impl From<SandboxError> for Status {
             SandboxError::NotFound(message) => Status::not_found(message),
             SandboxError::InvalidArgument(message) => Status::invalid_argument(message),
             SandboxError::FailedPrecondition(message) => Status::failed_precondition(message),
+            SandboxError::Unavailable(message) => Status::unavailable(message),
             SandboxError::Internal(message) => Status::internal(message),
         }
     }
@@ -194,54 +221,84 @@ impl From<SandboxError> for Status {
 /// Stream of responses sent back to the client during an attached session.
 type AttachStream = Pin<Box<dyn Stream<Item = Result<AttachResponse, Status>> + Send>>;
 
+/// Stream of image pull progress that ends with the started sandbox.
+type StartSandboxStream = Pin<Box<dyn Stream<Item = Result<StartSandboxResponse, Status>> + Send>>;
+
 /// Stream of SSH protocol bytes sent back to the client through a tunnel.
 type SshTunnelStream = Pin<Box<dyn Stream<Item = Result<SshTunnelResponse, Status>> + Send>>;
 
 #[async_trait]
 impl SandboxManagementService for FirebrickServer {
+    type StartSandboxStream = StartSandboxStream;
     type AttachStream = AttachStream;
     type SshTunnelStream = SshTunnelStream;
 
-    /// Starts an existing sandbox or creates a new one when it doesn't exist.
+    /// Starts an existing sandbox or creates a new one when it doesn't exist, streaming the
+    /// progress of the image pull. The start runs in its own task, so it finishes even when
+    /// the client disconnects.
     async fn start_sandbox(
         &self,
         request: Request<StartSandboxRequest>,
-    ) -> Result<Response<StartSandboxResponse>, Status> {
+    ) -> Result<Response<Self::StartSandboxStream>, Status> {
         let request_data = request.into_inner();
         let network = network_spec(request_data.network.as_ref())?;
         let ports = request_data.ports.as_ref().map(port_mappings).transpose()?;
         let mounts = mount_specs(&request_data.mounts);
+        let sandboxes = Arc::clone(&self.sandboxes);
+        let (tx, rx) = mpsc::channel(16);
 
-        let report = self
-            .sandboxes
-            .start(
-                start_sandbox_from(&request_data, &network, ports.as_deref(), &mounts),
-                || sandbox_resources(&request_data),
-            )
-            .await?;
+        tokio::spawn(async move {
+            let progress_tx = tx.clone();
+            let result = sandboxes
+                .start(
+                    start_sandbox_from(&request_data, &network, ports.as_deref(), &mounts),
+                    || sandbox_resources(&request_data),
+                    // Progress is best-effort: drop it when the client is slow or gone.
+                    |progress| {
+                        let _ = progress_tx.try_send(Ok(pull_progress_response(progress)));
+                    },
+                )
+                .await;
+            let last = result
+                .map(|report| {
+                    start_sandbox_response(start_sandbox_response::Message::Started(
+                        sandbox_started(report),
+                    ))
+                })
+                .map_err(Status::from);
 
-        Ok(Response::new(start_response(report)))
+            // The client may be gone; the sandbox started anyway.
+            let _ = tx.send(last).await;
+        });
+
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
     /// Replaces the egress rules of an existing sandbox, recreating it from a disk snapshot
-    /// unless it already has them.
+    /// unless it already has them. The update runs in its own task, so a client that
+    /// disconnects can't stop a recreate halfway and leave its snapshot behind.
     async fn update_network(
         &self,
         request: Request<UpdateNetworkRequest>,
     ) -> Result<Response<UpdateNetworkResponse>, Status> {
         let request_data = request.into_inner();
         let network = network_spec(request_data.network.as_ref())?;
+        let sandboxes = Arc::clone(&self.sandboxes);
 
-        let updated = self
-            .sandboxes
-            .update_network(&request_data.name, &network)
-            .await?;
+        let updated =
+            tokio::spawn(
+                async move { sandboxes.update_network(&request_data.name, &network).await },
+            )
+            .await
+            .map_err(|err| {
+                Status::internal(format!("failed to update the network rules: {err}"))
+            })??;
 
         Ok(Response::new(UpdateNetworkResponse { updated }))
     }
 
-    /// Stores a secret and adds it to the existing sandboxes. Running sandboxes pick it up the
-    /// next time they start.
+    /// Stores a secret and adds it to the existing sandboxes in its scope. Running sandboxes
+    /// pick it up the next time they start.
     async fn set_secret(
         &self,
         request: Request<SetSecretRequest>,
@@ -249,17 +306,18 @@ impl SandboxManagementService for FirebrickServer {
         let request_data = request.into_inner();
         let failed_sandboxes = self
             .sandboxes
-            .set_secret(
-                request_data.name,
-                request_data.value,
-                request_data.allowed_hosts,
-            )
+            .set_secret(NewSecret {
+                name: request_data.name,
+                value: request_data.value,
+                allowed_hosts: request_data.allowed_hosts,
+                sandbox: request_data.sandbox,
+            })
             .await?;
 
         Ok(Response::new(SetSecretResponse { failed_sandboxes }))
     }
 
-    /// Lists the stored secrets by name, without their values.
+    /// Lists the stored secrets by name and scope, without their values.
     async fn list_secrets(
         &self,
         _request: Request<ListSecretsRequest>,
@@ -274,16 +332,49 @@ impl SandboxManagementService for FirebrickServer {
         Ok(Response::new(ListSecretsResponse { secrets }))
     }
 
-    /// Removes a stored secret and removes it from the existing sandboxes. Running sandboxes
-    /// keep it until they restart.
+    /// Removes a stored secret and removes it from the existing sandboxes in its scope. Running
+    /// sandboxes keep it until they restart.
     async fn remove_secret(
         &self,
         request: Request<RemoveSecretRequest>,
     ) -> Result<Response<RemoveSecretResponse>, Status> {
-        let name = request.into_inner().name;
-        let failed_sandboxes = self.sandboxes.remove_secret(&name).await?;
+        let request = request.into_inner();
+        let failed_sandboxes = self
+            .sandboxes
+            .remove_secret(&request.name, request.sandbox.as_deref())
+            .await?;
 
         Ok(Response::new(RemoveSecretResponse { failed_sandboxes }))
+    }
+
+    /// Adds a forward to a sandbox's stored ports and opens it when the sandbox runs.
+    async fn forward_port(
+        &self,
+        request: Request<ForwardPortRequest>,
+    ) -> Result<Response<ForwardPortResponse>, Status> {
+        let request = request.into_inner();
+        let port = request
+            .port
+            .ok_or_else(|| Status::invalid_argument("port is required"))?;
+        let port = PortMapping {
+            host: port_number(port.host)?,
+            guest: port_number(port.guest)?,
+        };
+        let running = self.sandboxes.forward_port(&request.name, port).await?;
+
+        Ok(Response::new(ForwardPortResponse { running }))
+    }
+
+    /// Removes a forward from a sandbox's stored ports and closes it when the sandbox runs.
+    async fn remove_port(
+        &self,
+        request: Request<RemovePortRequest>,
+    ) -> Result<Response<RemovePortResponse>, Status> {
+        let request = request.into_inner();
+        let host = port_number(request.host)?;
+        let running = self.sandboxes.remove_port(&request.name, host).await?;
+
+        Ok(Response::new(RemovePortResponse { running }))
     }
 
     /// Stops a running sandbox.
@@ -407,6 +498,7 @@ fn secret_summary(secret: &Secret) -> SecretSummary {
     SecretSummary {
         name: secret.name().to_string(),
         allowed_hosts: secret.allowed_hosts().to_vec(),
+        sandbox: secret.sandbox().map(str::to_string),
     }
 }
 
@@ -446,15 +538,21 @@ fn parse_size_mib(size: &str) -> Result<u32, SandboxError> {
         .map_err(|err| SandboxError::InvalidArgument(err.to_string()))
 }
 
-/// Serves the gRPC API on the socket until SIGINT or SIGTERM is received.
+/// Reopens the port forwards of the sandboxes that are running, then serves the gRPC API on
+/// the socket until SIGINT or SIGTERM is received. The caller makes sure no other daemon serves
+/// on the socket, so it doesn't take that daemon's host ports.
 pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerError> {
-    serve(socket_path, secrets, shutdown_signal()).await
+    let service = FirebrickServer::new(secrets);
+    service.sandboxes.restore_forwards().await;
+
+    serve(socket_path, service, shutdown_signal()).await
 }
 
-/// Serves the gRPC API on the socket until `shutdown` completes, then removes the socket.
+/// Serves the gRPC API on the socket with `service` until `shutdown` completes, then removes
+/// the socket.
 pub async fn serve(
     socket_path: &Path,
-    secrets: SecretStore,
+    service: FirebrickServer,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), ServerError> {
     if socket_path.exists() {
@@ -467,8 +565,6 @@ pub async fn serve(
     })?;
     let incoming = UnixListenerStream::new(listener)
         .filter(move |conn| conn.as_ref().map_or(true, |s| accept(s, daemon_uid)));
-    let service = FirebrickServer::new(secrets);
-    service.sandboxes.restore_forwards().await;
 
     // Dropping the service when the server stops closes the forwards.
     Server::builder()
@@ -581,7 +677,7 @@ mod tests {
         path: PathBuf,
         stop: tokio::sync::oneshot::Receiver<()>,
     ) -> Result<(), ServerError> {
-        serve(&path, unused_store(), async {
+        serve(&path, FirebrickServer::new(unused_store()), async {
             let _ = stop.await;
         })
         .await
@@ -728,7 +824,31 @@ mod tests {
     }
 
     #[test]
-    fn start_response_lists_open_and_failed_forwards() {
+    fn pull_progress_response_keeps_the_progress() {
+        let update = PullUpdate {
+            image: "alpine:3.22".to_string(),
+            downloaded_bytes: 100,
+            total_bytes: None,
+            complete: true,
+        };
+
+        assert_eq!(
+            pull_progress_response(update),
+            StartSandboxResponse {
+                message: Some(start_sandbox_response::Message::PullProgress(
+                    ImagePullProgress {
+                        image: "alpine:3.22".to_string(),
+                        downloaded_bytes: 100,
+                        total_bytes: None,
+                        complete: true,
+                    }
+                )),
+            }
+        );
+    }
+
+    #[test]
+    fn sandbox_started_lists_open_and_failed_forwards() {
         let mapping = |host, guest| PortMapping { host, guest };
         let report = ForwardReport {
             open: vec![mapping(8080, 5173)],
@@ -738,7 +858,7 @@ mod tests {
             }],
         };
 
-        let response = start_response(report);
+        let response = sandbox_started(report);
 
         assert_eq!(response.forwards, [port_forward(mapping(8080, 5173))]);
         assert_eq!(
@@ -848,6 +968,10 @@ mod tests {
             (
                 SandboxError::FailedPrecondition("c".into()),
                 tonic::Code::FailedPrecondition,
+            ),
+            (
+                SandboxError::Unavailable("e".into()),
+                tonic::Code::Unavailable,
             ),
             (SandboxError::Internal("d".into()), tonic::Code::Internal),
         ];
@@ -1025,6 +1149,7 @@ mod tests {
                 name: "NOT-A-NAME".to_string(),
                 value: "value".to_string(),
                 allowed_hosts: vec![],
+                sandbox: None,
             }))
             .await
             .expect_err("an invalid name should be rejected");
@@ -1050,9 +1175,31 @@ mod tests {
             .map(|name| SecretSummary {
                 name: name.to_string(),
                 allowed_hosts: vec!["example.com".to_string()],
+                sandbox: None,
             })
             .into();
         assert_eq!(secrets, expected);
+    }
+
+    #[tokio::test]
+    async fn list_secrets_returns_the_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_secrets(&dir.path().join("secrets.yml"), &["A"]);
+        let secret = Secret::new("A".into(), "value".into(), vec!["example.com".into()]).unwrap();
+        store.set(secret.in_scope(Some("dev".into()))).unwrap();
+        let server = FirebrickServer::new(store);
+
+        let scopes: Vec<Option<String>> = server
+            .list_secrets(Request::new(ListSecretsRequest {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .secrets
+            .into_iter()
+            .map(|secret| secret.sandbox)
+            .collect();
+
+        assert_eq!(scopes, [None, Some("dev".to_string())]);
     }
 
     #[tokio::test]
@@ -1062,6 +1209,7 @@ mod tests {
         let status = server
             .remove_secret(Request::new(RemoveSecretRequest {
                 name: "NOT-A-NAME".to_string(),
+                sandbox: None,
             }))
             .await
             .expect_err("an invalid name should be rejected");
@@ -1081,6 +1229,7 @@ mod tests {
         let status = server
             .remove_secret(Request::new(RemoveSecretRequest {
                 name: "B".to_string(),
+                sandbox: None,
             }))
             .await
             .expect_err("removing an unknown secret should fail");

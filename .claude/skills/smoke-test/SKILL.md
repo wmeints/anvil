@@ -6,21 +6,22 @@ description: "Run the fbk CLI and fbkd daemon end to end in an isolated environm
 # Smoke test
 
 Try `fbk` and `fbkd` for real in a throwaway environment. The user usually has
-their own `fbkd` running, sandboxes in `~/.microsandbox`, and a firebrick
-`Include` in `~/.ssh/config`. A smoke test must never touch any of them.
+their own `fbkd` running, sandboxes in `~/.local/state/firebrick/msb` (and older
+ones or their own `msb` in `~/.microsandbox`), and a firebrick `Include` in
+`~/.ssh/config`. A smoke test must never touch any of them.
 
 `smoke-env.sh` next to this file creates the environment and cleans it up. It
 puts everything under a short `/tmp/firebrick-smoke.XXXX` directory, because
 unix socket paths are limited to 108 bytes and the scratchpad path is too long:
 
-| Variable          | Isolates                                                |
-| ----------------- | ------------------------------------------------------- |
-| `XDG_RUNTIME_DIR` | the daemon socket, so the CLI starts its own `fbkd`     |
-| `MSB_HOME`        | microsandbox's runtime, database, images and sandboxes  |
-| `XDG_DATA_HOME`   | SSH keys, the generated SSH config and `secrets.yml`    |
-| `XDG_STATE_HOME`  | the daemon log                                          |
-| `XDG_CONFIG_HOME` | the VS Code-family and Zed settings fbkd syncs on Linux |
-| `HOME`            | the `Include` line fbkd adds to `~/.ssh/config`         |
+| Variable          | Isolates                                                     |
+| ----------------- | ------------------------------------------------------------ |
+| `XDG_RUNTIME_DIR` | the daemon socket, so the CLI starts its own `fbkd`          |
+| `MSB_HOME`        | microsandbox's runtime, database, images and sandboxes       |
+| `XDG_DATA_HOME`   | SSH keys, the generated SSH config and `secrets.yml`         |
+| `XDG_STATE_HOME`  | the daemon log, and the microsandbox home without `MSB_HOME` |
+| `XDG_CONFIG_HOME` | the VS Code-family and Zed settings fbkd syncs on Linux      |
+| `HOME`            | the `Include` line fbkd adds to `~/.ssh/config`              |
 
 ## Steps
 
@@ -141,7 +142,8 @@ firebrick-base:smoke`.
 
 - **Never touch the user's environment.** Don't stop or kill an `fbkd` you
   didn't start, don't run `fbk` or `msb` without sourcing the env file, and
-  don't change `~/.microsandbox`, `~/.local/share/firebrick` or `~/.ssh/config`.
+  don't change `~/.local/state/firebrick` (the user's sandboxes and logs),
+  `~/.microsandbox`, `~/.local/share/firebrick` or `~/.ssh/config`.
 - **Never kill daemons by name.** `pkill fbkd` also stops the user's daemon.
   Stop only the process that listens on the environment's socket.
 - **Don't leave sandboxes behind.** Run step 5 before you finish the turn.
