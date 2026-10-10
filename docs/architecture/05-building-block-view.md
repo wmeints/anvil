@@ -345,10 +345,13 @@ C4Component
   [ADR 0030](decisions/0030-forward-oauth-callback-ports-when-opening-a-url.md)):
   `CallbackForwards::ensure(port)` forwards `localhost:<port>` to the same port
   in the sandbox through the same listeners and `Connector`, or reuses the open
-  forward of the port and resets its idle timer. A forward closes after 10
-  minutes without open or new connections, and dropping `CallbackForwards`
-  closes them all. A host port it can't listen on is logged as `couldn't forward
-  localhost:<port> for sandbox <name>: <error>` and fails `ensure`.
+  forward of the port and resets its idle timer. A port that the sandbox's
+  configured `Forwards` already map to the same guest port needs no forward of
+  its own; `SandboxManager` shares its `Forwards` with `Relays` for this check.
+  A forward closes after 10 minutes without open or new connections, and
+  dropping `CallbackForwards` closes them all. A host port it can't listen on is
+  logged as `couldn't forward localhost:<port> for sandbox <name>: <error>` and
+  fails `ensure`.
 - `open` - Opens http and https URLs from a sandbox in the browser on the host
   (see
   [ADR 0026](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)
@@ -388,8 +391,9 @@ C4Component
   explicit, non-zero port, and the same for the port of a percent-decoded `http`
   `redirect_uri` query parameter. Such a loopback URL skips the local host and
   egress checks, because it reaches the sandbox, and opens only when its forward
-  is open; a busy `redirect_uri` port is logged and the URL still opens. The
-  forwards close when the relay ends, when `Relays::forget` stops the relay
+  is open; a busy `redirect_uri` port is logged as `opening a URL from sandbox
+  <name> without forwarding its callback port <port>` and the URL still opens.
+  The forwards close when the relay ends, when `Relays::forget` stops the relay
   task, or after they're idle.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never

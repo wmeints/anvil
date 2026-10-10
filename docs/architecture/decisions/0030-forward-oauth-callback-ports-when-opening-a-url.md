@@ -39,10 +39,11 @@ module:
 - The listener is bound before the browser opens, so the callback can't arrive
   first.
 - Each relay owns its callback forwards and their SSH session, separate from the
-  configured forwards, so reconciling `.firebrick.yml` doesn't close them. They
-  close when the relay ends or is stopped because the sandbox stopped, when
-  `fbkd` exits, and after 10 minutes without open or new connections or new URLs
-  for the port.
+  configured forwards, so reconciling `.firebrick.yml` doesn't close them. A
+  port that the configured forwards already map to the same guest port uses that
+  forward instead. They close when the relay ends or is stopped because the
+  sandbox stopped, when `fbkd` exits, and after 10 minutes without open or new
+  connections or new URLs for the port.
 - A URL whose own host is loopback reaches the sandbox, so it skips the local
   host and egress checks, but it only opens when its forward is open: otherwise
   the browser would reach a service of the host. A busy `redirect_uri` port is
@@ -58,6 +59,8 @@ module:
   with configured forwards. The rate limit of 5 URLs per 10 seconds bounds how
   fast it can claim ports.
 - When the callback port is busy on the host, the browser sends the callback to
-  the host's own service on that port.
+  the host's own service on that port, and `fbkd` logs a warning that says so.
+- While a callback forward holds a host port, adding that port to the sandbox's
+  configured ports fails with the port in use until the callback forward closes.
 - Callback URIs in other parameters, such as `redirect_url`, and guest servers
   that listen only on `::1` aren't forwarded.

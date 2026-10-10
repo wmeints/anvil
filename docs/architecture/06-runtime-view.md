@@ -871,7 +871,9 @@ sequenceDiagram
         D->>D: Log a warning with the reason, without the URL
     else Allowed
         opt Loopback host or loopback redirect_uri with a port
-            alt The relay forwards the port already
+            alt The sandbox's configured ports forward port:port
+                D->>D: Use the configured forward
+            else The relay forwards the port already
                 D->>D: Reuse the forward, reset its idle timer
             else
                 D->>D: Listen on 127.0.0.1:port and [::1]:port
@@ -910,16 +912,20 @@ agent@sandbox:~$ gh auth login --web    # callback server on localhost:43117
 ```
 
 A second URL for a port the sandbox forwards already reuses the forward and
-resets its idle timer. A forward closes after 10 minutes without open or new
-connections, when the sandbox stops or is removed, which ends its relay, and
-when `fbkd` exits. When the host port is in use by another process, another
-sandbox's forward, or needs privileges, `fbkd` logs `couldn't forward
-localhost:<port> for sandbox <name>: <error>` and still opens a URL with that
-`redirect_uri`, but not a URL whose own host is that port, because the browser
-would reach the host's own service. A port of `0`, a missing port, or a
-`redirect_uri` that doesn't parse forwards nothing. A connection that arrives
-while nothing listens on the guest port is closed and logged at `debug`; the
-listener stays up.
+resets its idle timer. A port that the sandbox's `.firebrick.yml` already
+forwards to the same guest port, such as `3000:3000`, uses that forward instead.
+While a callback forward holds a host port, adding that port to the sandbox's
+ports fails with the port in use until the callback forward closes. A forward
+closes after 10 minutes without open or new connections, when the sandbox stops
+or is removed, which ends its relay, and when `fbkd` exits. When the host port
+is in use by another process, another sandbox's forward, or needs privileges,
+`fbkd` logs `couldn't forward localhost:<port> for sandbox <name>: <error>` and
+still opens a URL with that `redirect_uri`, with a warning that the callback
+goes to whatever listens on the host's port, but not a URL whose own host is
+that port, because the browser would reach the host's own service. A port of
+`0`, a missing port, or a `redirect_uri` that doesn't parse forwards nothing. A
+connection that arrives while nothing listens on the guest port is closed and
+logged at `debug`; the listener stays up.
 
 Apart from these forwarded loopback ports, `fbkd` doesn't open URLs whose host
 is `localhost` or an address of the host's local network, so a sandbox can't

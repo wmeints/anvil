@@ -13,7 +13,7 @@
 //! the sandbox with [`CallbackForwards`], so the browser reaches the sandbox instead of the
 //! host. A URL whose own host is loopback only opens when that forward is open.
 
-use crate::forward::{CALLBACK_IDLE_TIMEOUT, CallbackForwards, SshConnector};
+use crate::forward::{CALLBACK_IDLE_TIMEOUT, CallbackForwards, Forwards, SshConnector};
 use crate::network;
 use firebrick_spec::NetworkSpec;
 use microsandbox::Sandbox;
@@ -338,12 +338,13 @@ impl RelayOutput {
             return log_rejection(sandbox, Rejection::LocalHost);
         }
 
-        // The forwards log their own failures; the login can still complete another way.
-        if let Some(port) = target
-            .callback_port
-            .filter(|&port| Some(port) != target.own_port)
+        if let Some(port) = target.callback_port
+            && self.forwards.ensure(port).await.is_err()
         {
-            let _ = self.forwards.ensure(port).await;
+            tracing::warn!(
+                "opening a URL from sandbox {sandbox} without forwarding its callback port {port}; \
+                 the browser sends the callback to whatever listens on localhost:{port} on the host"
+            );
         }
 
         self.open(&target.url);
@@ -394,6 +395,7 @@ fn log_rejection(sandbox: &str, rejection: Rejection) {
 /// The relays of the running sandboxes, at most one per sandbox.
 pub struct Relays {
     opener: Arc<dyn Opener>,
+    configured: Arc<Forwards>,
     running: Arc<Mutex<HashMap<String, Running>>>,
     next_generation: AtomicU64,
 }
@@ -407,10 +409,12 @@ struct Running {
 }
 
 impl Relays {
-    /// Creates a registry whose relays open URLs with `opener`.
-    pub fn new(opener: Arc<dyn Opener>) -> Self {
+    /// Creates a registry whose relays open URLs with `opener`. Their callback forwards reuse
+    /// the sandboxes' forwards in `configured` of the same ports.
+    pub fn new(opener: Arc<dyn Opener>, configured: Arc<Forwards>) -> Self {
         Self {
             opener,
+            configured,
             running: Arc::default(),
             next_generation: AtomicU64::new(0),
         }
@@ -449,7 +453,8 @@ impl Relays {
         };
         let network = network::rules_of(&sb.config().spec);
         let connector = Arc::new(SshConnector::default());
-        let forwards = CallbackForwards::new(name, connector, CALLBACK_IDLE_TIMEOUT);
+        let configured = Arc::clone(&self.configured);
+        let forwards = CallbackForwards::new(name, connector, configured, CALLBACK_IDLE_TIMEOUT);
         let output = RelayOutput::new(name, network, self.opener.clone(), forwards);
         let task = tokio::spawn(run_relay(handle, entry, output));
 
@@ -646,9 +651,18 @@ mod tests {
 
     /// Returns callback forwards that connect to `localhost:<guest>` on the host.
     fn forwards_to(guest: u16) -> CallbackForwards {
+        forwards_with(
+            guest,
+            Arc::new(Forwards::new(LocalConnector { port: guest })),
+        )
+    }
+
+    /// Returns callback forwards that connect to `localhost:<guest>` on the host and reuse the
+    /// `configured` forwards of sandbox `sb`.
+    fn forwards_with(guest: u16, configured: Arc<Forwards>) -> CallbackForwards {
         let connector = Arc::new(LocalConnector { port: guest });
 
-        CallbackForwards::new("sb", connector, CALLBACK_IDLE_TIMEOUT)
+        CallbackForwards::new("sb", connector, configured, CALLBACK_IDLE_TIMEOUT)
     }
 
     /// Returns a handler for the relay of sandbox `sb` with the rules, and its opener. Its
@@ -878,7 +892,10 @@ mod tests {
     fn check_url_lets_loopback_urls_past_enforced_network_rules() {
         let network = enforced(&["github.com"]);
 
-        assert!(check("http://localhost:8080/", &network).is_ok());
+        let target = check_url(b"http://localhost:8080/", &network).unwrap();
+
+        assert_eq!(target.url.as_str(), "http://localhost:8080/");
+        assert_eq!(target.own_port, Some(8080));
         assert_eq!(
             check(
                 "https://example.com/?redirect_uri=http://localhost:8080/",
@@ -1062,6 +1079,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handle_line_opens_a_loopback_url_on_a_configured_forward_of_the_port() {
+        let (guest, port) = (pong_server().await, free_port().await);
+        let configured = Arc::new(Forwards::new(LocalConnector { port: guest }));
+        configured
+            .apply(
+                "sb",
+                &[firebrick_spec::PortMapping {
+                    host: port,
+                    guest: port,
+                }],
+            )
+            .await;
+        let opener = Arc::new(RecordingOpener::default());
+        let forwards = forwards_with(guest, configured);
+        let mut output = RelayOutput::new("sb", NetworkSpec::default(), opener.clone(), forwards);
+        let url = format!("http://localhost:{port}/");
+
+        output.handle_line(url.as_bytes(), Instant::now()).await;
+
+        assert_eq!(opener.urls(), [url]);
+        assert_eq!(read_from(port).await, "pong");
+    }
+
+    #[tokio::test]
     async fn handle_line_ignores_a_loopback_url_whose_port_is_busy() {
         let busy = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let port = busy.local_addr().unwrap().port();
@@ -1109,7 +1150,8 @@ mod tests {
 
     #[test]
     fn forget_lets_a_new_relay_claim_the_sandbox() {
-        let relays = Relays::new(Arc::new(HostOpener));
+        let configured = Arc::new(Forwards::new(LocalConnector { port: 1 }));
+        let relays = Relays::new(Arc::new(HostOpener), configured);
 
         let first = relays.claim("sb").unwrap();
         assert_eq!(relays.claim("sb"), None);
