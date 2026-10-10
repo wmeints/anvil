@@ -12,6 +12,14 @@ these errors leaves out their source, which is what's needed to debug an
 internal error. The log is written to the console and to `fbkd.log` in the
 daemon's log directory.
 
+The `vm-tests` in `crates/daemon/tests/grpc.rs` run the daemon in-process and
+install a `tracing` subscriber that writes through libtest's output capture, at
+level `info` unless `RUST_LOG` says otherwise. A failing test prints the
+daemon's log lines, including the original error behind a generic status, next
+to its panic message; a passing test prints nothing extra. The tests use the
+current-thread runtime, so the daemon logs on the test's own thread and its
+lines end up under the right test.
+
 A failure the user can cause and fix, such as connecting to a stopped sandbox,
 is logged as a warning instead, so it doesn't hide real internal errors.
 
