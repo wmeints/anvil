@@ -2644,62 +2644,62 @@ async fn relay_count(client: &mut SandboxManagementServiceClient<Channel>, sandb
 
 #[tokio::test]
 async fn opens_urls_from_the_sandbox_on_the_host() {
-    const NAME: &str = "fbk-it-open-url";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("open-url");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("open-url").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
-    write_to_relay(&mut client, NAME, "file:///etc/passwd").await;
-    write_to_relay(&mut client, NAME, "https://example.com").await;
+    write_to_relay(&mut client, name, "file:///etc/passwd").await;
+    write_to_relay(&mut client, name, "https://example.com").await;
     wait_for_opened(&daemon, &["https://example.com/"]).await;
 
     // Starting the sandbox again and attaching more sessions reuses the relay.
-    start_running_sandbox(&mut client, NAME).await;
-    run_command(&mut client, NAME, "true", &[]).await;
-    assert_eq!(relay_count(&mut client, NAME).await, 1);
+    start_running_sandbox(&mut client, name).await;
+    run_command(&mut client, name, "true", &[]).await;
+    assert_eq!(relay_count(&mut client, name).await, 1);
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn url_relay_comes_back_after_restart() {
-    const NAME: &str = "fbk-it-open-url-restart";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("open-url-restart");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("open-url-restart").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
-    restart_sandbox(&mut client, NAME).await;
-    write_to_relay(&mut client, NAME, "https://example.com/after-restart").await;
+    restart_sandbox(&mut client, name).await;
+    write_to_relay(&mut client, name, "https://example.com/after-restart").await;
     wait_for_opened(&daemon, &["https://example.com/after-restart"]).await;
-    assert_eq!(relay_count(&mut client, NAME).await, 1);
+    assert_eq!(relay_count(&mut client, name).await, 1);
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn url_relay_follows_updated_network_rules() {
-    const NAME: &str = "fbk-it-open-url-network";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("open-url-network");
+    remove_sandbox_and_snapshots(name).await;
 
     let daemon = TestDaemon::start("open-url-network").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
-    let updated = update_network(&mut client, NAME, allow_policy(true, &["example.org"])).await;
-    write_to_relay(&mut client, NAME, "https://example.com/not-allowed").await;
-    write_to_relay(&mut client, NAME, "http://localhost:3000/").await;
-    write_to_relay(&mut client, NAME, "https://example.org/allowed").await;
+    let updated = update_network(&mut client, name, allow_policy(true, &["example.org"])).await;
+    write_to_relay(&mut client, name, "https://example.com/not-allowed").await;
+    write_to_relay(&mut client, name, "http://localhost:3000/").await;
+    write_to_relay(&mut client, name, "https://example.org/allowed").await;
     wait_for_opened(&daemon, &["https://example.org/allowed"]).await;
-    let relays = relay_count(&mut client, NAME).await;
+    let relays = relay_count(&mut client, name).await;
 
     daemon.stop().await;
-    remove_sandbox_and_snapshots(NAME).await;
+    remove_sandbox_and_snapshots(name).await;
 
     assert!(matches!(updated, Ok(true)), "{updated:?}");
     assert_eq!(relays, 1);
