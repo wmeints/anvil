@@ -36,7 +36,12 @@ daemon mounts the working directory read/write in the sandbox at
 - On Linux, glibc 2.35 or newer for the release binaries.
 
 Windows isn't supported. `fbkd` embeds the microsandbox runtime and installs it
-in `~/.microsandbox` on first start.
+in its own microsandbox home, `~/.local/state/firebrick/microsandbox` (or
+`$XDG_STATE_HOME/firebrick/microsandbox`), on first start. It never touches
+`~/.microsandbox`, so a separately installed `msb` keeps its own runtime and
+database. Set `MSB_HOME` to use another directory. Sandboxes created by
+firebrick 0.3.0 and earlier stay in `~/.microsandbox`; remove them with `msb` if
+you no longer need them.
 
 ## Installation
 
@@ -130,8 +135,9 @@ fbk ls
 `fbk --version` prints the installed version, for example `fbk 0.3.0`.
 
 `fbk ls` starts `fbkd`, which installs the microsandbox runtime in
-`~/.microsandbox`, and lists your sandboxes (none yet). An error here means
-`fbkd` couldn't start, for example because it isn't next to `fbk`.
+`~/.local/state/firebrick/microsandbox`, and lists your sandboxes (none yet). An
+error here means `fbkd` couldn't start, for example because it isn't next to
+`fbk`.
 
 ### macOS: remove the quarantine flag
 
@@ -604,7 +610,7 @@ instead.
 
 Cargo commands in this repository use `/tmp/firebrick-msb` as the microsandbox
 home (`MSB_HOME`, set in `.cargo/config.toml`), so the integration tests don't
-share a runtime or database with your own `~/.microsandbox`.
+share a runtime or database with an installed `fbkd` or `msb`.
 
 The default sandbox image is the `firebrick-base` image of the same release, so
 it doesn't exist for a version that hasn't been released yet. To run a
@@ -617,8 +623,9 @@ docker build -t localhost:5000/firebrick-base:dev .
 docker push localhost:5000/firebrick-base:dev
 ```
 
-The local registry speaks plain HTTP, so allow it in
-`~/.microsandbox/config.json` before `fbkd` starts:
+The local registry speaks plain HTTP, so allow it in `config.json` in the
+microsandbox home (`$MSB_HOME`, or `~/.local/state/firebrick/microsandbox`)
+before `fbkd` starts:
 
 ```json
 { "registries": { "hosts": { "localhost:5000": { "insecure": true } } } }
@@ -626,13 +633,13 @@ The local registry speaks plain HTTP, so allow it in
 
 The workspace contains five crates:
 
-| Crate              | Folder          | Purpose                                                                  |
-| ------------------ | --------------- | ------------------------------------------------------------------------ |
-| `firebrick-cli`    | `crates/cli`    | The `fbk` CLI.                                                           |
-| `firebrick-daemon` | `crates/daemon` | The `fbkd` daemon.                                                       |
-| `firebrick-proto`  | `crates/proto`  | Generated gRPC code for the daemon API.                                  |
-| `firebrick-spec`   | `crates/spec`   | Parses and validates `.firebrick.yml`.                                   |
-| `firebrick-utils`  | `crates/utils`  | Shared paths for the socket, logs and SSH files, and the name sanitizer. |
+| Crate              | Folder          | Purpose                                                                                     |
+| ------------------ | --------------- | ------------------------------------------------------------------------------------------- |
+| `firebrick-cli`    | `crates/cli`    | The `fbk` CLI.                                                                              |
+| `firebrick-daemon` | `crates/daemon` | The `fbkd` daemon.                                                                          |
+| `firebrick-proto`  | `crates/proto`  | Generated gRPC code for the daemon API.                                                     |
+| `firebrick-spec`   | `crates/spec`   | Parses and validates `.firebrick.yml`.                                                      |
+| `firebrick-utils`  | `crates/utils`  | Shared paths for the socket, logs, SSH files and microsandbox home, and the name sanitizer. |
 
 The gRPC contract lives in
 [`crates/proto/proto/daemon.v1.proto`](crates/proto/proto/daemon.v1.proto).

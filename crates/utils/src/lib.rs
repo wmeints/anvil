@@ -1,5 +1,6 @@
 //! File locations and naming rules shared by the Firebrick CLI and daemon.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// Name used when a path's leaf has no ASCII letters or digits left after sanitizing.
@@ -15,11 +16,33 @@ pub fn socket_path() -> PathBuf {
 
 /// Returns the directory the daemon writes its log files to.
 pub fn log_dir() -> PathBuf {
-    std::env::var_os("XDG_STATE_HOME")
+    state_dir(env_var)
+}
+
+/// Returns the microsandbox home the daemon uses when `MSB_HOME` isn't set, so it never shares
+/// the runtime, database and sandboxes of a separately installed `msb` in `~/.microsandbox`.
+pub fn msb_home() -> PathBuf {
+    msb_home_from(env_var)
+}
+
+/// Returns the firebrick microsandbox home under the state directory that `var` describes.
+fn msb_home_from(var: impl Fn(&str) -> Option<OsString>) -> PathBuf {
+    state_dir(var).join("microsandbox")
+}
+
+/// Returns the directory holding the daemon's state, looking up environment variables with
+/// `var`: `$XDG_STATE_HOME/firebrick`, falling back to `$HOME/.local/state/firebrick`.
+fn state_dir(var: impl Fn(&str) -> Option<OsString>) -> PathBuf {
+    var("XDG_STATE_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .or_else(|| var("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .unwrap_or_else(std::env::temp_dir)
         .join("firebrick")
+}
+
+/// Looks up an environment variable of the current process.
+fn env_var(key: &str) -> Option<OsString> {
+    std::env::var_os(key)
 }
 
 /// Returns the directory holding the SSH keys and config the daemon provisions for sandboxes.
@@ -69,6 +92,46 @@ pub fn sanitize_label(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Returns a lookup for an environment that holds only `vars`.
+    fn env<'a>(vars: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+        move |key| {
+            vars.iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| OsString::from(value))
+        }
+    }
+
+    #[test]
+    fn msb_home_is_under_xdg_state_home() {
+        let var = env(&[("XDG_STATE_HOME", "/state"), ("HOME", "/home/user")]);
+        assert_eq!(
+            msb_home_from(var),
+            PathBuf::from("/state/firebrick/microsandbox")
+        );
+    }
+
+    #[test]
+    fn msb_home_falls_back_to_local_state_in_home() {
+        let var = env(&[("HOME", "/home/user")]);
+        assert_eq!(
+            msb_home_from(var),
+            PathBuf::from("/home/user/.local/state/firebrick/microsandbox")
+        );
+    }
+
+    #[test]
+    fn msb_home_falls_back_to_temp_dir_without_home() {
+        assert_eq!(
+            msb_home_from(env(&[])),
+            std::env::temp_dir().join("firebrick/microsandbox")
+        );
+    }
+
+    #[test]
+    fn msb_home_is_next_to_the_logs() {
+        assert_eq!(msb_home(), log_dir().join("microsandbox"));
+    }
 
     fn label(path: &str) -> String {
         sanitize_label(Path::new(path))

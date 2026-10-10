@@ -38,9 +38,19 @@ startup it extracts that runtime when none is installed, and replaces an
 installed runtime with another version. See
 [ADR 0002](decisions/0002-embed-the-microsandbox-runtime-in-anvild.md).
 
-- The runtime lives in `~/.microsandbox`, or in the directory that the
-  `MSB_HOME` environment variable points to. `MSB_PATH` and `MSB_LIBKRUNFW_PATH`
-  point `fbkd` at a runtime elsewhere.
+- The runtime, microsandbox's database (`db/msb.db`), its `config.json`, the
+  images and the sandboxes live in firebrick's own microsandbox home,
+  `$XDG_STATE_HOME/firebrick/microsandbox` (by default
+  `~/.local/state/firebrick/microsandbox`). `fbkd` never reads or writes
+  `~/.microsandbox`, so a separately installed `msb` keeps its own runtime and
+  database. See
+  [ADR 0022](decisions/0022-keep-a-firebrick-microsandbox-home-in-the-xdg-state-directory.md).
+- A non-empty `MSB_HOME` environment variable overrides the home. The cargo
+  commands in the repository and the `smoke-test` skill use it to isolate
+  development builds. `MSB_PATH` and `MSB_LIBKRUNFW_PATH` point `fbkd` at a
+  runtime elsewhere.
+- Sandboxes that an earlier `fbkd` created in `~/.microsandbox` stay there.
+  `fbkd` doesn't move or list them; remove them with `msb` if you want to.
 - `fbkd` reads the version from the `msb` binary without running it. A runtime
   without version information predates it and counts as outdated, and so does an
   `msb` in the microsandbox home whose version can't be read.
