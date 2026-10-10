@@ -32,6 +32,9 @@ message StartSandboxRequest {
   // Host ports to forward to the sandbox's loopback. Stored with the sandbox, and applied to a
   // running sandbox too. Unset keeps the stored list; an empty list means no forwards.
   optional PortForwards ports = 9;
+  // Extra host directories to bind mount, besides the workspace. Applied when the sandbox is
+  // created.
+  repeated Mount mounts = 10;
 }
 
 message PortForwards {
@@ -50,6 +53,14 @@ message PortForwardFailure {
   PortForward port = 1;
   // Why fbkd couldn't listen on the host port, e.g. because another process uses it.
   string reason = 2;
+}
+
+message Mount {
+  // Canonical absolute host path of a directory.
+  string host = 1;
+  // Absolute guest path.
+  string guest = 2;
+  bool readonly = 3;
 }
 
 message NetworkPolicy {

@@ -6,7 +6,7 @@ use crate::api::sandbox_management_service_server::{
 };
 use crate::api::{
     AttachRequest, AttachResponse, AttachStart, GetSandboxRequest, GetSandboxResponse,
-    ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse,
+    ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse, Mount,
     NetworkPolicy, PortForward, PortForwardFailure, PortForwards, RemoveSandboxRequest,
     RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SandboxResources,
     SandboxStatus, SandboxSummary, SecretSummary, SetSecretRequest, SetSecretResponse,
@@ -20,7 +20,9 @@ use crate::session::{self, SessionCommand};
 use crate::tunnel;
 use anyhow::Result;
 use async_trait::async_trait;
-use firebrick_spec::{NetworkRule, NetworkSpec, PortMapping, SandboxResourcesSpec, VolumesSpec};
+use firebrick_spec::{
+    MountSpec, NetworkRule, NetworkSpec, PortMapping, SandboxResourcesSpec, VolumesSpec,
+};
 use std::collections::HashSet;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -68,6 +70,7 @@ fn start_sandbox_from<'a>(
     request: &'a StartSandboxRequest,
     network: &'a NetworkSpec,
     ports: Option<&'a [PortMapping]>,
+    mounts: &'a [MountSpec],
 ) -> StartSandbox<'a> {
     StartSandbox {
         name: &request.name,
@@ -77,6 +80,7 @@ fn start_sandbox_from<'a>(
         mise: request.mise.unwrap_or(true),
         network,
         ports,
+        mounts,
     }
 }
 
@@ -137,6 +141,18 @@ fn port_forward(port: PortMapping) -> PortForward {
     }
 }
 
+/// Reads the extra mounts of a request. The sandbox manager checks their paths.
+fn mount_specs(mounts: &[Mount]) -> Vec<MountSpec> {
+    mounts
+        .iter()
+        .map(|mount| MountSpec {
+            host: mount.host.clone(),
+            guest: mount.guest.clone(),
+            readonly: mount.readonly,
+        })
+        .collect()
+}
+
 /// Parses the egress rules of a request. A request without them gets microsandbox's default
 /// policy. Fails with `InvalidArgument` on the first invalid rule.
 fn network_spec(network: Option<&NetworkPolicy>) -> Result<NetworkSpec, Status> {
@@ -192,11 +208,12 @@ impl SandboxManagementService for FirebrickServer {
         let request_data = request.into_inner();
         let network = network_spec(request_data.network.as_ref())?;
         let ports = request_data.ports.as_ref().map(port_mappings).transpose()?;
+        let mounts = mount_specs(&request_data.mounts);
 
         let report = self
             .sandboxes
             .start(
-                start_sandbox_from(&request_data, &network, ports.as_deref()),
+                start_sandbox_from(&request_data, &network, ports.as_deref(), &mounts),
                 || sandbox_resources(&request_data),
             )
             .await?;
@@ -602,14 +619,14 @@ mod tests {
     fn start_sandbox_from_request_defaults_init_to_true() {
         let request = StartSandboxRequest::default();
 
-        assert!(start_sandbox_from(&request, &NetworkSpec::default(), None).init);
+        assert!(start_sandbox_from(&request, &NetworkSpec::default(), None, &[]).init);
     }
 
     #[test]
     fn start_sandbox_from_request_defaults_mise_to_true() {
         let request = StartSandboxRequest::default();
 
-        assert!(start_sandbox_from(&request, &NetworkSpec::default(), None).mise);
+        assert!(start_sandbox_from(&request, &NetworkSpec::default(), None, &[]).mise);
     }
 
     #[test]
@@ -619,7 +636,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(!start_sandbox_from(&request, &NetworkSpec::default(), None).mise);
+        assert!(!start_sandbox_from(&request, &NetworkSpec::default(), None, &[]).mise);
     }
 
     #[test]
@@ -633,7 +650,7 @@ mod tests {
         };
 
         let network = NetworkSpec::default();
-        let start = start_sandbox_from(&request, &network, None);
+        let start = start_sandbox_from(&request, &network, None, &[]);
 
         assert_eq!(
             (start.name, start.image, start.workspace, start.init),
@@ -710,6 +727,24 @@ mod tests {
             [PortForwardFailure {
                 port: Some(port_forward(mapping(3000, 3000))),
                 reason: "Address in use".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn mount_specs_keep_the_paths_and_readonly() {
+        let mounts = [Mount {
+            host: "/home/user/lib".to_string(),
+            guest: "/workspaces/lib".to_string(),
+            readonly: true,
+        }];
+
+        assert_eq!(
+            mount_specs(&mounts),
+            [MountSpec {
+                host: "/home/user/lib".to_string(),
+                guest: "/workspaces/lib".to_string(),
+                readonly: true,
             }]
         );
     }

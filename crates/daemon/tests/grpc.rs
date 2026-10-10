@@ -10,7 +10,7 @@ use std::time::Duration;
 use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, GetSandboxRequest,
-    GetSandboxResponse, ListSandboxesRequest, NetworkPolicy, PortForward, PortForwards,
+    GetSandboxResponse, ListSandboxesRequest, Mount, NetworkPolicy, PortForward, PortForwards,
     RemoveSandboxRequest, SandboxResources, SandboxStatus, SandboxVolumes, StartSandboxRequest,
     StartSandboxResponse, StopSandboxRequest, attach_request, attach_response,
 };
@@ -1122,6 +1122,93 @@ async fn workspace_is_owned_by_agent_user() {
 
     daemon.stop().await;
     remove_sandbox(NAME).await;
+}
+
+/// Creates an empty host directory to mount next to the workspace of a test sandbox.
+fn test_mount_dir(name: &str, suffix: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("{name}-{suffix}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("failed to create test mount directory");
+
+    dir
+}
+
+/// Returns the request message that mounts the host directory at the guest path.
+fn mount(host: &Path, guest: &str, readonly: bool) -> Mount {
+    Mount {
+        host: host.to_string_lossy().into_owned(),
+        guest: guest.to_string(),
+        readonly,
+    }
+}
+
+#[tokio::test]
+async fn extra_mounts_are_writable_unless_readonly() {
+    const NAME: &str = "fbk-it-extra-mounts";
+    remove_sandbox(NAME).await;
+
+    let writable = test_mount_dir(NAME, "rw");
+    let readonly = test_mount_dir(NAME, "ro");
+    std::fs::write(readonly.join("from-host.txt"), "hello from host").unwrap();
+    let request = StartSandboxRequest {
+        mounts: vec![
+            mount(&writable, "/mnt/rw", false),
+            mount(&readonly, "/mnt/ro", true),
+        ],
+        ..start_request(NAME)
+    };
+
+    let daemon = TestDaemon::start("extra-mounts").await;
+    let mut client = daemon.client().await;
+    start_and_wait(&mut client, request).await;
+
+    // The test image runs as root, so switch to UID/GID 1000 the way the agent user would run.
+    let script = "setpriv --reuid=1000 --regid=1000 --clear-groups touch /mnt/rw/from-agent.txt \
+                  && cat /mnt/ro/from-host.txt \
+                  && ! touch /mnt/ro/from-guest.txt";
+    let (output, code) = run_command(&mut client, NAME, "sh", &["-c", script]).await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert_eq!(code, 0, "unexpected output: {output:?}");
+    assert!(output.contains("hello from host"), "{output:?}");
+    assert!(output.contains("Read-only file system"), "{output:?}");
+    assert!(writable.join("from-agent.txt").exists());
+    assert!(!readonly.join("from-guest.txt").exists());
+
+    let _ = std::fs::remove_dir_all(writable);
+    let _ = std::fs::remove_dir_all(readonly);
+}
+
+#[tokio::test]
+async fn start_sandbox_rejects_mount_at_workspace_guest_path() {
+    const NAME: &str = "fbk-it-mount-conflict";
+    remove_sandbox(NAME).await;
+
+    let extra = test_mount_dir(NAME, "extra");
+    let request = start_request(NAME);
+    let guest = guest_workspace(Path::new(&request.workspace));
+    let request = StartSandboxRequest {
+        mounts: vec![mount(&extra, &guest, false)],
+        ..request
+    };
+
+    let daemon = TestDaemon::start("mount-conflict").await;
+    let mut client = daemon.client().await;
+    let status = client.start_sandbox(request).await.unwrap_err();
+    let exists = Sandbox::get(NAME).await.is_ok();
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+    let _ = std::fs::remove_dir_all(extra);
+
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert_eq!(
+        status.message(),
+        format!("mount {guest} conflicts with the workspace mount")
+    );
+    assert!(!exists, "the sandbox should not have been created");
 }
 
 fn test_secret(name: &str) -> Secret {

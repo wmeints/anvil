@@ -1,17 +1,19 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::ValueEnum;
-use firebrick_spec::{NetworkRule, NetworkSpec, PortMapping, SandboxSpec};
+use firebrick_spec::{MountSpec, NetworkRule, NetworkSpec, PortMapping, SandboxSpec};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
+use std::io;
 use std::ops::ControlFlow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
 use tonic::Code;
 use tonic::transport::Channel;
 
 use crate::api::{
-    GetSandboxRequest, GetSandboxResponse, ListSandboxesRequest, ListSandboxesResponse,
+    GetSandboxRequest, GetSandboxResponse, ListSandboxesRequest, ListSandboxesResponse, Mount,
     NetworkPolicy, PortForward, PortForwards, RemoveSandboxRequest, SandboxResources,
     SandboxStatus, SandboxSummary, SandboxVolumes, StartSandboxRequest, StartSandboxResponse,
     StopSandboxRequest, sandbox_management_service_client::SandboxManagementServiceClient,
@@ -136,11 +138,10 @@ pub(crate) async fn ensure_running(
     let started = match start_if_exists(request, client).await? {
         Some(started) => started,
         None => {
-            eprintln!("Creating sandbox {}...", spec.name);
-            client
-                .start_sandbox(build_start_request(spec, workspace))
-                .await?
-                .into_inner()
+            let request = build_start_request(spec, workspace)?;
+
+            eprintln!("Creating sandbox {}...", request.name);
+            client.start_sandbox(request).await?.into_inner()
         }
     };
 
@@ -295,11 +296,18 @@ async fn start_existing_sandbox(
 
 /// Builds a start request from the spec, filling in the default image, resources, init, mise
 /// and volumes.
-/// The workspace is mounted into the sandbox when it's created.
-fn build_start_request(spec: SandboxSpec, workspace: &Path) -> StartSandboxRequest {
+/// The workspace and the extra mounts are mounted into the sandbox when it's created. The
+/// workspace holds the spec file, so relative mount host paths resolve against it. Fails when a
+/// mount host path isn't an existing directory.
+fn build_start_request(spec: SandboxSpec, workspace: &Path) -> Result<StartSandboxRequest> {
     let resources = spec.resources.unwrap_or_default();
+    let mounts = resolve_mounts(
+        spec.mounts.unwrap_or_default(),
+        workspace,
+        std::env::var_os("HOME"),
+    )?;
 
-    StartSandboxRequest {
+    Ok(StartSandboxRequest {
         name: spec.name,
         image: spec
             .image
@@ -316,7 +324,83 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> StartSandboxReque
         mise: Some(spec.mise.unwrap_or(true)),
         network: spec.network.map(network_policy),
         ports: Some(port_forwards(&spec.ports)),
+        mounts,
+    })
+}
+
+/// Turns the mounts of a spec into their API messages, with canonical absolute host paths.
+fn resolve_mounts(
+    mounts: Vec<MountSpec>,
+    spec_dir: &Path,
+    home: Option<OsString>,
+) -> Result<Vec<Mount>> {
+    mounts
+        .into_iter()
+        .map(|mount| {
+            let host = resolve_host_path(&mount.host, spec_dir, home.as_deref())?;
+
+            Ok(Mount {
+                host: host.to_string_lossy().into_owned(),
+                guest: mount.guest,
+                readonly: mount.readonly,
+            })
+        })
+        .collect()
+}
+
+/// Resolves a mount host path to the canonical path of an existing directory. A leading `~`
+/// expands to the home directory, `~user` to the home directory of that user, and a relative
+/// path resolves against the spec file's directory.
+fn resolve_host_path(
+    host: &str,
+    spec_dir: &Path,
+    home: Option<&std::ffi::OsStr>,
+) -> Result<PathBuf> {
+    let path = match host.strip_prefix('~') {
+        Some(rest) => expand_tilde(host, rest, home)?,
+        None => spec_dir.join(host),
+    };
+
+    let canonical = std::fs::canonicalize(&path).map_err(|err| mount_error(&path, &err))?;
+
+    if !canonical.is_dir() {
+        bail!("can't mount {}: not a directory", canonical.display());
     }
+
+    Ok(canonical)
+}
+
+/// Expands `~` or `~user` at the start of a host path, the way a shell does. `rest` is the
+/// host path without its `~`.
+fn expand_tilde(host: &str, rest: &str, home: Option<&std::ffi::OsStr>) -> Result<PathBuf> {
+    let (user, tail) = rest.split_once('/').unwrap_or((rest, ""));
+
+    let home = if user.is_empty() {
+        PathBuf::from(home.with_context(|| format!("can't expand ~ in {host}: $HOME isn't set"))?)
+    } else {
+        user_home(host, user)?
+    };
+
+    Ok(home.join(tail))
+}
+
+/// Looks up the home directory of the user in the user database.
+fn user_home(host: &str, user: &str) -> Result<PathBuf> {
+    let entry = nix::unistd::User::from_name(user)
+        .with_context(|| format!("can't expand ~{user} in {host}"))?
+        .ok_or_else(|| anyhow!("can't expand {host}: user {user} doesn't exist"))?;
+
+    Ok(entry.dir)
+}
+
+/// Describes why the host path can't be mounted, without the OS error code.
+fn mount_error(path: &Path, err: &io::Error) -> anyhow::Error {
+    let reason = match err.kind() {
+        io::ErrorKind::NotFound => "No such file or directory".to_string(),
+        _ => err.to_string(),
+    };
+
+    anyhow!("can't mount {}: {reason}", path.display())
 }
 
 /// Turns the network section of a spec into its API message.
@@ -878,7 +962,7 @@ mod tests {
     fn start_request_carries_workspace() {
         let spec = firebrick_spec::default_spec("dev".to_string());
 
-        let request = build_start_request(spec, Path::new("/home/user/project"));
+        let request = build_start_request(spec, Path::new("/home/user/project")).unwrap();
 
         assert_eq!(request.workspace, "/home/user/project");
     }
@@ -892,7 +976,8 @@ mod tests {
         )
         .unwrap();
 
-        let request = build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path());
+        let request =
+            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
         let resources = request.resources.unwrap();
 
         assert_eq!(request.image, "alpine:3.22");
@@ -911,7 +996,8 @@ mod tests {
         )
         .unwrap();
 
-        let request = build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path());
+        let request =
+            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
 
         assert_eq!(
             request.network,
@@ -937,7 +1023,8 @@ mod tests {
         )
         .unwrap();
 
-        let request = build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path());
+        let request =
+            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
 
         assert_eq!(
             request.ports,
@@ -977,7 +1064,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join(SPEC_FILE_NAME), "name: dev\n").unwrap();
 
-        let request = build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path());
+        let request =
+            build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path()).unwrap();
         let resources = request.resources.unwrap();
         let defaults = firebrick_spec::SandboxResourcesSpec::default();
 
@@ -985,12 +1073,152 @@ mod tests {
         assert_eq!(request.init, Some(true));
         assert_eq!(request.mise, Some(true));
         assert_eq!(request.network, None);
+        assert!(request.mounts.is_empty());
         assert_eq!(request.ports, Some(PortForwards { ports: vec![] }));
         assert_eq!(resources.cpu, u32::from(defaults.cpu));
         assert_eq!(resources.memory, defaults.memory);
         assert_eq!(
             request.volumes.unwrap().docker,
             firebrick_spec::VolumesSpec::default().docker
+        );
+    }
+
+    #[test]
+    fn start_request_carries_mounts_from_spec() {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().join("project");
+        fs::create_dir_all(project.join("../shared-lib")).unwrap();
+        fs::write(
+            project.join(SPEC_FILE_NAME),
+            "name: dev\nmounts:\n  - host: ../shared-lib\n    guest: /workspaces/shared-lib\n    readonly: true\n",
+        )
+        .unwrap();
+
+        let request =
+            build_start_request(read_spec_file(&project).unwrap().unwrap(), &project).unwrap();
+
+        assert_eq!(
+            request.mounts,
+            [Mount {
+                host: fs::canonicalize(dir.path().join("shared-lib"))
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                guest: "/workspaces/shared-lib".to_string(),
+                readonly: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn start_request_fails_for_missing_mount() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join(SPEC_FILE_NAME),
+            "name: dev\nmounts:\n  - host: missing\n    guest: /data\n",
+        )
+        .unwrap();
+
+        let result = build_start_request(read_spec_file(dir.path()).unwrap().unwrap(), dir.path());
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn host_path_resolves_absolute_path() {
+        let dir = TempDir::new().unwrap();
+        let host = dir.path().to_str().unwrap();
+
+        let resolved = resolve_host_path(host, Path::new("/elsewhere"), None).unwrap();
+
+        assert_eq!(resolved, fs::canonicalize(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn host_path_resolves_relative_to_spec_dir() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("project")).unwrap();
+        fs::create_dir_all(dir.path().join("shared")).unwrap();
+
+        let resolved = resolve_host_path("../shared", &dir.path().join("project"), None).unwrap();
+
+        assert_eq!(
+            resolved,
+            fs::canonicalize(dir.path().join("shared")).unwrap()
+        );
+    }
+
+    #[test]
+    fn host_path_expands_home() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("datasets")).unwrap();
+        let home = Some(dir.path().as_os_str());
+
+        let resolved = resolve_host_path("~/datasets", Path::new("/elsewhere"), home).unwrap();
+        let home_only = resolve_host_path("~", Path::new("/elsewhere"), home).unwrap();
+
+        assert_eq!(
+            resolved,
+            fs::canonicalize(dir.path().join("datasets")).unwrap()
+        );
+        assert_eq!(home_only, fs::canonicalize(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn host_path_expands_other_users_home() {
+        // root exists on every Linux and macOS host; its home differs between them.
+        let root_home = nix::unistd::User::from_name("root").unwrap().unwrap().dir;
+
+        let resolved = resolve_host_path("~root", Path::new("/elsewhere"), None).unwrap();
+
+        assert_eq!(resolved, fs::canonicalize(root_home).unwrap());
+    }
+
+    #[test]
+    fn host_path_with_unknown_user_is_refused() {
+        let error =
+            resolve_host_path("~fbk-no-such-user/data", Path::new("/elsewhere"), None).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "can't expand ~fbk-no-such-user/data: user fbk-no-such-user doesn't exist"
+        );
+    }
+
+    #[test]
+    fn host_path_needs_home_for_tilde() {
+        let error = resolve_host_path("~/datasets", Path::new("/elsewhere"), None).unwrap_err();
+
+        assert!(error.to_string().contains("$HOME isn't set"), "{error}");
+    }
+
+    #[test]
+    fn missing_host_path_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("missing");
+
+        let error = resolve_host_path("missing", dir.path(), None).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "can't mount {}: No such file or directory",
+                missing.display()
+            )
+        );
+    }
+
+    #[test]
+    fn host_path_that_is_a_file_is_refused() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("file"), "").unwrap();
+        let file = fs::canonicalize(dir.path().join("file")).unwrap();
+
+        let error = resolve_host_path("file", dir.path(), None).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!("can't mount {}: not a directory", file.display())
         );
     }
 }

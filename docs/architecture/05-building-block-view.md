@@ -177,8 +177,11 @@ C4Component
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
   with the requested vCPUs and memory, mounts the workspace read/write at
-  `/workspaces/<leaf>`, attaches a sandbox-owned ext4 disk of the requested size
-  at `/var/lib/docker` (see
+  `/workspaces/<leaf>`, bind mounts the extra `mounts` of the request the same
+  way (owner `1000:1000`, host permissions mirrored, read-only when asked) after
+  rejecting a relative host path, an invalid guest path, or one that equals the
+  workspace path or `/var/lib/docker` with `INVALID_ARGUMENT`, attaches a
+  sandbox-owned ext4 disk of the requested size at `/var/lib/docker` (see
   [ADR 0015](decisions/0015-give-each-sandbox-a-docker-data-disk.md)), applies
   the egress rules with the `network` module and adds the stored secrets. The
   disk survives stops and restarts, and microsandbox deletes it when the sandbox
@@ -307,16 +310,25 @@ C4Component
   `SandboxSpec` with a `name`, an optional `image`, optional `init` and `mise`
   flags, optional `resources` (`cpu`, `memory`), `volumes` (`docker`, the size
   of the Docker data disk), an optional `network` section (`enforce`, default
-  `false`, and the `allow` and `deny` rules) and an optional `ports` list,
-  rejects unknown fields and reports the line and column of a problem. A
-  `PortMapping` in `ports` is written like Docker Compose: `3000` forwards host
-  port 3000 to guest port 3000, and `"8080:5173"` host port 8080 to guest port
-  5173. Ports outside 1 to 65535, other forms and a host port that appears twice
-  are reported at the entry. `NetworkRule` parses a rule: a host name, `*.` plus
-  a domain of at least two labels, an IPv4 or IPv6 address or a CIDR range. `*`
-  alone, other wildcards, URLs, ports and paths are invalid. It owns the
-  defaults (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, `mise:
-  true`, 2 vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
+  `false`, and the `allow` and `deny` rules), an optional `ports` list and
+  optional `mounts` (`host`, `guest` and `readonly`, default `false`), rejects
+  unknown fields and reports the line and column of a problem. A `PortMapping`
+  in `ports` is written like Docker Compose: `3000` forwards host port 3000 to
+  guest port 3000, and `"8080:5173"` host port 8080 to guest port 5173. Ports
+  outside 1 to 65535, other forms and a host port that appears twice are
+  reported at the entry. `guest_mount_path` checks a mount's `guest` the way
+  microsandbox does: an absolute path other than `/`, without `..`, `:`, `;` or
+  `,`. It normalizes the path (no `.` parts or trailing slash), and each
+  normalized path may appear only once. The daemon uses the same check. The CLI
+  resolves each mount's `host` against the spec file's directory, expanding `~`
+  to `$HOME` and `~user` to that user's home directory
+  ([ADR 0020](decisions/0020-look-up-user-home-directories-with-nix.md)), to the
+  canonical path of an existing directory before it sends `StartSandbox`.
+  `NetworkRule` parses a rule: a host name, `*.` plus a domain of at least two
+  labels, an IPv4 or IPv6 address or a CIDR range. `*` alone, other wildcards,
+  URLs, ports and paths are invalid. It owns the defaults
+  (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, `mise: true`, 2
+  vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
   `VolumesSpec::default()`) and `parse_size_mib`, which reads memory and volume
   sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both use them.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
@@ -327,8 +339,8 @@ C4Component
   which turns a directory's leaf into a lowercase DNS label (or `sandbox` when
   nothing is left), so the SSH host names and the name `fbk init` writes match.
 
-The image, init, mise setting, resources and network rules apply when a sandbox
-is created. Changing them in `.firebrick.yml` doesn't change an existing
+The image, init, mise setting, resources, network rules and mounts apply when a
+sandbox is created. Changing them in `.firebrick.yml` doesn't change an existing
 sandbox; remove it with `fbk rm` and start it again. `ports` is the exception:
 `fbk start` and `fbk run` send them to existing and running sandboxes too, so a
 changed list applies without a restart.
