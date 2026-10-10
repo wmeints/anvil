@@ -708,18 +708,12 @@ WORKDIR /home/agent
 
 ## Development
 
-Install the toolchain (Rust, `buf`, `dprint`, `actionlint` and `lefthook`) with
-[mise](https://mise.jdx.dev). This also installs the git hooks:
+Install the toolchain (Rust, `buf`, `protoc`, `dprint`, `actionlint` and
+`lefthook`) with [mise](https://mise.jdx.dev). This also installs the git hooks:
 
 ```sh
 mise install
 ```
-
-Building also needs `protoc` 3.15 or newer, which supports proto3 optional
-fields. The `protobuf-compiler` package on older distributions, such as Ubuntu
-22.04, is too old; install a current release from the
-[protobuf releases](https://github.com/protocolbuffers/protobuf/releases)
-instead.
 
 | Command                   | Description                                   |
 | ------------------------- | --------------------------------------------- |
