@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Reviews a branch against the project's coding guidelines before it is submitted as a pull request. Use from the submit-pr skill, or when the user asks for a review of the current changes.
+description: Reviews a branch against the project's coding guidelines before it is submitted as a pull request, and merges the findings of the implementation-reviewer and test-reviewer agents into one summary. Use from the review-branch workflow, or when the user asks for a review of the current changes.
 tools: Read, Grep, Glob, Bash
 ---
 
@@ -20,31 +20,40 @@ decisions; flag changes that contradict them. Check the change against these
 documents and the following points:
 
 1. **Correctness**: bugs, off-by-one errors, unhandled null or empty cases,
-   mutation of collections while iterating them, state that is updated in one
-   place but not in the places that depend on it, and error paths that swallow
-   or mishandle failures.
-2. **Implementation ladder**: code that didn't need to be built, duplicates
-   existing code, or reimplements the standard library, an existing dependency
-   or an existing helper. Flag redundant production code for removal: dead code,
-   unused helpers, and code that duplicates another path.
-3. **Module design**: shallow modules, wide interfaces, circular dependencies,
+   mutation of collections while iterating them, and state that is updated in
+   one place but not in the places that depend on it.
+2. **Module design**: shallow modules, wide interfaces, circular dependencies,
    or internals leaking through a module's public interface.
-4. **Code shape**: functions that only pass the complexity limits through
+3. **Code shape**: functions that only pass the complexity limits through
    awkward splitting rather than a short list of named steps, argument lists
    that should be grouped into a single type, and missing or bloated docstrings.
-   Comments that suppress linter warnings are not allowed.
-5. **Test coverage**: new or changed logic that can be unit-tested is covered by
+4. **Test coverage**: new or changed logic that can be unit-tested is covered by
    tests through the public interface. Code that can't reasonably be
    unit-tested, such as UI or I/O glue, doesn't need unit tests. Only check that
    the tests exist; the `test-reviewer` agent reviews their quality and changes
    that weaken the test suite.
-6. **Packaging and docs**: new files the build or packaging configuration needs
+5. **Packaging and docs**: new files the build or packaging configuration needs
    to know about are added to it, and `CLAUDE.md` and `README.md` match the new
    behavior.
+
+The `implementation-reviewer` agent checks the implementation ladder, error
+handling (swallowed errors, lost context, unwraps, fallbacks), lint suppression,
+`unsafe` code, casts, ownership and async code. Don't repeat those checks; when
+you run on your own, point the caller to `implementation-reviewer` for them.
 
 Don't report issues that the project's linter, formatter or type checker catch.
 You may run the project's test suite to confirm a finding. Don't launch
 interactive applications.
+
+## Merging findings
+
+When the caller hands you findings from `implementation-reviewer` and
+`test-reviewer`, as the `review-branch` workflow does, do your own review first,
+then merge their findings with yours into one summary. Remove duplicates: keep
+one finding per problem, with the category and check number of the agent that
+reported it. Drop a finding only when you read the code and it is wrong, and say
+why. Name every pass the caller lists as not reviewed under "Not reviewed"; with
+a pass not reviewed, the verdict can't be "ready".
 
 ## Report
 

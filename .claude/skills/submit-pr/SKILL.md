@@ -40,10 +40,12 @@ Before opening the PR, verify the change:
    the last one and listed in `docs/architecture/09-decisions.md`. When it
    changes how the project is used, `README.md` must describe it. If any of
    these is missing, stop and offer to write it before opening the PR.
-3. Ask the `reviewer` and `test-reviewer` agents to review the branch. Start
-   both in parallel, with two Agent calls in one message. Fix confirmed findings
-   from both with the user's approval, or list the ones you leave open under
-   **Review focus**.
+3. Run the `review-branch` workflow with the Workflow tool, by name. It runs the
+   `implementation-reviewer` passes and the `test-reviewer` agent in parallel,
+   and the `reviewer` agent merges their findings into one report with one
+   verdict. Fix confirmed findings with the user's approval, or list the ones
+   you leave open under **Review focus**. When the report names passes as not
+   reviewed, run the workflow again or list them under **Review focus**.
 
 ## Steps
 
