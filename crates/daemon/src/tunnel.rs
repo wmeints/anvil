@@ -47,7 +47,7 @@ async fn ssh_server(sb: &Sandbox) -> Result<SshServer, Status> {
         })
         .await
         .map_err(|err| {
-            tracing::warn!("failed to prepare SSH server: {err}");
+            tracing::error!(error = ?err, "failed to prepare SSH server");
             Status::internal("failed to prepare SSH server")
         })
 }
