@@ -42,6 +42,11 @@ it starts a sandbox.
 - The agent's `~/.gitconfig` stays the user's: helpers configured there, for
   example by `gh auth setup-git`, keep working. git asks the system helper
   first, so they answer only when neither variable is set.
+- The helper doesn't know a secret's allowed hosts, which the guest can't see.
+  When `GH_TOKEN` or `GITHUB_TOKEN` is scoped to other hosts, such as a GitHub
+  Enterprise server, it still hands git the placeholder for github.com, and the
+  user's own helper never answers. The README shows how to reset the helper list
+  in the sandbox.
 - The helper only covers `https://github.com`. Other forges and GitHub
   Enterprise hosts still need a helper of their own.
 - Images that aren't based on `firebrick-base` don't get the helper; the docs

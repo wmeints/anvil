@@ -621,12 +621,23 @@ and encodes it again. This works only when the token's allowed hosts include
 credentials as usual, and a helper in your own `~/.gitconfig`, such as the one
 `gh auth setup-git` configures, still works.
 
+The image's helper answers first whenever `GH_TOKEN` or `GITHUB_TOKEN` is set,
+even when its allowed hosts don't include `github.com`, for example for a GitHub
+Enterprise token. git then sends a placeholder that isn't replaced and stops
+looking, so your own helper never answers. Give that token another name, or
+reset the helpers for github.com in the sandbox before adding your own:
+
+```sh
+git config --global credential.https://github.com.helper ''
+git config --global --add credential.https://github.com.helper '!gh auth git-credential'
+```
+
 For a custom image that isn't based on `firebrick-base`, configure an equivalent
 helper in the sandbox:
 
 ```sh
 git config --global credential.https://github.com.helper \
-  '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
+  '!f() { test "$1" = get && echo username=x-access-token && echo "password=${GH_TOKEN:-$GITHUB_TOKEN}"; }; f'
 ```
 
 ### Connecting over SSH
