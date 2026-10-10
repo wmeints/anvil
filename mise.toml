@@ -1,11 +1,11 @@
 [tools]
 actionlint = "1.7.12"
-buf = "latest"
+buf = "1.73.0"
 claude = "2.1.295"
 dprint = "0.61.1"
 gh = "2.102.0"
-lefthook = "latest"
-protoc = "latest"
+lefthook = "2.2.1"
+protoc = "36.2"
 rust = { version = "1.99.0", components = "rustfmt,clippy,rust-src,rust-analyzer" }
 
 [hooks]
