@@ -242,19 +242,22 @@ mise skip this step. Set `mise: false` in `.firebrick.yml` to turn it off.
 
 Add a `.firebrick.yml` file to the project directory to configure the sandbox.
 `fbk init` creates one with the defaults from the table below, named after the
-project directory (`My.App` becomes `my-app`). For example:
+project directory. In a directory called `My.App`, it writes:
 
 ```yaml
-name: my-project
-image: ghcr.io/my-org/my-sandbox:1.0
-init: true
-mise: true
+name: my-app
 resources:
   cpu: 2
   memory: 4 GiB
+image: ghcr.io/wmeints/firebrick-base:v<version>
+init: true
+mise: true
 volumes:
   docker: 20 GiB
 ```
+
+`<version>` is the installed firebrick version. Edit the file to change any of
+the fields, such as `image` to run your own image.
 
 | Field              | Description                                                     | Default                                     |
 | ------------------ | --------------------------------------------------------------- | ------------------------------------------- |
