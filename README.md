@@ -731,7 +731,10 @@ instead.
 
 Cargo commands in this repository use `/tmp/firebrick-msb` as the microsandbox
 home (`MSB_HOME`, set in `.cargo/config.toml`), so the integration tests don't
-share a runtime or database with an installed `fbkd` or `msb`.
+share a runtime or database with an installed `fbkd` or `msb`. Several test
+runs, for example from two worktrees, can use it at the same time: each run
+names its sandboxes after its process id, and removes the sandboxes left behind
+by runs that were killed.
 
 The default sandbox image is the `firebrick-base` image of the same release, so
 it doesn't exist for a version that hasn't been released yet. To run a

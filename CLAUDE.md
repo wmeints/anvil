@@ -119,9 +119,11 @@ These checks enforce the rules above, so don't try to bypass them:
 - `.cargo/config.toml` sets `MSB_HOME=/tmp/firebrick-msb` for every cargo
   command, so builds and the `vm-tests` use their own microsandbox runtime,
   database and images instead of `~/.microsandbox`. A `msb` that migrated the
-  user's database can't break the tests. Don't point the tests at
-  `~/.microsandbox`; if the isolated home is broken, remove `/tmp/firebrick-msb`
-  and run the tests again.
+  user's database can't break the tests. Concurrent test runs, for example from
+  two worktrees, can share the home: each run names its sandboxes
+  `fbk-it-<pid>-<test>` and first removes the leftovers of killed runs. Don't
+  point the tests at `~/.microsandbox`; if the isolated home is broken, remove
+  `/tmp/firebrick-msb` and run the tests again.
 - Claude Code hooks in `.claude/settings.json` run `cargo fmt` on Rust files
   after each edit (`.claude/hooks/format-rust.sh`) and `dprint fmt` on Markdown
   files after each edit (`.claude/hooks/format-markdown.sh`). Before a turn ends
