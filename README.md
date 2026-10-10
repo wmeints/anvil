@@ -515,6 +515,12 @@ prints `warning: couldn't forward localhost:<port>: <reason>`. Free the port and
 run `fbk start` again. Ports must be from 1 to 65535, and each host port may
 appear once.
 
+Logins that send your browser back to `localhost`, such as `gh auth login
+--web`, need no listed port: when the sandbox opens a URL whose `redirect_uri`
+or own host is `localhost:<port>`, `fbkd` forwards that port to the sandbox
+before the browser opens. The forward closes after 10 minutes without
+connections, or when the sandbox stops.
+
 ### Secrets
 
 Give agents tokens without letting the real values into the sandbox:

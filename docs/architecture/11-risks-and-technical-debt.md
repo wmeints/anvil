@@ -66,6 +66,16 @@
   data can still leave through an allowed host, such as a query string to
   `github.com`. The browser sends the user's cookies with the request
   ([ADR 0026](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)).
+- **Sandboxes can make the host listen on loopback ports:** a sandbox that opens
+  a URL with a loopback `redirect_uri` or host and an explicit port makes `fbkd`
+  listen on that port of the host's `127.0.0.1` and `::1` for up to 10 minutes
+  without connections. Any process of any user on the host can connect to it and
+  reach the sandbox, and a sandbox can take a free port before a host service
+  that wants it starts. The rate limit of 5 URLs per 10 seconds bounds how fast
+  it can claim ports. When the port is busy, a URL with that `redirect_uri`
+  still opens, so the browser sends the OAuth callback, with its code, to
+  whatever listens on the host's port
+  ([ADR 0030](decisions/0030-forward-oauth-callback-ports-when-opening-a-url.md)).
 - **Ageing Linux build runners:** Linux releases build on the `ubuntu-22.04`
   runners to support glibc 2.35. GitHub retires runner images before their
   Ubuntu release reaches end of support (April 2027), after which the release

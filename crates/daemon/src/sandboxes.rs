@@ -276,7 +276,7 @@ fn default_docker_volume_mib() -> u32 {
 /// Manages sandboxes, the secrets they get, their port forwards and their URL relays.
 pub struct SandboxManager {
     secrets: SecretStore,
-    forwards: Forwards,
+    forwards: Arc<Forwards>,
     relays: Relays,
     // Held while secrets are stored or added to sandboxes, so a sandbox that is being created
     // can't miss a secret that is being set, and concurrent sets can't mix up values.
@@ -322,10 +322,12 @@ impl SandboxManager {
     /// Creates a manager that adds the secrets from `secrets` to sandboxes and opens the URLs
     /// from sandboxes with `opener`.
     pub fn new(secrets: SecretStore, opener: Arc<dyn Opener>) -> Self {
+        let forwards = Arc::new(Forwards::new(SshConnector::default()));
+
         Self {
             secrets,
-            forwards: Forwards::new(SshConnector::default()),
-            relays: Relays::new(opener),
+            relays: Relays::new(opener, Arc::clone(&forwards)),
+            forwards,
             secrets_lock: tokio::sync::Mutex::new(()),
             sandbox_locks: std::sync::Mutex::new(HashMap::new()),
             ports_lock: tokio::sync::Mutex::new(()),
@@ -553,13 +555,15 @@ impl SandboxManager {
         Ok(())
     }
 
-    /// Returns the sandbox with the name. Closes its forwards when it doesn't exist anymore, for
-    /// example because it was removed without fbkd, so its host ports are freed.
+    /// Returns the sandbox with the name. Closes its forwards and forgets its URL relay when it
+    /// doesn't exist anymore, for example because it was removed without fbkd, so its host
+    /// ports are freed.
     async fn get_or_close_forwards(&self, name: &str) -> Result<SandboxHandle, SandboxError> {
         let result = get_sandbox(name).await;
 
         if let Err(SandboxError::NotFound(_)) = result {
             self.forwards.close(name).await;
+            self.relays.forget(name);
         }
 
         result
