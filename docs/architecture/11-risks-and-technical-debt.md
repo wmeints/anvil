@@ -27,6 +27,12 @@
   workaround once microsandbox fixes
   [issue 1226](https://github.com/superradcompany/microsandbox/issues/1226)
   ([ADR 0007](decisions/0007-disable-guest-ipv6-in-the-base-image.md)).
+- **Nothing supervises `dockerd`:** the base image's init starts `dockerd` in
+  the background and doesn't wait for it, so commands that run right after the
+  sandbox boots may find it not ready yet, and nothing restarts it when it dies.
+  Agents can read `/var/log/dockerd.log` and start it again with `sudo sh -c
+  'dockerd >/var/log/dockerd.log 2>&1 &'`
+  ([ADR 0016](decisions/0016-run-docker-in-the-sandbox-vm.md)).
 - **Workspace ownership is only tested with host UID 1000:** the integration
   tests check that the workspace shows up as `1000:1000` and that UID 1000 can
   write to it, but they run on hosts where the user has UID 1000. Mapping
