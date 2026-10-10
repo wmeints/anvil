@@ -146,6 +146,9 @@ pub struct SandboxManager {
     // Held while secrets are stored or added to sandboxes, so a sandbox that is being created
     // can't miss a secret that is being set, and concurrent sets can't mix up values.
     secrets_lock: tokio::sync::Mutex<()>,
+    // Held while the ports of a sandbox are read or stored and its forwards are reconciled, so a
+    // request with stale ports can't undo the forwards of a newer one.
+    ports_lock: tokio::sync::Mutex<()>,
 }
 
 impl SandboxManager {
@@ -155,6 +158,7 @@ impl SandboxManager {
             secrets,
             forwards: Forwards::new(SshConnector::default()),
             secrets_lock: tokio::sync::Mutex::new(()),
+            ports_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -189,6 +193,7 @@ impl SandboxManager {
                 return;
             }
         };
+        let _ports = self.ports_lock.lock().await;
 
         for sb in sandboxes
             .iter()
@@ -201,6 +206,7 @@ impl SandboxManager {
     /// Stores the ports with the sandbox when they're given, then makes its open forwards
     /// match the stored ports.
     async fn open_forwards(&self, name: &str, ports: Option<&[PortMapping]>) -> ForwardReport {
+        let _ports = self.ports_lock.lock().await;
         let ports = match (ports, Sandbox::get(name).await) {
             (Some(ports), Ok(sb)) => {
                 store_ports(&sb, ports).await;
@@ -214,28 +220,37 @@ impl SandboxManager {
         self.forwards.apply(name, &ports).await
     }
 
-    /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`].
-    /// Closes its forwards first.
+    /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`],
+    /// then closes its forwards.
     pub async fn stop(&self, name: &str) -> Result<(), SandboxError> {
-        let sb = get_sandbox(name).await?;
-        self.forwards.close(name).await;
+        let sb = self.get_or_close_forwards(name).await?;
 
         stop_or_kill(&sb, STOP_TIMEOUT).await.map_err(|err| {
             tracing::error!(error = ?err, "failed to stop sandbox {name}");
             SandboxError::internal("failed to stop sandbox")
-        })
+        })?;
+
+        self.forwards.close(name).await;
+
+        Ok(())
     }
 
     /// Removes a sandbox and closes its forwards, then syncs the SSH config and the editor
     /// settings. A running sandbox is only removed with `force`, which stops it first like
     /// [`SandboxManager::stop`].
     pub async fn remove(&self, name: &str, force: bool) -> Result<(), SandboxError> {
-        let sb = get_sandbox(name).await?;
+        let sb = self.get_or_close_forwards(name).await?;
+        let live = is_live(sb.status_snapshot());
 
-        if force && is_live(sb.status_snapshot()) {
+        if force && live {
             stop_or_kill(&sb, STOP_TIMEOUT)
                 .await
                 .map_err(|err| stop_before_remove_failed(name, &err))?;
+        }
+
+        // The sandbox doesn't run anymore, also when removing it fails below.
+        if force || !live {
+            self.forwards.close(name).await;
         }
 
         sb.remove().await.map_err(|err| match err {
@@ -248,10 +263,21 @@ impl SandboxManager {
             }
         })?;
 
-        self.forwards.close(name).await;
         sync_ssh_config().await;
 
         Ok(())
+    }
+
+    /// Returns the sandbox with the name. Closes its forwards when it doesn't exist anymore, for
+    /// example because it was removed without fbkd, so its host ports are freed.
+    async fn get_or_close_forwards(&self, name: &str) -> Result<SandboxHandle, SandboxError> {
+        let result = get_sandbox(name).await;
+
+        if let Err(SandboxError::NotFound(_)) = result {
+            self.forwards.close(name).await;
+        }
+
+        result
     }
 
     /// Returns the sandbox with the name.

@@ -125,12 +125,15 @@ stay, so it can be started again later. `fbk stop <name>` stops the sandbox with
 that name, as listed by `fbk ls`, from any directory: the CLI uses the name as
 is and doesn't read `.firebrick.yml`.
 
-`fbkd` first closes the sandbox's port forwards, so their host ports are free
-when `fbk stop` returns. Then it asks the guest to shut down and gives it 30
-seconds (`STOP_TIMEOUT` in `crates/daemon/src/sandboxes.rs`). When the sandbox
-hasn't stopped by then, `fbkd` kills it, so a guest that ignores the shutdown
-can't make `fbk stop` hang. A killed sandbox can lose writes the guest hadn't
-flushed to its disk yet.
+`fbkd` asks the guest to shut down and gives it 30 seconds (`STOP_TIMEOUT` in
+`crates/daemon/src/sandboxes.rs`). When the sandbox hasn't stopped by then,
+`fbkd` kills it, so a guest that ignores the shutdown can't make `fbk stop`
+hang. A killed sandbox can lose writes the guest hadn't flushed to its disk yet.
+Once the sandbox has stopped, `fbkd` closes its port forwards, so their host
+ports are free when `fbk stop` returns. When stopping fails, the forwards stay
+open, because the sandbox may still run. When the sandbox doesn't exist anymore,
+for example because it was removed with `msb rm`, `fbkd` still closes the
+forwards it has open for that name, for `fbk stop` and `fbk rm`.
 
 ```mermaid
 sequenceDiagram
@@ -147,17 +150,18 @@ sequenceDiagram
     D->>MS: Sandbox::get(name)
     alt Sandbox doesn't exist
         MS-->>D: SandboxNotFound
+        D->>D: Close port forwards with that name
         D-->>CLI: NOT_FOUND
         CLI-->>Dev: Error: sandbox name doesn't exist
     else Sandbox exists
         MS-->>D: Sandbox handle
-        D->>D: Close the sandbox's port forwards
         D->>MS: stop_with_timeout(30s)
         opt Not stopped within 30s
             MS-->>D: StopTimeout
             D->>MS: kill()
         end
         MS-->>D: Stopped
+        D->>D: Close the sandbox's port forwards
         D-->>CLI: StopSandboxResponse
         CLI-->>Dev: Exit 0
     end
@@ -172,9 +176,10 @@ explains how to remove the sandbox. With `fbk rm --force`, the request carries
 `force: true` and `fbkd` first stops a live sandbox the same way as `fbk stop`,
 killing it after 30 seconds. When that stop fails, `fbkd` returns `INTERNAL` and
 leaves the sandbox in place. A stopped or crashed sandbox is removed with or
-without `--force`. After a removal, `fbkd` closes the sandbox's port forwards
-and syncs the SSH config and the editors' Remote-SSH settings, so they drop the
-sandbox's host.
+without `--force`. `fbkd` closes the sandbox's port forwards once the sandbox
+isn't live anymore, before it removes it, so they also close when the removal
+fails. After a removal, `fbkd` syncs the SSH config and the editors' Remote-SSH
+settings, so they drop the sandbox's host.
 
 ```mermaid
 sequenceDiagram
@@ -191,6 +196,7 @@ sequenceDiagram
     D->>MS: Sandbox::get(name)
     alt Sandbox doesn't exist
         MS-->>D: SandboxNotFound
+        D->>D: Close port forwards with that name
         D-->>CLI: NOT_FOUND
         CLI-->>Dev: Error: sandbox name doesn't exist
     else Sandbox exists
@@ -199,6 +205,9 @@ sequenceDiagram
             D->>MS: stop_with_timeout(30s), then kill() on StopTimeout
             MS-->>D: Stopped
         end
+        opt force or the sandbox isn't live
+            D->>D: Close port forwards
+        end
         D->>MS: remove()
         alt Sandbox is still live
             MS-->>D: SandboxStillRunning
@@ -206,7 +215,7 @@ sequenceDiagram
             CLI-->>Dev: Error: sandbox name is running. Stop it with fbk stop, or remove it with fbk rm --force.
         else Sandbox is stopped
             MS-->>D: Removed
-            D->>D: Close port forwards, sync SSH config and editor settings
+            D->>D: Sync SSH config and editor settings
             D-->>CLI: RemoveSandboxResponse
             CLI-->>Dev: Exit 0
         end

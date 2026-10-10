@@ -14,10 +14,11 @@ use russh::client::{self, Handle};
 use russh::keys::{Algorithm, PrivateKey, PrivateKeyWithHashAlg, PublicKeyBase64};
 use std::collections::{BTreeMap, HashMap};
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
@@ -212,8 +213,10 @@ fn open_failed(sandbox: &str, port: PortMapping, err: &io::Error) -> ForwardFail
     }
 }
 
-/// Listens on the port at `127.0.0.1`, and at `[::1]` when the host has IPv6 loopback.
+/// Listens on the port at `127.0.0.1`, and at `[::1]` when the host has IPv6 loopback. Fails
+/// when the port is in use on any address.
 async fn bind_loopback(port: u16) -> io::Result<Vec<TcpListener>> {
+    ensure_not_listening_on_any_address(port)?;
     let ipv4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
 
     match TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await {
@@ -222,6 +225,34 @@ async fn bind_loopback(port: u16) -> io::Result<Vec<TcpListener>> {
         // The host has no IPv6 loopback.
         Err(_) => Ok(vec![ipv4]),
     }
+}
+
+/// Fails when another socket listens on the port at the IPv4 or IPv6 wildcard address.
+/// `TcpListener::bind` sets `SO_REUSEADDR`, which on macOS and the BSDs lets a loopback bind
+/// succeed next to such a listener, so `localhost` connections would silently go to the sandbox
+/// instead of to the host's server. Binding the wildcard address with the same option fails then,
+/// while it still succeeds next to connections of an earlier forward in `TIME_WAIT`.
+fn ensure_not_listening_on_any_address(port: u16) -> io::Result<()> {
+    for address in [
+        SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)),
+        SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
+    ] {
+        // The socket is closed right away; a host without IPv6 fails with another error.
+        probe_bind(address).or_else(|err| if is_taken(&err) { Err(err) } else { Ok(()) })?;
+    }
+
+    Ok(())
+}
+
+/// Binds a socket to the address with `SO_REUSEADDR`, without listening, and closes it.
+fn probe_bind(address: SocketAddr) -> io::Result<()> {
+    let socket = match address {
+        SocketAddr::V4(_) => TcpSocket::new_v4()?,
+        SocketAddr::V6(_) => TcpSocket::new_v6()?,
+    };
+    socket.set_reuseaddr(true)?;
+
+    socket.bind(address)
 }
 
 /// Whether binding failed because the port is in use or needs privileges, rather than because
@@ -249,11 +280,21 @@ async fn accept_loop(
                 Ok((stream, _)) => {
                     connections.spawn(relay(stream, sandbox.clone(), port.guest, Arc::clone(&connector)));
                 }
-                Err(err) => tracing::debug!("couldn't accept on localhost:{}: {err}", port.host),
+                Err(err) => accept_failed(port.host, &err).await,
             },
             Some(_) = connections.join_next() => {}
         }
     }
+}
+
+/// How long the accept loop waits after a failed accept. Errors such as running out of file
+/// descriptors repeat right away until a connection closes, and would make the loop spin.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+/// Logs why accepting a connection failed and waits before the next accept.
+async fn accept_failed(host_port: u16, err: &io::Error) {
+    tracing::debug!("couldn't accept on localhost:{host_port}: {err}");
+    tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
 }
 
 /// Connects the host connection to the guest port and copies bytes both ways until both sides
@@ -289,8 +330,12 @@ const SSH_PIPE_SIZE: usize = 4 * 1024 * 1024;
 /// SSH session per sandbox that is opened on first use and reopened when it has closed.
 #[derive(Default)]
 pub struct SshConnector {
-    sessions: Mutex<HashMap<String, Arc<Handle<SshClient>>>>,
+    sessions: Mutex<HashMap<String, Arc<SessionSlot>>>,
 }
+
+/// The SSH session of one sandbox, if one was opened. Locked while the session opens, so
+/// connections to the sandbox wait for it without blocking other sandboxes.
+type SessionSlot = Mutex<Option<Arc<Handle<SshClient>>>>;
 
 #[async_trait]
 impl Connector for SshConnector {
@@ -312,9 +357,16 @@ impl Connector for SshConnector {
 impl SshConnector {
     /// Returns the open SSH session to the sandbox, opening a new one when needed.
     async fn session(&self, sandbox: &str) -> io::Result<Arc<Handle<SshClient>>> {
-        let mut sessions = self.sessions.lock().await;
+        let slot = Arc::clone(
+            self.sessions
+                .lock()
+                .await
+                .entry(sandbox.to_string())
+                .or_default(),
+        );
+        let mut slot = slot.lock().await;
 
-        if let Some(session) = sessions.get(sandbox).filter(|session| !session.is_closed()) {
+        if let Some(session) = slot.as_ref().filter(|session| !session.is_closed()) {
             return Ok(Arc::clone(session));
         }
 
@@ -322,7 +374,7 @@ impl SshConnector {
             tracing::warn!("couldn't open SSH session to sandbox {sandbox}: {err}");
             io::Error::other(err)
         })?);
-        sessions.insert(sandbox.to_string(), Arc::clone(&session));
+        *slot = Some(Arc::clone(&session));
 
         Ok(session)
     }
@@ -552,6 +604,34 @@ mod tests {
         assert_eq!(report.failed.len(), 1);
         assert_eq!(report.failed[0].port, mapping(busy_port, guest));
         assert!(!report.failed[0].reason.is_empty());
+    }
+
+    #[tokio::test]
+    async fn host_port_with_a_listener_on_any_address_is_reported() {
+        let forwards = Forwards::new(LocalConnector);
+        let busy = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).await.unwrap();
+        let host = busy.local_addr().unwrap().port();
+        let guest = upper_case_server().await;
+
+        let report = forwards.apply("dev", &[mapping(host, guest)]).await;
+
+        assert!(report.open.is_empty());
+        assert_eq!(report.failed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn host_port_with_open_connections_of_a_closed_forward_can_be_reopened() {
+        let forwards = Forwards::new(LocalConnector);
+        let (host, guest) = (free_port().await, upper_case_server().await);
+        forwards.apply("dev", &[mapping(host, guest)]).await;
+        let mut stream = connect(host).await.unwrap();
+        round_trip(&mut stream, "hello").await;
+
+        forwards.close("dev").await;
+        drop(stream);
+        let report = forwards.apply("dev", &[mapping(host, guest)]).await;
+
+        assert_eq!(report.open, [mapping(host, guest)]);
     }
 
     #[tokio::test]

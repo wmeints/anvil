@@ -224,17 +224,20 @@ C4Component
   mappings: it closes the ones that aren't listed, then opens the new ones, and
   leaves unchanged ones and their connections alone. Each forward listens on
   `127.0.0.1:<host>` and, when the host has IPv6 loopback, on `[::1]:<host>`;
-  never on other addresses. A host port that is in use, by another process or
+  never on other addresses. Before it listens, it checks that no socket listens
+  on the port at the wildcard address, because on macOS a loopback bind succeeds
+  next to such a listener. A host port that is in use, by another process or
   another sandbox's forward, or that needs privileges is logged as a warning and
   reported, and the next `apply` tries it again. `Forwards::close` closes the
   listeners and their connections and returns once the ports are free. Each
   accepted connection goes through a `Connector`; `SshConnector` opens a
   `direct-tcpip` channel to `127.0.0.1:<guest>` over one SSH session per
-  sandbox, which it opens on first use and reopens when it has closed. The
-  session runs microsandbox's SSH server over an in-memory pipe with keys
-  generated for that session and no inactivity timeout, so forwards stay open
-  while the sandbox runs. When nothing listens on the guest port, the host
-  connection is closed and logged at `debug`.
+  sandbox, which it opens on first use and reopens when it has closed; opening a
+  session to one sandbox doesn't hold up connections to the others. The session
+  runs microsandbox's SSH server over an in-memory pipe with keys generated for
+  that session and no inactivity timeout, so forwards stay open while the
+  sandbox runs. When nothing listens on the guest port, the host connection is
+  closed and logged at `debug`.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,
