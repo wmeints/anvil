@@ -219,6 +219,8 @@ another sandbox from any directory.
 | `fbk secret set <name> [<value>] [--scope global\|sandbox]` | Set a secret for all sandboxes, or for the working directory's sandbox. See [Secrets](#secrets).                                   |
 | `fbk secret ls [--format json]`                             | List the secrets of all scopes and their allowed hosts, without their values.                                                      |
 | `fbk secret rm <name> [--scope global\|sandbox]`            | Remove a secret from all sandboxes, or from the working directory's sandbox.                                                       |
+| `fbk port forward <port>`                                   | Forward a host port to the sandbox right away and add it to `ports`. See [Ports](#ports).                                          |
+| `fbk port rm <port>`                                        | Stop forwarding a host port and remove it from `ports`.                                                                            |
 | `fbk network allow <rule>...`                               | Allow destinations in `.firebrick.yml` and apply the rules to the sandbox. See [Network](#network).                                |
 | `fbk network deny <rule>...`                                | Deny destinations in `.firebrick.yml` and apply the rules to the sandbox.                                                          |
 | `fbk network policy enable`                                 | Turn on enforcement of the network rules (`network.enforce: true`).                                                                |
@@ -443,6 +445,21 @@ your network. To change them, edit the list and run `fbk start` again; the
 sandbox keeps running and unchanged forwards keep their connections. `fbk stop`
 and `fbk rm` close them, and an SSH connection that starts the sandbox opens
 them again.
+
+To add or remove a forward while you work, without editing the file:
+
+```sh
+fbk port forward 3000          # host localhost:3000 -> sandbox port 3000
+fbk port forward 8080:5173     # host localhost:8080 -> sandbox port 5173
+fbk port rm 8080               # stop forwarding host port 8080
+```
+
+They apply right away to a running sandbox and update the `ports` list in
+`.firebrick.yml`, keeping its comments and other fields, or create the file when
+there's none. Forwarding a host port that's already listed replaces its sandbox
+port. For a stopped sandbox, or one that doesn't exist yet, the change applies
+when it starts. When the host port is in use, `fbk port forward` fails with
+`couldn't forward localhost:<port>: <reason>` and changes nothing.
 
 When a host port is already in use, the sandbox still starts and `fbk start`
 prints `warning: couldn't forward localhost:<port>: <reason>`. Free the port and
