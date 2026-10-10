@@ -45,8 +45,8 @@ you no longer need them.
 
 ## Installation
 
-Each [GitHub release](https://github.com/wmeints/anvil/releases) has an archive
-per platform with the `fbk` and `fbkd` binaries:
+Each [GitHub release](https://github.com/wmeints/firebrick/releases) has an
+archive per platform with the `fbk` and `fbkd` binaries:
 
 | Platform              | Target                      |
 | --------------------- | --------------------------- |
@@ -56,7 +56,8 @@ per platform with the `fbk` and `fbkd` binaries:
 
 The steps below install both binaries in `~/.local/bin`, which doesn't need root
 permissions. Keep `fbk` and `fbkd` in the same directory, because the CLI starts
-the daemon from its own directory.
+the daemon from its own directory. To build them with Cargo instead, see
+[Installing with Cargo](#installing-with-cargo).
 
 ### 1. Download and install the binaries
 
@@ -83,8 +84,8 @@ machine. Skip the remaining steps and follow
 Download the archive and its checksum, and verify the archive:
 
 ```sh
-curl -fLO "https://github.com/wmeints/anvil/releases/download/$VERSION/$NAME.tar.gz"
-curl -fLO "https://github.com/wmeints/anvil/releases/download/$VERSION/$NAME.tar.gz.sha256"
+curl -fLO "https://github.com/wmeints/firebrick/releases/download/$VERSION/$NAME.tar.gz"
+curl -fLO "https://github.com/wmeints/firebrick/releases/download/$VERSION/$NAME.tar.gz.sha256"
 shasum -a 256 -c "$NAME.tar.gz.sha256"   # or: sha256sum -c "$NAME.tar.gz.sha256"
 ```
 
@@ -163,6 +164,24 @@ To uninstall, stop the daemon and remove the binaries:
 pkill -TERM -x fbkd
 rm ~/.local/bin/fbk ~/.local/bin/fbkd
 ```
+
+### Installing with Cargo
+
+Each release is also published to crates.io. Instead of downloading an archive,
+build and install both binaries with Cargo. This needs a
+[Rust toolchain](https://rustup.rs/) and `protoc`, the Protocol Buffers
+compiler, on your `PATH`:
+
+```sh
+cargo install firebrick-cli firebrick-daemon
+fbk --version
+```
+
+Cargo installs `fbk` and `fbkd` in `~/.cargo/bin`, so both binaries end up in
+the same directory, as the CLI requires. Install both crates with the same
+version. To upgrade, run the same command again and stop the running daemon with
+`pkill -TERM -x fbkd`. To uninstall, stop the daemon and run `cargo uninstall
+firebrick-cli firebrick-daemon`.
 
 ### Migrating from Anvil
 

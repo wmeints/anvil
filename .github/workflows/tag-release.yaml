@@ -51,6 +51,8 @@ jobs:
     uses: ./.github/workflows/release.yaml
     with:
       tag: ${{ needs.tag.outputs.tag }}
+    # A called workflow gets no more permissions than these, and release.yaml's publish job needs id-token.
     permissions:
       contents: write
       packages: write
+      id-token: write

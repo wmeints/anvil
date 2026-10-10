@@ -28,12 +28,19 @@ A tag matching `v*.*.*` triggers a GitHub Actions workflow that:
   the git tag, for `linux/amd64` and `linux/arm64`, after every package has
   built.
 - Creates a GitHub release with generated notes once all of the above pass.
+- Publishes the workspace crates to crates.io before the GitHub release, added
+  by
+  [ADR 0031](0031-publish-the-crates-to-crates-io-with-trusted-publishing.md).
 
 Windows is left out until the CLI and daemon are ported off unix-only APIs.
 
 ## Consequences
 
-- A release needs no secrets beyond the workflow's `GITHUB_TOKEN`.
+- A release needs no secrets beyond the workflow's `GITHUB_TOKEN`. The crates.io
+  publish of
+  [ADR 0031](0031-publish-the-crates-to-crates-io-with-trusted-publishing.md)
+  keeps this true: Trusted Publishing gets a short-lived token from the
+  workflow's OIDC token instead of a stored secret.
 - The release only appears when every package and the image succeed, and the
   image is only pushed when every package succeeds. An image push can still
   succeed while the release step fails.
