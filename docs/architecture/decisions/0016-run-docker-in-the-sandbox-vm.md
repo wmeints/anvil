@@ -46,8 +46,8 @@ socket without `sudo`.
 - Membership of the `docker` group is root-equivalent inside the VM. `agent`
   already has passwordless `sudo`, and the VM is the security boundary, so this
   grants nothing new.
-- With `init: false`, nothing starts `dockerd`. Agents can start it with `sudo
-  dockerd`.
+- With `init: false`, nothing starts `dockerd`. Agents can start it in the
+  background with `sudo sh -c 'dockerd >/var/log/dockerd.log 2>&1 &'`.
 - When `dockerd` fails to start, the sandbox still boots; the reason is in
   `/var/log/dockerd.log`. Nothing restarts `dockerd` when it dies.
 - Commands that run right after the sandbox boots may find `dockerd` not ready

@@ -370,8 +370,8 @@ without `sudo`. Docker runs directly on the sandbox VM and keeps its images and
 containers on the sandbox's own disk at `/var/lib/docker`, so they survive `fbk
 stop` and `fbk start`. When `dockerd` fails to start, the reason is in
 `/var/log/dockerd.log`. With `init: false`, nothing starts `dockerd` and
-`docker` reports `Cannot connect to the Docker daemon`; start it with `sudo
-dockerd`.
+`docker` reports `Cannot connect to the Docker daemon`; start it in the
+background with `sudo sh -c 'dockerd >/var/log/dockerd.log 2>&1 &'`.
 
 ### Bringing your own image
 
@@ -394,7 +394,8 @@ Firebrick runs everything in a sandbox as the `agent` user. A custom image must:
   ([microsandbox#1226](https://github.com/superradcompany/microsandbox/issues/1226)).
   Images built on the base image inherit it; with `init: false`, such hosts
   can't download from servers that have an IPv6 address, and `dockerd` doesn't
-  run until you start it with `sudo dockerd`.
+  run until you start it with `sudo sh -c 'dockerd >/var/log/dockerd.log 2>&1
+  &'`.
 - Add `agent` to the `docker` group and start `dockerd` from `/sbin/init`, if
   agents should be able to run `docker` without `sudo`. Firebrick attaches a
   disk for Docker's data at `/var/lib/docker` to every sandbox.

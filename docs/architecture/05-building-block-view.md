@@ -287,8 +287,8 @@ images. It builds on `ubuntu:26.04` and adds:
   `/var/log/dockerd.log`, and then hands PID 1 to `tini`, which reaps zombie
   processes. It doesn't wait for `dockerd` to be ready, and the sandbox boots
   even when `dockerd` fails. `fbkd` runs it as PID 1 unless the spec sets `init:
-  false`; then nothing starts `dockerd`, and the agent can start it with `sudo
-  dockerd`. See
+  false`; then nothing starts `dockerd`, and the agent can start it in the
+  background with `sudo sh -c 'dockerd >/var/log/dockerd.log 2>&1 &'`. See
   [ADR 0007](decisions/0007-disable-guest-ipv6-in-the-base-image.md).
 
 The release workflow publishes the image as
