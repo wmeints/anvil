@@ -206,8 +206,8 @@ for `mise.toml`, `.mise.toml`, `mise/config.toml`, `.config/mise.toml` and
 for each one that exists, and then `mise install --yes` once, in the workspace
 and as the image's default user. It trusts each file by path, because `mise
 trust --all` would also trust configs in subdirectories. Trusting the config
-without asking is safe because everything mise runs stays inside the sandbox
-(see
+without asking is safe because mise runs inside the sandbox and can reach no
+more than the agent already can: the guest, the workspace and the network (see
 [ADR 0017](decisions/0017-trust-the-workspaces-mise-config-inside-the-sandbox.md)).
 Nothing runs when the sandbox was already running or starting, when a start lost
 the race with another start, or when the workspace has none of the files.
