@@ -67,6 +67,11 @@ sequenceDiagram
         alt NOT_FOUND
             CLI->>D: StartSandbox(name, image, init, mise, resources, network, mounts, workspace)
             Note over D,MS: Creates the sandbox, see Starting a sandbox
+            opt Image isn't cached
+                D-->>CLI: ImagePullProgress (stream)
+                CLI-->>Dev: Progress bar on stderr
+            end
+            D-->>CLI: SandboxStarted, ends the stream
         else Stopped or Crashed
             CLI->>D: StartSandbox(name, workspace)
             Note over D,MS: Starts the sandbox, see Starting a sandbox
@@ -258,6 +263,49 @@ anything, and otherwise bind mounts each directory like the workspace: owned by
 `1000:1000`, with host permissions mirrored, and read-only when `readonly` is
 set. Starting an existing sandbox sends no mounts.
 
+`StartSandbox` is a server-streaming RPC. When fbkd creates a sandbox whose
+image isn't cached, microsandbox downloads it first, which can take minutes for
+the `firebrick-base` image. fbkd creates the sandbox with
+`create_detached_with_pull_progress`, adds up the downloaded bytes of the
+layers, and streams them as `ImagePullProgress` messages, at most one every 100
+ms, with the total from the manifest and a last message with `complete` set. The
+stream ends with `SandboxStarted` once the sandbox runs and its mise tools are
+installed, or with the error status, with the same code and message as a failed
+start. fbk shows the progress on stderr:
+
+```sh
+$ fbk start
+Creating sandbox firebrick...
+Pulling ghcr.io/wmeints/firebrick-base:0.3.0 [=========>          ] 312.00 MiB / 845.00 MiB (37%)
+```
+
+When stderr isn't a terminal, fbk prints `Pulling image <ref>...` when the
+download starts and `Pulled image <ref>` when it ends, without the updates in
+between. An image that is cached sends no layer downloads, and starting an
+existing sandbox pulls nothing, so in both cases fbk shows no pull output. When
+the manifest has no layer sizes, the bar shows the downloaded bytes only. When
+the pull or the start fails, fbk clears the bar and shows the error. fbkd runs
+the start in a task of its own, so a client that disconnects doesn't stop it;
+progress that can't be sent is dropped
+([ADR 0022](decisions/0022-stream-image-pull-progress-from-startsandbox.md)).
+
+A failed pull creates no sandbox, and the error names the image:
+
+- The registry has no such repository or tag (`MANIFEST_UNKNOWN`, `NAME_UNKNOWN`
+  or `NOT_FOUND`): `NOT_FOUND` with `failed to create sandbox: image <ref>
+  doesn't exist`.
+- The registry answers `401 Unauthorized`: `NOT_FOUND` with `image <ref> doesn't
+  exist, or its registry needs a login`. Docker Hub and GHCR answer an unknown
+  repository this way, so it can't be told apart from a private image.
+- The registry can't be reached, for example because DNS or the connection
+  fails: `UNAVAILABLE` with `couldn't reach the registry of image <ref>; check
+  the network connection`.
+- Any other registry error: `INTERNAL` with `failed to pull image <ref>`.
+
+fbkd matches on the typed errors of `microsandbox-image` and `oci-client`
+instead of their messages
+([ADR 0023](decisions/0023-match-image-pull-errors-on-their-types.md)).
+
 When `StartSandbox` creates a sandbox, or starts one that was stopped or
 crashed, fbkd installs the workspace's mise tools before it returns. It looks
 for `mise.toml`, `.mise.toml`, `mise/config.toml`, `.config/mise.toml` and
@@ -382,8 +430,20 @@ sequenceDiagram
         end
         D->>MS: List sandboxes for taken host names
         D->>D: Pick unique project.fbk host name
-        D->>MS: Create detached sandbox (image, init, cpus, memory,<br/>firebrick.hostname, firebrick.mise and firebrick.ports labels,<br/>workspace mounted at /workspaces/project,<br/>extra mounts at their guest paths,<br/>owned ext4 disk at /var/lib/docker,<br/>network policy with TLS interception when enforced)
-        alt init on and image has no /sbin/init
+        D->>MS: Create detached sandbox with pull progress (image, init, cpus, memory,<br/>firebrick.hostname, firebrick.mise and firebrick.ports labels,<br/>workspace mounted at /workspaces/project,<br/>extra mounts at their guest paths,<br/>owned ext4 disk at /var/lib/docker,<br/>network policy with TLS interception when enforced)
+        opt Image isn't cached
+            loop While layers download (at most every 100 ms)
+                MS-->>D: PullProgress events
+                D-->>CLI: ImagePullProgress(image, downloaded_bytes, total_bytes)
+                CLI-->>Dev: Pulling IMAGE [bar] 312 MiB / 845 MiB (37%)
+            end
+            D-->>CLI: ImagePullProgress(complete)
+        end
+        alt Image doesn't exist or its registry refuses it
+            Note over D: Result: NOT_FOUND (image REF doesn't exist)
+        else Registry can't be reached
+            Note over D: Result: UNAVAILABLE (couldn't reach the registry)
+        else init on and image has no /sbin/init
             D->>MS: Remove the half-created sandbox
             Note over D: Result: FAILED_PRECONDITION (set init: false)
         end
@@ -409,7 +469,7 @@ sequenceDiagram
         end
         D->>D: Close unlisted forwards, open new ones on localhost
     end
-    D-->>CLI: StartSandboxResponse(forwards, failed_forwards) or the error
+    D-->>CLI: SandboxStarted(forwards, failed_forwards) or the error status, ends the stream
     CLI-->>Dev: warning: couldn't forward localhost:port: reason (per failed forward)
     CLI->>D: GetSandbox(name)
     D-->>CLI: GetSandboxResponse(hostname, workspace_path)

@@ -43,6 +43,7 @@ C4Component
         Component(init, "init", "serde_yaml", "Default spec")
         Component(secret, "secret", "Rust", "Secrets")
         Component(table, "table", "ratatui", "Tables")
+        Component(progress, "progress", "indicatif", "Image pull progress")
         Component(client, "client", "Tonic client", "Daemon client")
     }
     Component_Ext(spec, "firebrick-spec", "serde_yaml", "Sandbox spec")
@@ -57,6 +58,7 @@ C4Component
     Rel(main, secret, "Uses")
     Rel(main, client, "Connects")
     Rel(manage, table, "Renders sandboxes")
+    Rel(manage, progress, "Shows image pull")
     Rel(secret, table, "Renders secrets")
     Rel(session, manage, "Ensures running")
     Rel(manage, spec, "Loads .firebrick.yml")
@@ -93,6 +95,12 @@ C4Component
 - `table` - Renders rows as a bordered table with `ratatui` into an in-memory
   buffer and returns it as plain text lines
   ([ADR 0003](decisions/0003-render-cli-tables-with-ratatui.md)).
+- `progress` - Shows the image pull progress from the `StartSandbox` stream on
+  stderr: a progress bar made with `indicatif` with the downloaded and total MiB
+  and a percentage when stderr is a terminal, and otherwise `Pulling image
+  <ref>...` and `Pulled image <ref>`. It shows nothing when no progress arrives,
+  and clears an unfinished bar when the start fails
+  ([ADR 0022](decisions/0022-stream-image-pull-progress-from-startsandbox.md)).
 - `validate` - Checks `.firebrick.yml` and reports problems as
   `file:line:column: error: message`.
 - `init` - Writes `firebrick_spec::default_spec` as YAML to `.firebrick.yml` in
@@ -117,6 +125,7 @@ C4Component
         Component(secrets, "secrets", "serde_yaml", "Secrets")
         Component(network, "network", "microsandbox-network", "Egress rules")
         Component(forward, "forward", "russh", "Port forwards")
+        Component(pull, "pull", "Rust", "Image pull progress")
     }
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
@@ -136,6 +145,7 @@ C4Component
     Rel(sandboxes, secrets, "Loads, stores and applies secrets")
     Rel(sandboxes, network, "Applies egress rules")
     Rel(sandboxes, forward, "Reconciles port forwards")
+    Rel(sandboxes, pull, "Reports image pull progress")
     Rel(forward, microsandbox, "Opens direct-tcpip channels")
     Rel(sandboxes, ssh, "Host names, SSH config")
     Rel(sandboxes, vscode, "Syncs Remote-SSH platforms")
@@ -167,12 +177,14 @@ C4Component
   a request with `firebrick-spec` and rejects an invalid rule with
   `INVALID_ARGUMENT`, also when the sandbox already exists. It rejects a port
   outside 1 to 65535 or a host port that is listed twice with
-  `INVALID_ARGUMENT`, and returns the open and failed forwards in the
-  `StartSandbox` response. It maps the `SandboxError` of `sandboxes` to gRPC
-  status codes in one place. It refuses to start when the socket already exists,
-  gives the socket mode `0600` after binding it and removes it on shutdown. It
-  only hands a connection to tonic when the peer's UID, read with `SO_PEERCRED`,
-  is the daemon's own UID or root (see
+  `INVALID_ARGUMENT`. `StartSandbox` is a server-streaming RPC: `server` runs
+  the start in a task of its own, so it finishes when the client disconnects,
+  streams the image pull progress and ends the stream with the open and failed
+  forwards, or with the error status. It maps the `SandboxError` of `sandboxes`
+  to gRPC status codes in one place. It refuses to start when the socket already
+  exists, gives the socket mode `0600` after binding it and removes it on
+  shutdown. It only hands a connection to tonic when the peer's UID, read with
+  `SO_PEERCRED`, is the daemon's own UID or root (see
   [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
@@ -187,11 +199,13 @@ C4Component
   disk survives stops and restarts, and microsandbox deletes it when the sandbox
   is removed. With `init` on, it hands PID 1 to the image's `/sbin/init`. When
   that fails because the image has no init, it removes the half-created sandbox
-  and returns `FAILED_PRECONDITION` with a hint to set `init: false`. Invalid
-  values are rejected before it creates anything. When it creates or starts a
-  sandbox, it uses the `mise` module to trust the mise config files at the
-  workspace root and run `mise install`, unless the sandbox's `firebrick.mise`
-  label, stored at create time, turns mise off (see
+  and returns `FAILED_PRECONDITION` with a hint to set `init: false`. A pull of
+  an image that doesn't exist returns `NOT_FOUND`, and one whose registry can't
+  be reached `UNAVAILABLE`, both naming the image. Invalid values are rejected
+  before it creates anything. When it creates or starts a sandbox, it uses the
+  `mise` module to trust the mise config files at the workspace root and run
+  `mise install`, unless the sandbox's `firebrick.mise` label, stored at create
+  time, turns mise off (see
   [Starting a sandbox](06-runtime-view.md#starting-a-sandbox)). It starts,
   stops, gets, lists and removes sandboxes, gives each sandbox a unique SSH host
   name, regenerates the SSH config, the editor settings and Zed's remote
@@ -214,6 +228,11 @@ C4Component
   running), and keeps it when a request carries none. Once a sandbox runs after
   `StartSandbox`, or after `SshTunnel` started it, it hands the stored ports to
   `forward`; `StopSandbox` and `RemoveSandbox` close the sandbox's forwards.
+- `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
+  up the downloaded bytes per layer, takes the total from the manifest, and
+  reports at most one update every 100 ms plus a final one when the pull
+  completes. A pull without layer downloads, because the image is cached,
+  reports nothing.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and

@@ -6,14 +6,16 @@ use crate::api::sandbox_management_service_server::{
 };
 use crate::api::{
     AttachRequest, AttachResponse, AttachStart, GetSandboxRequest, GetSandboxResponse,
-    ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse, Mount,
-    NetworkPolicy, PortForward, PortForwardFailure, PortForwards, RemoveSandboxRequest,
-    RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse, SandboxResources,
-    SandboxStatus, SandboxSummary, SecretSummary, SetSecretRequest, SetSecretResponse,
-    SshTunnelRequest, SshTunnelResponse, StartSandboxRequest, StartSandboxResponse,
-    StopSandboxRequest, StopSandboxResponse, attach_request, ssh_tunnel_request,
+    ImagePullProgress, ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest,
+    ListSecretsResponse, Mount, NetworkPolicy, PortForward, PortForwardFailure, PortForwards,
+    RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest, RemoveSecretResponse,
+    SandboxResources, SandboxStarted, SandboxStatus, SandboxSummary, SecretSummary,
+    SetSecretRequest, SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
+    StartSandboxResponse, StopSandboxRequest, StopSandboxResponse, attach_request,
+    ssh_tunnel_request, start_sandbox_response,
 };
 use crate::forward::{ForwardFailure, ForwardReport};
+use crate::pull::PullUpdate;
 use crate::sandboxes::{Resources, SandboxError, SandboxInfo, SandboxManager, StartSandbox};
 use crate::secrets::{Secret, SecretStore};
 use crate::session::{self, SessionCommand};
@@ -28,10 +30,12 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{SignalKind, signal};
-use tonic::codegen::tokio_stream::wrappers::UnixListenerStream;
+use tokio::sync::mpsc;
+use tonic::codegen::tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
 use tonic::codegen::tokio_stream::{Stream, StreamExt};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
@@ -51,14 +55,15 @@ pub enum ServerError {
 
 /// gRPC service implementation that manages sandboxes.
 pub struct FirebrickServer {
-    sandboxes: SandboxManager,
+    // Shared with the tasks that start sandboxes, so a start finishes when its client is gone.
+    sandboxes: Arc<SandboxManager>,
 }
 
 impl FirebrickServer {
     /// Creates a server that adds the secrets from `secrets` to sandboxes.
     pub fn new(secrets: SecretStore) -> Self {
         Self {
-            sandboxes: SandboxManager::new(secrets),
+            sandboxes: Arc::new(SandboxManager::new(secrets)),
         }
     }
 }
@@ -118,9 +123,9 @@ fn port_number(port: u32) -> Result<u16, Status> {
         .ok_or_else(|| Status::invalid_argument(format!("invalid port {port}: use 1 to 65535")))
 }
 
-/// Converts the forwards of a sandbox to the start response.
-fn start_response(report: ForwardReport) -> StartSandboxResponse {
-    StartSandboxResponse {
+/// Converts the forwards of a sandbox to the message that ends the start stream.
+fn sandbox_started(report: ForwardReport) -> SandboxStarted {
+    SandboxStarted {
         forwards: report.open.into_iter().map(port_forward).collect(),
         failed_forwards: report
             .failed
@@ -131,6 +136,25 @@ fn start_response(report: ForwardReport) -> StartSandboxResponse {
             })
             .collect(),
     }
+}
+
+/// Wraps a message in the response of the start stream.
+fn start_sandbox_response(message: start_sandbox_response::Message) -> StartSandboxResponse {
+    StartSandboxResponse {
+        message: Some(message),
+    }
+}
+
+/// Converts the progress of an image pull to a response of the start stream.
+fn pull_progress_response(update: PullUpdate) -> StartSandboxResponse {
+    start_sandbox_response(start_sandbox_response::Message::PullProgress(
+        ImagePullProgress {
+            image: update.image,
+            downloaded_bytes: update.downloaded_bytes,
+            total_bytes: update.total_bytes,
+            complete: update.complete,
+        },
+    ))
 }
 
 /// Converts a mapping to its protobuf message.
@@ -184,6 +208,7 @@ impl From<SandboxError> for Status {
             SandboxError::NotFound(message) => Status::not_found(message),
             SandboxError::InvalidArgument(message) => Status::invalid_argument(message),
             SandboxError::FailedPrecondition(message) => Status::failed_precondition(message),
+            SandboxError::Unavailable(message) => Status::unavailable(message),
             SandboxError::Internal(message) => Status::internal(message),
         }
     }
@@ -192,33 +217,57 @@ impl From<SandboxError> for Status {
 /// Stream of responses sent back to the client during an attached session.
 type AttachStream = Pin<Box<dyn Stream<Item = Result<AttachResponse, Status>> + Send>>;
 
+/// Stream of image pull progress that ends with the started sandbox.
+type StartSandboxStream = Pin<Box<dyn Stream<Item = Result<StartSandboxResponse, Status>> + Send>>;
+
 /// Stream of SSH protocol bytes sent back to the client through a tunnel.
 type SshTunnelStream = Pin<Box<dyn Stream<Item = Result<SshTunnelResponse, Status>> + Send>>;
 
 #[async_trait]
 impl SandboxManagementService for FirebrickServer {
+    type StartSandboxStream = StartSandboxStream;
     type AttachStream = AttachStream;
     type SshTunnelStream = SshTunnelStream;
 
-    /// Starts an existing sandbox or creates a new one when it doesn't exist.
+    /// Starts an existing sandbox or creates a new one when it doesn't exist, streaming the
+    /// progress of the image pull. The start runs in its own task, so it finishes even when
+    /// the client disconnects.
     async fn start_sandbox(
         &self,
         request: Request<StartSandboxRequest>,
-    ) -> Result<Response<StartSandboxResponse>, Status> {
+    ) -> Result<Response<Self::StartSandboxStream>, Status> {
         let request_data = request.into_inner();
         let network = network_spec(request_data.network.as_ref())?;
         let ports = request_data.ports.as_ref().map(port_mappings).transpose()?;
         let mounts = mount_specs(&request_data.mounts);
+        let sandboxes = Arc::clone(&self.sandboxes);
+        let (tx, rx) = mpsc::channel(16);
 
-        let report = self
-            .sandboxes
-            .start(
-                start_sandbox_from(&request_data, &network, ports.as_deref(), &mounts),
-                || sandbox_resources(&request_data),
-            )
-            .await?;
+        tokio::spawn(async move {
+            let progress_tx = tx.clone();
+            let result = sandboxes
+                .start(
+                    start_sandbox_from(&request_data, &network, ports.as_deref(), &mounts),
+                    || sandbox_resources(&request_data),
+                    // Progress is best-effort: drop it when the client is slow or gone.
+                    |progress| {
+                        let _ = progress_tx.try_send(Ok(pull_progress_response(progress)));
+                    },
+                )
+                .await;
+            let last = result
+                .map(|report| {
+                    start_sandbox_response(start_sandbox_response::Message::Started(
+                        sandbox_started(report),
+                    ))
+                })
+                .map_err(Status::from);
 
-        Ok(Response::new(start_response(report)))
+            // The client may be gone; the sandbox started anyway.
+            let _ = tx.send(last).await;
+        });
+
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
     /// Stores a secret and adds it to the existing sandboxes. Running sandboxes pick it up the
@@ -709,7 +758,31 @@ mod tests {
     }
 
     #[test]
-    fn start_response_lists_open_and_failed_forwards() {
+    fn pull_progress_response_keeps_the_progress() {
+        let update = PullUpdate {
+            image: "alpine:3.22".to_string(),
+            downloaded_bytes: 100,
+            total_bytes: None,
+            complete: true,
+        };
+
+        assert_eq!(
+            pull_progress_response(update),
+            StartSandboxResponse {
+                message: Some(start_sandbox_response::Message::PullProgress(
+                    ImagePullProgress {
+                        image: "alpine:3.22".to_string(),
+                        downloaded_bytes: 100,
+                        total_bytes: None,
+                        complete: true,
+                    }
+                )),
+            }
+        );
+    }
+
+    #[test]
+    fn sandbox_started_lists_open_and_failed_forwards() {
         let mapping = |host, guest| PortMapping { host, guest };
         let report = ForwardReport {
             open: vec![mapping(8080, 5173)],
@@ -719,7 +792,7 @@ mod tests {
             }],
         };
 
-        let response = start_response(report);
+        let response = sandbox_started(report);
 
         assert_eq!(response.forwards, [port_forward(mapping(8080, 5173))]);
         assert_eq!(
@@ -815,6 +888,10 @@ mod tests {
             (
                 SandboxError::FailedPrecondition("c".into()),
                 tonic::Code::FailedPrecondition,
+            ),
+            (
+                SandboxError::Unavailable("e".into()),
+                tonic::Code::Unavailable,
             ),
             (SandboxError::Internal("d".into()), tonic::Code::Internal),
         ];

@@ -3,7 +3,7 @@ syntax = "proto3";
 package firebrick;
 
 service SandboxManagementService {
-  rpc StartSandbox(StartSandboxRequest) returns (StartSandboxResponse);
+  rpc StartSandbox(StartSandboxRequest) returns (stream StartSandboxResponse);
   rpc StopSandbox(StopSandboxRequest) returns (StopSandboxResponse);
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
   rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
@@ -83,7 +83,32 @@ message SandboxVolumes {
   string docker = 1;
 }
 
+// A stream of image pull progress, ending with the started sandbox. Errors end the stream with
+// a status instead.
 message StartSandboxResponse {
+  reserved 1, 2;
+
+  oneof message {
+    // Sent while fbkd downloads the image of a sandbox it creates. Never sent when the image is
+    // cached or the sandbox already exists. Best-effort: fbkd may skip messages.
+    ImagePullProgress pull_progress = 3;
+    // The last message of the stream, sent once the sandbox runs.
+    SandboxStarted started = 4;
+  }
+}
+
+message ImagePullProgress {
+  // Reference of the image being pulled, e.g. `ghcr.io/wmeints/firebrick-base:0.3.0`.
+  string image = 1;
+  // Bytes downloaded so far, over all layers.
+  uint64 downloaded_bytes = 2;
+  // Compressed size of all layers. Unset when the manifest has no layer sizes.
+  optional uint64 total_bytes = 3;
+  // Set on the last message of the pull, once the image is downloaded.
+  bool complete = 4;
+}
+
+message SandboxStarted {
   // The forwards that are open for the sandbox, sorted by host port.
   repeated PortForward forwards = 1;
   // The forwards fbkd couldn't open. The sandbox still started.

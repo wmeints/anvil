@@ -4,6 +4,7 @@ pub use firebrick_proto as api;
 pub mod forward;
 pub mod mise;
 pub mod network;
+pub mod pull;
 pub mod runtime;
 pub mod sandboxes;
 pub mod secrets;
