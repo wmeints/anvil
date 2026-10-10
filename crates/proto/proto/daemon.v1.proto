@@ -91,6 +91,7 @@ message SandboxVolumes {
 // a status instead.
 message StartSandboxResponse {
   reserved 1, 2;
+  reserved "forwards", "failed_forwards";
 
   oneof message {
     // Sent while fbkd downloads the image of a sandbox it creates. Never sent when the image is

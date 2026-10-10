@@ -306,6 +306,21 @@ mod tests {
     }
 
     #[test]
+    fn bar_ends_at_the_total_when_the_sandbox_starts_without_a_last_message() {
+        let (mut view, term) = terminal_view();
+
+        view.update(&progress(100, Some(400)));
+        view.finish();
+        drop(view);
+
+        let contents = term.contents();
+        assert!(
+            contents.ends_with("400.00 MiB / 400.00 MiB (100%)"),
+            "{contents}"
+        );
+    }
+
+    #[test]
     fn bar_is_cleared_when_the_pull_fails() {
         let (mut view, term) = terminal_view();
 

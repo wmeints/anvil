@@ -268,10 +268,10 @@ image isn't cached, microsandbox downloads it first, which can take minutes for
 the `firebrick-base` image. fbkd creates the sandbox with
 `create_detached_with_pull_progress`, adds up the downloaded bytes of the
 layers, and streams them as `ImagePullProgress` messages, at most one every 100
-ms, with the total from the manifest and a last message with `complete` set. The
-stream ends with `SandboxStarted` once the sandbox runs and its mise tools are
-installed, or with the error status, with the same code and message as a failed
-start. fbk shows the progress on stderr:
+ms, plus one for each layer that finishes, with the total from the manifest and
+a last message with `complete` set. The stream ends with `SandboxStarted` once
+the sandbox runs and its mise tools are installed, or with the error status. fbk
+shows the progress on stderr:
 
 ```sh
 $ fbk start
@@ -628,6 +628,11 @@ don't change it.
 Between removing and creating the sandbox, it briefly doesn't exist, so an SSH
 connection to its host name fails during that time. Other requests for the
 sandbox wait for the lock.
+
+`fbkd` runs the update in a task of its own, so when the client disconnects, for
+example because the developer presses Ctrl-C, the recreate still finishes and
+deletes its snapshot. The client then doesn't learn the outcome; running the
+same `fbk network` command again reports whether the sandbox has the rules.
 
 ## Connecting via SSH
 

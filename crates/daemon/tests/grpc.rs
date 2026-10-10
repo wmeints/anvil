@@ -1905,6 +1905,34 @@ async fn failed_recreate_keeps_the_snapshot_and_names_it() {
 }
 
 #[tokio::test]
+async fn update_network_finishes_when_the_client_disconnects() {
+    const NAME: &str = "fbk-it-update-disconnect";
+    remove_sandbox_and_snapshots(NAME).await;
+
+    let daemon = TestDaemon::start("update-disconnect").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+    let network = allow_policy(true, &["example.com"]);
+
+    // Recreating the sandbox takes seconds, so the client gives up while it runs.
+    let cancelled = tokio::time::timeout(
+        Duration::from_millis(100),
+        update_network(&mut client.clone(), NAME, network.clone()),
+    )
+    .await;
+    // Waits for the cancelled update, which holds the sandbox's lock.
+    let again = update_network(&mut client, NAME, network).await;
+    let snapshots = leftover_snapshots(NAME).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(NAME).await;
+
+    assert!(cancelled.is_err(), "the update finished within 100 ms");
+    assert_eq!(again.map_err(|status| status.to_string()), Ok(false));
+    assert!(snapshots.is_empty(), "{snapshots:?}");
+}
+
+#[tokio::test]
 async fn update_network_can_update_the_same_sandbox_again() {
     const NAME: &str = "fbk-it-update-twice";
     remove_sandbox_and_snapshots(NAME).await;

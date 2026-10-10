@@ -271,18 +271,24 @@ impl SandboxManagementService for FirebrickServer {
     }
 
     /// Replaces the egress rules of an existing sandbox, recreating it from a disk snapshot
-    /// unless it already has them.
+    /// unless it already has them. The update runs in its own task, so a client that
+    /// disconnects can't stop a recreate halfway and leave its snapshot behind.
     async fn update_network(
         &self,
         request: Request<UpdateNetworkRequest>,
     ) -> Result<Response<UpdateNetworkResponse>, Status> {
         let request_data = request.into_inner();
         let network = network_spec(request_data.network.as_ref())?;
+        let sandboxes = Arc::clone(&self.sandboxes);
 
-        let updated = self
-            .sandboxes
-            .update_network(&request_data.name, &network)
-            .await?;
+        let updated =
+            tokio::spawn(
+                async move { sandboxes.update_network(&request_data.name, &network).await },
+            )
+            .await
+            .map_err(|err| {
+                Status::internal(format!("failed to update the network rules: {err}"))
+            })??;
 
         Ok(Response::new(UpdateNetworkResponse { updated }))
     }

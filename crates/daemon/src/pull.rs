@@ -37,8 +37,9 @@ pub struct PullTracker {
 
 impl PullTracker {
     /// Records a pull event received at `now`. Returns the message to send, if any: one when a
-    /// layer downloads and at least [`PROGRESS_INTERVAL`] passed since the last message, and a
-    /// final one with `complete` set when a pull that downloaded layers completes.
+    /// layer downloads and at least [`PROGRESS_INTERVAL`] passed since the last message, one
+    /// for every layer that finishes, so the bar doesn't stall while the image is unpacked, and
+    /// a final one with `complete` set when a pull that downloaded layers completes.
     pub fn update(&mut self, event: &PullProgress, now: Instant) -> Option<PullUpdate> {
         match event {
             PullProgress::Resolved {
@@ -52,14 +53,18 @@ impl PullTracker {
                 ..
             } => {
                 self.downloading = true;
-                self.record(*layer_index, *downloaded_bytes, now)
+                self.record(*layer_index, *downloaded_bytes);
+                self.throttled(now)
             }
             // Also sent for layers that are cached, with their full size.
             PullProgress::LayerDownloadComplete {
                 layer_index,
                 downloaded_bytes,
                 ..
-            } => self.record(*layer_index, *downloaded_bytes, now),
+            } => {
+                self.record(*layer_index, *downloaded_bytes);
+                self.sent(now)
+            }
             PullProgress::Complete { .. } => self.downloading.then(|| self.message(true)),
             _ => None,
         }
@@ -72,27 +77,28 @@ impl PullTracker {
         None
     }
 
-    /// Stores the bytes of a layer, never lowering them, and returns the throttled progress.
-    fn record(
-        &mut self,
-        layer_index: usize,
-        downloaded_bytes: u64,
-        now: Instant,
-    ) -> Option<PullUpdate> {
+    /// Stores the bytes of a layer, never lowering them.
+    fn record(&mut self, layer_index: usize, downloaded_bytes: u64) {
         let bytes = self.layer_bytes.entry(layer_index).or_default();
         *bytes = (*bytes).max(downloaded_bytes);
-
-        self.throttled(now)
     }
 
     /// Returns a progress message unless the last one was sent less than
     /// [`PROGRESS_INTERVAL`] before `now`.
     fn throttled(&mut self, now: Instant) -> Option<PullUpdate> {
-        if !self.downloading
-            || self
-                .last_sent
-                .is_some_and(|last| now.duration_since(last) < PROGRESS_INTERVAL)
+        if self
+            .last_sent
+            .is_some_and(|last| now.duration_since(last) < PROGRESS_INTERVAL)
         {
+            return None;
+        }
+
+        self.sent(now)
+    }
+
+    /// Returns a progress message sent at `now`, once a layer downloads.
+    fn sent(&mut self, now: Instant) -> Option<PullUpdate> {
+        if !self.downloading {
             return None;
         }
 
@@ -146,6 +152,7 @@ pub async fn wait_for_create(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use microsandbox_image::PullProgressSender;
     use std::sync::Arc;
 
     const IMAGE: &str = "ghcr.io/wmeints/firebrick-base:test";
@@ -265,6 +272,46 @@ mod tests {
         let events = [resolved(None), layer_progress(0, 50)];
 
         assert_eq!(track(&events), vec![progress(50, None)]);
+    }
+
+    /// Sends the events of a pull that downloads one layer, then fails like a create would.
+    async fn fail_after_a_pull(sender: PullProgressSender) -> MicrosandboxResult<Sandbox> {
+        sender.send(resolved(Some(300)));
+        sender.send(layer_progress(0, 300));
+        sender.send(complete());
+
+        Err(MicrosandboxError::Custom("boom".to_string()))
+    }
+
+    #[tokio::test]
+    async fn wait_for_create_reports_the_events_sent_with_the_result() {
+        let (handle, sender) = microsandbox_image::progress_channel();
+        let task = tokio::spawn(fail_after_a_pull(sender));
+        let mut updates = vec![];
+
+        let result = wait_for_create(handle, task, |update| updates.push(update)).await;
+
+        assert_eq!(result.err().map(|err| err.to_string()), Some("boom".into()));
+        assert_eq!(
+            updates.last(),
+            Some(&PullUpdate {
+                complete: true,
+                ..progress(300, Some(300))
+            })
+        );
+    }
+
+    #[test]
+    fn sends_completed_layers_despite_the_throttle() {
+        let mut tracker = PullTracker::default();
+        let start = Instant::now();
+        tracker.update(&resolved(Some(300)), start);
+
+        let first = tracker.update(&layer_progress(0, 50), start);
+        let completed = tracker.update(&layer_complete(0, 300), start + PROGRESS_INTERVAL / 2);
+
+        assert_eq!(first, Some(progress(50, Some(300))));
+        assert_eq!(completed, Some(progress(300, Some(300))));
     }
 
     #[test]

@@ -262,9 +262,9 @@ C4Component
   lock is dropped when no task holds or waits for it.
 - `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
   up the downloaded bytes per layer, takes the total from the manifest, and
-  reports at most one update every 100 ms plus a final one when the pull
-  completes. A pull without layer downloads, because the image is cached,
-  reports nothing.
+  reports at most one update every 100 ms, one for each layer that finishes and
+  a final one when the pull completes. A pull without layer downloads, because
+  the image is cached, reports nothing.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and
