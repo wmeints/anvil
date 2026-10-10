@@ -21,13 +21,14 @@ use anyhow::Result;
 use async_trait::async_trait;
 use firebrick_spec::SandboxResourcesSpec;
 use std::fs;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::pin::Pin;
 use thiserror::Error;
-use tokio::net::UnixListener;
+use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{SignalKind, signal};
-use tonic::codegen::tokio_stream::Stream;
 use tonic::codegen::tokio_stream::wrappers::UnixListenerStream;
+use tonic::codegen::tokio_stream::{Stream, StreamExt};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -40,6 +41,8 @@ pub enum ServerError {
     FailedToListen(#[from] tonic::transport::Error),
     #[error("invalid socket path")]
     InvalidSocketPath(#[from] std::io::Error),
+    #[error("can't restrict the socket to its owner")]
+    InsecureSocket(#[source] std::io::Error),
 }
 
 /// gRPC service implementation that manages sandboxes.
@@ -311,7 +314,11 @@ pub async fn serve(
     }
 
     let listener = UnixListener::bind(socket_path).map_err(ServerError::InvalidSocketPath)?;
-    let incoming = UnixListenerStream::new(listener);
+    let daemon_uid = restrict_to_owner(socket_path).inspect_err(|_| {
+        let _ = fs::remove_file(socket_path);
+    })?;
+    let incoming = UnixListenerStream::new(listener)
+        .filter(move |conn| conn.as_ref().map_or(true, |s| accept(s, daemon_uid)));
 
     Server::builder()
         .trace_fn(|req| tracing::info_span!("grpc", path = %req.uri().path()))
@@ -325,6 +332,41 @@ pub async fn serve(
     fs::remove_file(socket_path)?;
 
     Ok(())
+}
+
+/// Gives the socket mode `0600`, whatever the umask, and returns the UID that owns it, which
+/// is the daemon's effective UID.
+fn restrict_to_owner(socket_path: &Path) -> Result<u32, ServerError> {
+    fs::set_permissions(socket_path, fs::Permissions::from_mode(0o600))
+        .and_then(|()| fs::metadata(socket_path))
+        .map(|metadata| metadata.uid())
+        .map_err(ServerError::InsecureSocket)
+}
+
+/// Returns whether a connection may reach the gRPC service, based on its peer credentials.
+/// A rejected connection is closed when the caller drops it.
+fn accept(conn: &UnixStream, daemon_uid: u32) -> bool {
+    match conn.peer_cred() {
+        Ok(peer) if is_authorized(peer.uid(), daemon_uid) => true,
+        Ok(peer) => {
+            tracing::warn!(
+                peer_uid = peer.uid(),
+                peer_pid = ?peer.pid(),
+                "rejected connection from another user"
+            );
+            false
+        }
+        Err(err) => {
+            tracing::warn!(error = ?err, "rejected connection with unknown peer credentials");
+            false
+        }
+    }
+}
+
+/// Returns whether a peer may use the daemon: only the daemon's own user and root may. Root is
+/// allowed because it can bypass the check anyway, for example by reading the daemon's memory.
+fn is_authorized(peer_uid: u32, daemon_uid: u32) -> bool {
+    peer_uid == daemon_uid || peer_uid == 0
 }
 
 /// Completes when SIGINT or SIGTERM is received.
@@ -355,8 +397,11 @@ fn map_sandbox_status(s: microsandbox::sandbox::SandboxStatus) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
+    use hyper_util::rt::TokioIo;
     use microsandbox::sandbox::SandboxStatus as MsbStatus;
     use std::path::PathBuf;
+    use tonic::transport::{Channel, Endpoint, Uri};
 
     /// Returns a store for tests that never set a secret.
     fn unused_store() -> SecretStore {
@@ -394,9 +439,26 @@ mod tests {
 
     /// Waits until the server accepts connections on the socket.
     async fn wait_for_socket(path: &Path) {
-        while tokio::net::UnixStream::connect(path).await.is_err() {
+        while UnixStream::connect(path).await.is_err() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    /// Connects a gRPC client to the server on the socket.
+    async fn client(path: PathBuf) -> SandboxManagementServiceClient<Channel> {
+        // The HTTP endpoint isn't used; it only shows up in the authority header.
+        let channel = Endpoint::try_from("http://localhost")
+            .unwrap()
+            .connect_with_connector(tower::service_fn(move |_: Uri| connect_unix(path.clone())))
+            .await
+            .unwrap();
+
+        SandboxManagementServiceClient::new(channel)
+    }
+
+    /// Connects to the server socket for a gRPC channel.
+    async fn connect_unix(path: PathBuf) -> std::io::Result<TokioIo<UnixStream>> {
+        Ok(TokioIo::new(UnixStream::connect(path).await?))
     }
 
     #[test]
@@ -538,6 +600,50 @@ mod tests {
         tx.send(()).unwrap();
         handle.await.unwrap().unwrap();
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn serve_restricts_socket_to_owner() {
+        let path = temp_path("mode.sock");
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+        let handle = tokio::spawn(serve_until(path.clone(), rx));
+        wait_for_socket(&path).await;
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+
+        tx.send(()).unwrap();
+        handle.await.unwrap().unwrap();
+        assert_eq!(mode, 0o600);
+    }
+
+    #[tokio::test]
+    async fn serve_serves_connections_from_the_same_user() {
+        let path = temp_path("same-user.sock");
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+        let handle = tokio::spawn(serve_until(path.clone(), rx));
+        wait_for_socket(&path).await;
+        let result = client(path.clone())
+            .await
+            .list_secrets(ListSecretsRequest {})
+            .await;
+
+        tx.send(()).unwrap();
+        handle.await.unwrap().unwrap();
+        assert!(result.is_ok(), "request failed: {result:?}");
+    }
+
+    #[test]
+    fn is_authorized_accepts_the_daemon_user_and_root_only() {
+        let cases = [(1000, true), (0, true), (1001, false), (u32::MAX, false)];
+
+        for (peer_uid, expected) in cases {
+            assert_eq!(
+                is_authorized(peer_uid, 1000),
+                expected,
+                "peer uid {peer_uid}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -149,7 +149,10 @@ C4Component
   and MiB, falling back to the defaults from `firebrick-spec`, and rejects
   invalid resources with `INVALID_ARGUMENT`. It maps the `SandboxError` of
   `sandboxes` to gRPC status codes in one place. It refuses to start when the
-  socket already exists and removes the socket on shutdown.
+  socket already exists, gives the socket mode `0600` after binding it and
+  removes it on shutdown. It only hands a connection to tonic when the peer's
+  UID, read with `SO_PEERCRED`, is the daemon's own UID or root (see
+  [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
   with the requested vCPUs and memory, mounts the workspace read/write at
