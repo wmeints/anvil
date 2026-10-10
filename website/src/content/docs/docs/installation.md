@@ -125,37 +125,6 @@ pkill -TERM -x fbkd
 rm ~/.local/bin/fbk ~/.local/bin/fbkd
 ```
 
-## Migrating from Anvil
-
-Firebrick was called Anvil before. Firebrick doesn't read any of the old names,
-so move your setup over by hand:
-
-1. Stop the old daemon and remove its binaries:
-
-   ```sh
-   pkill -TERM -x anvild
-   rm ~/.local/bin/anvil ~/.local/bin/anvild
-   ```
-
-   If you installed them with `cargo install`, run `cargo uninstall anvil-cli
-   anvil-daemon` instead of `rm`.
-
-2. Move the data directory with your SSH keys and secrets:
-
-   ```sh
-   mv ~/.local/share/anvil ~/.local/share/firebrick
-   ```
-
-3. Rename `.anvil.yml` to `.firebrick.yml` in each project.
-4. Remove the old `*.anvil` hosts: the `Include` line for
-   `~/.local/share/anvil/ssh/config` in `~/.ssh/config`, the `*.anvil` keys in
-   `remote.SSH.remotePlatform` of your VS Code settings, and the `*.anvil`
-   entries in `ssh_connections` of your Zed settings.
-5. Run `fbk start` once in each project. It gives the existing sandbox a
-   `<leaf>.fbk` host name. Until then, `fbk ls` shows no host name for it, you
-   can't connect to it over SSH, and `fbk secret set` and `fbk secret rm` skip
-   it.
-
 ## Building from source
 
 Install the development toolchain with [mise](https://mise.jdx.dev) from a clone
