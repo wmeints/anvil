@@ -230,9 +230,13 @@ impl SandboxManager {
         let _ports = self.ports_lock.lock().await;
         let sb = get_sandbox(name).await?;
         let stored = stored_ports(&sb);
+        let change = PortsChange {
+            ports: with_port(&stored, port),
+            stored,
+            requested: Some(port),
+        };
 
-        self.change_ports(&sb, &stored, &with_port(&stored, port))
-            .await
+        self.change_ports(&sb, &change).await
     }
 
     /// Removes the forward of the host port from the ports stored with the sandbox, and closes
@@ -250,48 +254,48 @@ impl SandboxManager {
             )));
         }
 
-        self.change_ports(&sb, &stored, &ports).await
+        let change = PortsChange {
+            stored,
+            ports,
+            requested: None,
+        };
+
+        self.change_ports(&sb, &change).await
     }
 
-    /// Makes the open forwards of a running sandbox match `ports`, then stores them with the
-    /// sandbox. Returns whether the sandbox runs. When a new forward can't be opened or the
-    /// ports can't be stored, reopens the `stored` forwards and fails.
+    /// Makes the open forwards of a running sandbox match the changed ports, then stores them
+    /// with the sandbox. Returns whether the sandbox runs. When a new forward can't be opened or
+    /// the ports can't be stored, reopens the stored forwards and fails.
     async fn change_ports(
         &self,
         sb: &SandboxHandle,
-        stored: &[PortMapping],
-        ports: &[PortMapping],
+        change: &PortsChange,
     ) -> Result<bool, SandboxError> {
         let running = sb.status_snapshot() == SandboxStatus::Running;
 
         if running {
-            self.apply_new_ports(sb.name(), stored, ports).await?;
+            self.apply_new_ports(sb.name(), change).await?;
         }
 
-        let saved = save_ports(sb, ports).await;
+        let saved = save_ports(sb, &change.ports).await;
 
         if saved.is_err() && running {
-            self.forwards.apply(sb.name(), stored).await;
+            self.forwards.apply(sb.name(), &change.stored).await;
         }
 
         saved.map(|()| running)
     }
 
-    /// Makes the open forwards of the sandbox match `ports`. Fails with `FailedPrecondition`
-    /// when a forward that isn't in `stored` can't be opened, after reopening the `stored`
+    /// Makes the open forwards of the sandbox match the changed ports. Fails with
+    /// `FailedPrecondition` when a new forward can't be opened, after reopening the stored
     /// forwards.
-    async fn apply_new_ports(
-        &self,
-        name: &str,
-        stored: &[PortMapping],
-        ports: &[PortMapping],
-    ) -> Result<(), SandboxError> {
-        let report = self.forwards.apply(name, ports).await;
-        let Some(failure) = report.failed.iter().find(|f| !stored.contains(&f.port)) else {
+    async fn apply_new_ports(&self, name: &str, change: &PortsChange) -> Result<(), SandboxError> {
+        let report = self.forwards.apply(name, &change.ports).await;
+        let Some(failure) = report.failed.iter().find(|f| change.is_new(f.port)) else {
             return Ok(());
         };
 
-        self.forwards.apply(name, stored).await;
+        self.forwards.apply(name, &change.stored).await;
 
         Err(SandboxError::failed_precondition(failure.reason.clone()))
     }
@@ -653,6 +657,25 @@ async fn start_existing_sandbox(
     match workspace_path_of(sb) {
         Some(workspace) if mise_enabled(sb) => install_mise_tools(&started, &workspace).await,
         _ => Ok(()),
+    }
+}
+
+/// A change to the ports stored with a sandbox.
+struct PortsChange {
+    /// The ports stored before the change.
+    stored: Vec<PortMapping>,
+    /// The ports after the change.
+    ports: Vec<PortMapping>,
+    /// The forward the change asks for, if any.
+    requested: Option<PortMapping>,
+}
+
+impl PortsChange {
+    /// Whether the change opens the forward: it's the requested one, which must open even when
+    /// it's stored already, or it isn't stored. A stored forward that already failed to open
+    /// doesn't block other changes.
+    fn is_new(&self, port: PortMapping) -> bool {
+        self.requested == Some(port) || !self.stored.contains(&port)
     }
 }
 

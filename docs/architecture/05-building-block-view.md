@@ -234,12 +234,12 @@ C4Component
   `ForwardPort` adds one mapping to the stored ports, replacing the one with the
   same host port, and `RemovePort` removes the mapping of a host port, or
   returns `NOT_FOUND` when it isn't stored. For a running sandbox, both first
-  reconcile its forwards with the new list; when the new forward can't be
-  opened, they reopen the old forwards and return `FAILED_PRECONDITION` with the
-  reason, without changing the label. For a stopped sandbox they only update the
-  label, and the forward opens on the next start. Both return whether the
-  sandbox runs. They hold the same lock as `StartSandbox` while they read,
-  reconcile and store the ports.
+  reconcile its forwards with the new list; when the requested forward can't be
+  opened, also when it was stored already, they reopen the old forwards and
+  return `FAILED_PRECONDITION` with the reason, without changing the label. For
+  a stopped sandbox they only update the label, and the forward opens on the
+  next start. Both return whether the sandbox runs. They hold the same lock as
+  `StartSandbox` while they read, reconcile and store the ports.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and

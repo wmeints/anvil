@@ -1807,3 +1807,29 @@ async fn forward_port_on_stopped_sandbox_opens_when_it_starts() {
     assert!(closed_while_stopped.is_err());
     assert_eq!(started.forwards, forward_ports(host, GUEST_PORT).ports);
 }
+
+#[tokio::test]
+async fn forward_port_fails_for_a_stored_port_that_is_still_busy() {
+    const NAME: &str = "fbk-it-port-stored-busy";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("port-stored-busy").await;
+    let mut client = daemon.client().await;
+    let busy = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let busy_port = busy.local_addr().unwrap().port();
+    let request = StartSandboxRequest {
+        image: "alpine:3.22".to_string(),
+        ports: Some(forward_ports(busy_port, GUEST_PORT)),
+        ..start_request(NAME)
+    };
+    let started = start_with_ports(&mut client, request).await;
+
+    let status = forward_port(&mut client, NAME, busy_port, GUEST_PORT).await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert_eq!(started.failed_forwards.len(), 1);
+    let status = status.unwrap_err();
+    assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
+}
