@@ -5,6 +5,7 @@ claude = "latest"
 dprint = "0.61.1"
 gh = "latest"
 lefthook = "latest"
+protoc = "latest"
 rust = { version = "1.99.0", components = "rustfmt,clippy,rust-src,rust-analyzer" }
 
 [hooks]

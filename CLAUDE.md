@@ -63,8 +63,13 @@ that fits from the start:
 - Don't `unwrap()` or `expect()` outside tests unless the invariant is
   documented next to the call. Bound integer conversions with `try_from` instead
   of `as`.
-- Don't suppress lints with `#[allow(...)]`; fix the code. If a finding is a
-  false positive, ask the user before adding an `allow`.
+- Don't suppress lints with `#[allow(...)]` or `#[expect(...)]`; fix the code.
+  If a finding is a false positive, ask the user, and add the attribute only
+  with a `// HUMAN-APPROVED: <reason>` comment directly above it. A long reason
+  may wrap onto more `//` lines, as long as the comment ends on the line
+  directly above the code.
+- Don't write `unsafe` code without the same `// HUMAN-APPROVED: <reason>`
+  comment directly above it.
 
 ## Testing
 
@@ -106,16 +111,19 @@ A change is done when:
 - Use the `sandbox-reference` skill before relying on how the `microsandbox`
   crate behaves. It shows where to find the source of the locked version and
   lists the behavior and limits we already know.
-- Use the `submit-pr` skill to open a PR. It runs the checks and asks the
-  `reviewer` agent and the `test-reviewer` agent to review the branch, so don't
-  run the review agents before each commit.
+- Use the `submit-pr` skill to open a PR. It runs the checks and the
+  `review-branch` workflow (`.claude/workflows/review-branch.js`), so don't run
+  the review agents before each commit. The workflow runs the
+  `implementation-reviewer` agent once per category and the `test-reviewer`
+  agent in parallel, and the `reviewer` agent merges their findings with its own
+  review into one summary.
 
 ## Automated checks
 
 These checks enforce the rules above, so don't try to bypass them:
 
-- `mise install` provides the Rust toolchain, `buf`, `dprint`, `actionlint` and
-  `lefthook`.
+- `mise install` provides the Rust toolchain, `buf`, `protoc`, `dprint`,
+  `actionlint` and `lefthook`.
 - `.cargo/config.toml` sets `MSB_HOME=/tmp/firebrick-msb` for every cargo
   command, so builds and the `vm-tests` use their own microsandbox runtime,
   database and images instead of `~/.microsandbox`. A `msb` that migrated the
