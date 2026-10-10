@@ -170,8 +170,11 @@ C4Component
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
   with the requested vCPUs and memory, mounts the workspace read/write at
-  `/workspaces/<leaf>`, attaches a sandbox-owned ext4 disk of the requested size
-  at `/var/lib/docker` (see
+  `/workspaces/<leaf>`, bind mounts the extra `mounts` of the request the same
+  way (owner `1000:1000`, host permissions mirrored, read-only when asked) after
+  rejecting a relative host path, a guest path that isn't absolute or is `/`, or
+  one that equals the workspace path with `INVALID_ARGUMENT`, attaches a
+  sandbox-owned ext4 disk of the requested size at `/var/lib/docker` (see
   [ADR 0015](decisions/0015-give-each-sandbox-a-docker-data-disk.md)), applies
   the egress rules with the `network` module and adds the stored secrets. The
   disk survives stops and restarts, and microsandbox deletes it when the sandbox
@@ -275,12 +278,17 @@ C4Component
   `SandboxSpec` with a `name`, an optional `image`, optional `init` and `mise`
   flags, optional `resources` (`cpu`, `memory`), `volumes` (`docker`, the size
   of the Docker data disk) and an optional `network` section (`enforce`, default
-  `false`, and the `allow` and `deny` rules), rejects unknown fields and reports
-  the line and column of a problem. `NetworkRule` parses a rule: a host name,
-  `*.` plus a domain of at least two labels, an IPv4 or IPv6 address or a CIDR
-  range. `*` alone, other wildcards, URLs, ports and paths are invalid. It owns
-  the defaults (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`,
-  `mise: true`, 2 vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
+  `false`, and the `allow` and `deny` rules) and optional `mounts` (`host`,
+  `guest` and `readonly`, default `false`), rejects unknown fields and reports
+  the line and column of a problem. A mount's `guest` must be an absolute path
+  other than `/`, and appear only once. The CLI resolves each mount's `host`
+  against the spec file's directory, expanding `~` to `$HOME`, to the canonical
+  path of an existing directory before it sends `StartSandbox`. `NetworkRule`
+  parses a rule: a host name, `*.` plus a domain of at least two labels, an IPv4
+  or IPv6 address or a CIDR range. `*` alone, other wildcards, URLs, ports and
+  paths are invalid. It owns the defaults
+  (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, `mise: true`, 2
+  vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
   `VolumesSpec::default()`) and `parse_size_mib`, which reads memory and volume
   sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both use them.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
@@ -291,8 +299,8 @@ C4Component
   which turns a directory's leaf into a lowercase DNS label (or `sandbox` when
   nothing is left), so the SSH host names and the name `fbk init` writes match.
 
-The image, init, mise setting, resources and network rules apply when a sandbox
-is created. Changing them in `.firebrick.yml` doesn't change an existing
+The image, init, mise setting, resources, network rules and mounts apply when a
+sandbox is created. Changing them in `.firebrick.yml` doesn't change an existing
 sandbox; remove it with `fbk rm` and start it again.
 
 ## Base image

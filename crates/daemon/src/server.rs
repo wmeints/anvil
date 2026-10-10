@@ -6,7 +6,7 @@ use crate::api::sandbox_management_service_server::{
 };
 use crate::api::{
     AttachRequest, AttachResponse, AttachStart, GetSandboxRequest, GetSandboxResponse,
-    ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse,
+    ListSandboxesRequest, ListSandboxesResponse, ListSecretsRequest, ListSecretsResponse, Mount,
     NetworkPolicy, RemoveSandboxRequest, RemoveSandboxResponse, RemoveSecretRequest,
     RemoveSecretResponse, SandboxResources, SandboxStatus, SandboxSummary, SecretSummary,
     SetSecretRequest, SetSecretResponse, SshTunnelRequest, SshTunnelResponse, StartSandboxRequest,
@@ -19,7 +19,7 @@ use crate::session::{self, SessionCommand};
 use crate::tunnel;
 use anyhow::Result;
 use async_trait::async_trait;
-use firebrick_spec::{NetworkRule, NetworkSpec, SandboxResourcesSpec, VolumesSpec};
+use firebrick_spec::{MountSpec, NetworkRule, NetworkSpec, SandboxResourcesSpec, VolumesSpec};
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -64,6 +64,7 @@ impl FirebrickServer {
 fn start_sandbox_from<'a>(
     request: &'a StartSandboxRequest,
     network: &'a NetworkSpec,
+    mounts: &'a [MountSpec],
 ) -> StartSandbox<'a> {
     StartSandbox {
         name: &request.name,
@@ -72,7 +73,20 @@ fn start_sandbox_from<'a>(
         init: request.init.unwrap_or(true),
         mise: request.mise.unwrap_or(true),
         network,
+        mounts,
     }
+}
+
+/// Reads the extra mounts of a request. The sandbox manager checks their paths.
+fn mount_specs(mounts: &[Mount]) -> Vec<MountSpec> {
+    mounts
+        .iter()
+        .map(|mount| MountSpec {
+            host: mount.host.clone(),
+            guest: mount.guest.clone(),
+            readonly: mount.readonly,
+        })
+        .collect()
 }
 
 /// Parses the egress rules of a request. A request without them gets microsandbox's default
@@ -129,9 +143,10 @@ impl SandboxManagementService for FirebrickServer {
     ) -> Result<Response<StartSandboxResponse>, Status> {
         let request_data = request.into_inner();
         let network = network_spec(request_data.network.as_ref())?;
+        let mounts = mount_specs(&request_data.mounts);
 
         self.sandboxes
-            .start(start_sandbox_from(&request_data, &network), || {
+            .start(start_sandbox_from(&request_data, &network, &mounts), || {
                 sandbox_resources(&request_data)
             })
             .await?;
@@ -536,14 +551,14 @@ mod tests {
     fn start_sandbox_from_request_defaults_init_to_true() {
         let request = StartSandboxRequest::default();
 
-        assert!(start_sandbox_from(&request, &NetworkSpec::default()).init);
+        assert!(start_sandbox_from(&request, &NetworkSpec::default(), &[]).init);
     }
 
     #[test]
     fn start_sandbox_from_request_defaults_mise_to_true() {
         let request = StartSandboxRequest::default();
 
-        assert!(start_sandbox_from(&request, &NetworkSpec::default()).mise);
+        assert!(start_sandbox_from(&request, &NetworkSpec::default(), &[]).mise);
     }
 
     #[test]
@@ -553,7 +568,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(!start_sandbox_from(&request, &NetworkSpec::default()).mise);
+        assert!(!start_sandbox_from(&request, &NetworkSpec::default(), &[]).mise);
     }
 
     #[test]
@@ -567,11 +582,29 @@ mod tests {
         };
 
         let network = NetworkSpec::default();
-        let start = start_sandbox_from(&request, &network);
+        let start = start_sandbox_from(&request, &network, &[]);
 
         assert_eq!(
             (start.name, start.image, start.workspace, start.init),
             ("dev", "alpine:3.22", "/home/user/project", false)
+        );
+    }
+
+    #[test]
+    fn mount_specs_keep_the_paths_and_readonly() {
+        let mounts = [Mount {
+            host: "/home/user/lib".to_string(),
+            guest: "/workspaces/lib".to_string(),
+            readonly: true,
+        }];
+
+        assert_eq!(
+            mount_specs(&mounts),
+            [MountSpec {
+                host: "/home/user/lib".to_string(),
+                guest: "/workspaces/lib".to_string(),
+                readonly: true,
+            }]
         );
     }
 

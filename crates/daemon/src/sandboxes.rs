@@ -8,9 +8,9 @@ use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
 use crate::vscode;
 use crate::zed;
-use firebrick_spec::NetworkSpec;
+use firebrick_spec::{MountSpec, NetworkSpec};
 use microsandbox::sandbox::{
-    HostPermissions, SandboxBuilder, SandboxHandle, SandboxStatus, VolumeMount,
+    HostPermissions, MountBuilder, SandboxBuilder, SandboxHandle, SandboxStatus, VolumeMount,
 };
 use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::HashSet;
@@ -87,6 +87,8 @@ pub struct StartSandbox<'a> {
     pub mise: bool,
     /// Egress rules of the sandbox, applied when it is created.
     pub network: &'a NetworkSpec,
+    /// Extra host directories with absolute host paths, mounted when the sandbox is created.
+    pub mounts: &'a [MountSpec],
 }
 
 /// The name, status, SSH host name and workspace paths of a sandbox.
@@ -363,6 +365,7 @@ impl SandboxManager {
         resources: impl FnOnce() -> Result<Resources, SandboxError>,
     ) -> Result<(Sandbox, String), SandboxError> {
         let guest_path = workspace_mount_path(request.workspace)?;
+        check_mounts(request.mounts, &guest_path)?;
         let resources = resources()?;
         let hostname = ssh::pick_hostname(request.workspace, &taken_hostnames().await?);
         let _secrets_guard = self.secrets_lock.lock().await;
@@ -381,6 +384,7 @@ impl SandboxManager {
             })
             .workdir(&guest_path)
             .detached(true);
+        let builder = with_mounts(builder, request.mounts);
         let builder = with_init(with_resources(builder, resources), request.init);
 
         let sb = match create_with(builder, &secrets, request.network).await {
@@ -709,6 +713,57 @@ fn workspace_mount_path(workspace: &str) -> Result<String, SandboxError> {
     Ok(format!("/workspaces/{}", leaf.to_string_lossy()))
 }
 
+/// Fails with `InvalidArgument` when a mount has a relative host path, a guest path that isn't
+/// an absolute path other than `/`, or the guest path of the workspace mount.
+fn check_mounts(mounts: &[MountSpec], workspace_guest_path: &str) -> Result<(), SandboxError> {
+    for mount in mounts {
+        if !Path::new(&mount.host).is_absolute() {
+            return Err(SandboxError::invalid_argument(format!(
+                "mount host path {} must be an absolute path",
+                mount.host
+            )));
+        }
+
+        if !mount.guest.starts_with('/') || mount.guest == "/" {
+            return Err(SandboxError::invalid_argument(format!(
+                "mount guest path {} must be an absolute path other than /",
+                mount.guest
+            )));
+        }
+
+        if mount.guest == workspace_guest_path {
+            return Err(SandboxError::invalid_argument(format!(
+                "mount {} conflicts with the workspace mount",
+                mount.guest
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Bind mounts the extra host directories like the workspace: owned by the agent user, with
+/// guest permission changes mirrored to the host, and read-only when the mount asks for it.
+fn with_mounts(builder: SandboxBuilder, mounts: &[MountSpec]) -> SandboxBuilder {
+    mounts.iter().fold(builder, |builder, mount| {
+        builder.volume(&mount.guest, |m| bind_mount(m, mount))
+    })
+}
+
+/// Configures a bind mount of the extra host directory.
+fn bind_mount(builder: MountBuilder, mount: &MountSpec) -> MountBuilder {
+    let builder = builder
+        .bind(&mount.host)
+        .host_permissions(HostPermissions::Mirror)
+        .owner(1000, 1000);
+
+    if mount.readonly {
+        builder.readonly()
+    } else {
+        builder
+    }
+}
+
 /// Returns the requested image, or the default image when the request doesn't name one.
 fn sandbox_image(image: &str) -> &str {
     if image.is_empty() {
@@ -835,6 +890,50 @@ mod tests {
                     Err(SandboxError::InvalidArgument(_))
                 ),
                 "{workspace:?} should be rejected"
+            );
+        }
+    }
+
+    fn mount(host: &str, guest: &str) -> MountSpec {
+        MountSpec {
+            host: host.to_string(),
+            guest: guest.to_string(),
+            readonly: false,
+        }
+    }
+
+    #[test]
+    fn check_mounts_accepts_absolute_paths() {
+        let mounts = [mount("/home/user/lib", "/workspaces/lib")];
+
+        assert_eq!(check_mounts(&mounts, "/workspaces/project"), Ok(()));
+    }
+
+    #[test]
+    fn check_mounts_rejects_the_workspace_guest_path() {
+        let mounts = [mount("/home/user/lib", "/workspaces/project")];
+
+        assert_eq!(
+            check_mounts(&mounts, "/workspaces/project"),
+            Err(SandboxError::InvalidArgument(
+                "mount /workspaces/project conflicts with the workspace mount".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn check_mounts_rejects_relative_and_root_paths() {
+        for mounts in [
+            [mount("../lib", "/lib")],
+            [mount("/home/user/lib", "lib")],
+            [mount("/home/user/lib", "/")],
+        ] {
+            assert!(
+                matches!(
+                    check_mounts(&mounts, "/workspaces/project"),
+                    Err(SandboxError::InvalidArgument(_))
+                ),
+                "{mounts:?} should be rejected"
             );
         }
     }

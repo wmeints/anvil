@@ -65,7 +65,7 @@ sequenceDiagram
     loop Until the sandbox runs (max 120s)
         CLI->>D: GetSandbox(name)
         alt NOT_FOUND
-            CLI->>D: StartSandbox(name, image, init, mise, resources, network, workspace)
+            CLI->>D: StartSandbox(name, image, init, mise, resources, network, mounts, workspace)
             Note over D,MS: Creates the sandbox, see Starting a sandbox
         else Stopped or Crashed
             CLI->>D: StartSandbox(name, workspace)
@@ -212,13 +212,13 @@ sequenceDiagram
 ## Starting a sandbox
 
 `fbk start` creates the sandbox when it doesn't exist yet, or starts the
-existing one. The image, init, mise setting, resources and network rules from
-the spec only apply when the sandbox is created. Like `fbk run`, the CLI first
-checks the status of the sandbox: it leaves a running sandbox alone, waits for a
-starting one (max 120s), and fails for a stopping or paused one. The daemon's
-`StartSandbox` is idempotent as well: it returns without starting a sandbox that
-is already running or starting, and treats a start that loses a race with
-another start as a success.
+existing one. The image, init, mise setting, resources, network rules and mounts
+from the spec only apply when the sandbox is created. Like `fbk run`, the CLI
+first checks the status of the sandbox: it leaves a running sandbox alone, waits
+for a starting one (max 120s), and fails for a stopping or paused one. The
+daemon's `StartSandbox` is idempotent as well: it returns without starting a
+sandbox that is already running or starting, and treats a start that loses a
+race with another start as a success.
 
 The daemon parses the `network` rules of every `StartSandbox` and rejects an
 invalid one with `INVALID_ARGUMENT` before it looks up the sandbox. When it
@@ -233,6 +233,16 @@ rule; see [Risks and technical debt](11-risks-and-technical-debt.md) for the
 limits. Without enforcement the sandbox gets microsandbox's default policy
 ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
 With enforcement on, `mise install` only reaches the hosts the rules allow.
+
+Before the CLI creates a sandbox, it resolves the `host` of each entry in
+`mounts` against the directory of `.firebrick.yml`, expanding `~` to `$HOME`,
+and canonicalizes it. It fails with `can't mount <path>: No such file or
+directory` or `can't mount <path>: not a directory` without calling the daemon.
+The daemon rejects a mount whose guest path equals the workspace path with
+`INVALID_ARGUMENT` before it creates anything, and otherwise bind mounts each
+directory like the workspace: owned by `1000:1000`, with host permissions
+mirrored, and read-only when `readonly` is set. Starting an existing sandbox
+sends no mounts.
 
 When `StartSandbox` creates a sandbox, or starts one that was stopped or
 crashed, fbkd installs the workspace's mise tools before it returns. It looks
@@ -285,7 +295,8 @@ sequenceDiagram
     CLI->>D: GetSandbox(name)
     Note over CLI,D: Running: skip StartSandbox. Starting: poll until running.<br/>Stopping or Paused: error.
     alt NOT_FOUND
-        CLI->>D: StartSandbox(name, image, init, mise, resources, network, workspace)
+        CLI->>CLI: Resolve mount host paths
+        CLI->>D: StartSandbox(name, image, init, mise, resources, network, mounts, workspace)
     else Stopped or Crashed
         CLI->>D: StartSandbox(name, workspace)
     end
@@ -307,14 +318,14 @@ sequenceDiagram
             Note over D,MS: SandboxStillRunning: another start won, return OK
         end
     else Sandbox doesn't exist
-        D->>D: Validate workspace and resources
+        D->>D: Validate workspace, mounts and resources
         alt Invalid
             D-->>CLI: INVALID_ARGUMENT
             CLI-->>Dev: Error
         end
         D->>MS: List sandboxes for taken host names
         D->>D: Pick unique project.fbk host name
-        D->>MS: Create detached sandbox (image, init, cpus, memory,<br/>firebrick.hostname and firebrick.mise labels,<br/>workspace mounted at /workspaces/project,<br/>owned ext4 disk at /var/lib/docker,<br/>network policy with TLS interception when enforced)
+        D->>MS: Create detached sandbox (image, init, cpus, memory,<br/>firebrick.hostname and firebrick.mise labels,<br/>workspace mounted at /workspaces/project,<br/>extra mounts at their guest paths,<br/>owned ext4 disk at /var/lib/docker,<br/>network policy with TLS interception when enforced)
         alt init on and image has no /sbin/init
             D->>MS: Remove the half-created sandbox
             Note over D: Result: FAILED_PRECONDITION (set init: false)

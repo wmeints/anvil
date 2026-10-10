@@ -29,6 +29,17 @@ message StartSandboxRequest {
   optional bool mise = 7;
   // Egress rules, applied when the sandbox is created. Unset means microsandbox's default policy.
   optional NetworkPolicy network = 8;
+  // Extra host directories to bind mount, besides the workspace. Applied when the sandbox is
+  // created.
+  repeated Mount mounts = 9;
+}
+
+message Mount {
+  // Canonical absolute host path of a directory.
+  string host = 1;
+  // Absolute guest path.
+  string guest = 2;
+  bool readonly = 3;
 }
 
 message NetworkPolicy {
