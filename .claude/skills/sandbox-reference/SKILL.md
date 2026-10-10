@@ -80,6 +80,10 @@ build on it when `Cargo.lock` has a newer version.
   can, so code that stops or recreates a sandbox has to expect `Paused`.
 - `Sandbox::list_with` rejects an empty cursor. Only call `.cursor(..)` with the
   cursor of the previous page.
+- `Sandbox::list_with` reads a page of rows and then reloads each sandbox
+  (`$M/backend/local/sandbox/mod.rs`, `list_sandbox_handle_state`). When another
+  process removes a sandbox in between, the whole listing fails with
+  `SandboxNotFound`. `sandboxes::list_all` starts the listing over in that case.
 - `.init(path)` hands PID 1 to an init binary in the image after agentd's setup.
   `.init("auto")` probes common init paths and refuses to boot an image that has
   none, so firebrick passes an explicit path (ADR 0007).
