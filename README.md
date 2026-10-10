@@ -296,7 +296,7 @@ agent user owns the mounted files, like the workspace.
 | `resources.cpu`     | Number of vCPUs.                                                        | `2`                                         |
 | `resources.memory`  | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`.         | `4 GiB`                                     |
 | `volumes.docker`    | Size of the Docker data disk, in the same units as `memory`.            | `20 GiB`                                    |
-| `network.enabled`   | Give the sandbox a network device. See [Offline](#offline).             |                                             |
+| `network.enabled`   | Give the sandbox a network device. See [Offline](#offline).             | `true`                                      |
 | `network.enforce`   | Deny outgoing traffic unless a rule allows it. See [Network](#network). | `false`                                     |
 | `network.allow`     | Destinations the sandbox may connect to.                                | Empty                                       |
 | `network.deny`      | Destinations the sandbox may not connect to, even if allowed.           | Empty                                       |
