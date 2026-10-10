@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use firebrick_daemon::api::{
-    AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, GetSandboxRequest,
-    GetSandboxResponse, ListSandboxesRequest, Mount, NetworkPolicy, PortForward, PortForwards,
+    AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, ForwardPortRequest,
+    ForwardPortResponse, GetSandboxRequest, GetSandboxResponse, ListSandboxesRequest, Mount,
+    NetworkPolicy, PortForward, PortForwards, RemovePortRequest, RemovePortResponse,
     RemoveSandboxRequest, SandboxResources, SandboxStatus, SandboxVolumes, StartSandboxRequest,
     StartSandboxResponse, StopSandboxRequest, UpdateNetworkRequest, attach_request,
     attach_response,
@@ -117,7 +118,7 @@ async fn serve_until(
     secrets: SecretStore,
     stop: oneshot::Receiver<()>,
 ) -> Result<(), server::ServerError> {
-    server::serve(&path, secrets, async {
+    server::serve(&path, server::FirebrickServer::new(secrets), async {
         let _ = stop.await;
     })
     .await
@@ -2075,4 +2076,168 @@ async fn update_network_keeps_extra_mounts_and_port_forwards() {
     assert_eq!(code, 0, "unexpected output: {output:?}");
     assert!(output.contains("hello from host"), "{output:?}");
     assert!(output.contains("Read-only file system"), "{output:?}");
+}
+
+/// Asks the daemon to forward the host port to the guest port of the sandbox.
+async fn forward_port(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    host: u16,
+    guest: u16,
+) -> Result<ForwardPortResponse, tonic::Status> {
+    let request = ForwardPortRequest {
+        name: name.to_string(),
+        port: Some(PortForward {
+            host: host.into(),
+            guest: guest.into(),
+        }),
+    };
+
+    client.forward_port(request).await.map(|r| r.into_inner())
+}
+
+/// Asks the daemon to remove the forward of the host port from the sandbox.
+async fn remove_port(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    host: u16,
+) -> Result<RemovePortResponse, tonic::Status> {
+    let request = RemovePortRequest {
+        name: name.to_string(),
+        host: host.into(),
+    };
+
+    client.remove_port(request).await.map(|r| r.into_inner())
+}
+
+/// Returns the ports label microsandbox stores for the sandbox.
+async fn ports_label(name: &str) -> Option<String> {
+    sandbox_spec(name)
+        .await
+        .labels
+        .get(firebrick_daemon::forward::PORTS_LABEL)
+        .cloned()
+}
+
+/// Starts an alpine sandbox, whose busybox has `nc`, and waits until it runs.
+async fn start_alpine_sandbox(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> StartSandboxRequest {
+    let request = StartSandboxRequest {
+        image: "alpine:3.22".to_string(),
+        ..start_request(name)
+    };
+    start_with_ports(client, request.clone()).await;
+
+    request
+}
+
+#[tokio::test]
+async fn forward_port_and_remove_port_change_forwards_of_running_sandbox() {
+    const NAME: &str = "fbk-it-port-live";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("port-live").await;
+    let mut client = daemon.client().await;
+    let host = free_port().await;
+    start_alpine_sandbox(&mut client, NAME).await;
+
+    let forwarded = forward_port(&mut client, NAME, host, GUEST_PORT).await;
+    check_forward_both_ways(&mut client, NAME, host).await;
+    let removed = remove_port(&mut client, NAME, host).await;
+    let closed = TcpStream::connect(("127.0.0.1", host)).await;
+    let label = ports_label(NAME).await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert!(forwarded.unwrap().running);
+    assert!(removed.unwrap().running);
+    assert!(closed.is_err(), "localhost:{host} should be closed");
+    assert_eq!(label.as_deref(), Some(""));
+}
+
+#[tokio::test]
+async fn port_rpcs_reject_busy_and_unknown_ports_without_changing_the_label() {
+    const NAME: &str = "fbk-it-port-errors";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("port-errors").await;
+    let mut client = daemon.client().await;
+    let busy = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let busy_port = busy.local_addr().unwrap().port();
+    start_alpine_sandbox(&mut client, NAME).await;
+
+    let busy_status = forward_port(&mut client, NAME, busy_port, GUEST_PORT).await;
+    let unknown_status = remove_port(&mut client, NAME, busy_port).await;
+    let label = ports_label(NAME).await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    let busy_status = busy_status.unwrap_err();
+    assert_eq!(
+        busy_status.code(),
+        Code::FailedPrecondition,
+        "{busy_status:?}"
+    );
+    let unknown_status = unknown_status.unwrap_err();
+    assert_eq!(unknown_status.code(), Code::NotFound, "{unknown_status:?}");
+    assert_eq!(
+        unknown_status.message(),
+        format!("port {busy_port} isn't forwarded for sandbox {NAME}")
+    );
+    assert_eq!(label.as_deref(), Some(""));
+}
+
+#[tokio::test]
+async fn forward_port_on_stopped_sandbox_opens_when_it_starts() {
+    const NAME: &str = "fbk-it-port-stopped";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("port-stopped").await;
+    let mut client = daemon.client().await;
+    let host = free_port().await;
+    let request = start_alpine_sandbox(&mut client, NAME).await;
+    stop_sandbox(&mut client, NAME).await;
+
+    let forwarded = forward_port(&mut client, NAME, host, GUEST_PORT).await;
+    let closed_while_stopped = TcpStream::connect(("127.0.0.1", host)).await;
+    // Without ports, starting keeps the stored ones.
+    let started = start_with_ports(&mut client, request).await;
+    check_forward_both_ways(&mut client, NAME, host).await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert!(!forwarded.unwrap().running);
+    assert!(closed_while_stopped.is_err());
+    assert_eq!(started.forwards, forward_ports(host, GUEST_PORT).ports);
+}
+
+#[tokio::test]
+async fn forward_port_fails_for_a_stored_port_that_is_still_busy() {
+    const NAME: &str = "fbk-it-port-stored-busy";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("port-stored-busy").await;
+    let mut client = daemon.client().await;
+    let busy = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let busy_port = busy.local_addr().unwrap().port();
+    let request = StartSandboxRequest {
+        image: "alpine:3.22".to_string(),
+        ports: Some(forward_ports(busy_port, GUEST_PORT)),
+        ..start_request(NAME)
+    };
+    let started = start_with_ports(&mut client, request).await;
+
+    let status = forward_port(&mut client, NAME, busy_port, GUEST_PORT).await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert_eq!(started.failed_forwards.len(), 1);
+    let status = status.unwrap_err();
+    assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
 }

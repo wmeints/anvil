@@ -6,7 +6,8 @@ use clap::{Args, Parser, Subcommand};
 use firebrick_cli::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use firebrick_cli::manage::OutputFormat;
 use firebrick_cli::network::{self, NetworkChange};
-use firebrick_cli::{client, init, manage, secret, session, ssh, validate};
+use firebrick_cli::{client, init, manage, port, secret, session, ssh, validate};
+use firebrick_spec::PortMapping;
 use tonic::transport::Channel;
 
 /// Firebrick - Run coding agents safely in a sandbox.
@@ -60,6 +61,9 @@ enum Commands {
     /// Change the network rules in .firebrick.yml and apply them to the sandbox
     #[command(subcommand)]
     Network(NetworkCommands),
+    /// Forward host ports to the working directory's sandbox and record them in .firebrick.yml
+    #[command(subcommand)]
+    Port(PortCommands),
     /// Tunnel an SSH connection to a sandbox over stdin/stdout (used by the generated SSH config)
     #[command(hide = true)]
     SshProxy {
@@ -110,6 +114,23 @@ enum PolicyCommands {
     Enable,
     /// Allow all outgoing traffic; the rules are kept but not enforced
     Disable,
+}
+
+#[derive(Subcommand, Debug)]
+enum PortCommands {
+    /// Forward a host port on localhost to a port in the sandbox, right away when it runs
+    Forward {
+        /// `<port>` to forward localhost:<port> to the same port in the sandbox, or
+        /// `<host>:<guest>` to forward localhost:<host> to sandbox port <guest>
+        #[arg(value_name = "PORT")]
+        port: PortMapping,
+    },
+    /// Stop forwarding a host port
+    Rm {
+        /// Host port of the forward, e.g. 8080
+        #[arg(value_parser = clap::value_parser!(u16).range(1..))]
+        port: u16,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -205,12 +226,25 @@ async fn run_with_daemon(command: Commands, working_dir: PathBuf) -> Result<()> 
         Commands::Secret(SecretCommands::Rm { name }) => {
             secret::remove(name, client_instance).await
         }
+        Commands::Port(command) => run_port_command(command, &working_dir, client_instance).await,
         Commands::Validate
         | Commands::Init { .. }
         | Commands::Secret(SecretCommands::Set(_))
         | Commands::Network(_) => {
             unreachable!("handled before connecting to the daemon")
         }
+    }
+}
+
+/// Changes a port forward of the working directory's sandbox.
+async fn run_port_command(
+    command: PortCommands,
+    working_dir: &Path,
+    client_instance: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<()> {
+    match command {
+        PortCommands::Forward { port } => port::forward(port, working_dir, client_instance).await,
+        PortCommands::Rm { port } => port::remove(port, working_dir, client_instance).await,
     }
 }
 
@@ -401,6 +435,56 @@ mod tests {
             cli.command,
             Commands::Secret(SecretCommands::Rm { name }) if name == "GH_TOKEN"
         ));
+    }
+
+    fn parse_port(args: &[&str]) -> Result<PortCommands, clap::Error> {
+        let cli = Cli::try_parse_from(["fbk", "port"].iter().chain(args))?;
+
+        match cli.command {
+            Commands::Port(command) => Ok(command),
+            command => panic!("unexpected command {command:?}"),
+        }
+    }
+
+    #[test]
+    fn port_forward_takes_a_port_or_a_mapping() {
+        assert!(matches!(
+            parse_port(&["forward", "3000"]).unwrap(),
+            PortCommands::Forward {
+                port: PortMapping {
+                    host: 3000,
+                    guest: 3000
+                }
+            }
+        ));
+        assert!(matches!(
+            parse_port(&["forward", "8080:5173"]).unwrap(),
+            PortCommands::Forward {
+                port: PortMapping {
+                    host: 8080,
+                    guest: 5173
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn port_forward_rejects_invalid_ports() {
+        for arg in ["0", "65536", "web", "8080:0", "8080:", ":80", "1:2:3"] {
+            assert!(parse_port(&["forward", arg]).is_err(), "{arg}");
+        }
+        assert!(parse_port(&["forward"]).is_err());
+    }
+
+    #[test]
+    fn port_rm_takes_a_host_port() {
+        assert!(matches!(
+            parse_port(&["rm", "8080"]).unwrap(),
+            PortCommands::Rm { port: 8080 }
+        ));
+        for arg in ["0", "65536", "web", "8080:5173"] {
+            assert!(parse_port(&["rm", arg]).is_err(), "{arg}");
+        }
     }
 
     #[test]

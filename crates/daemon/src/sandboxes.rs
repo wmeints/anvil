@@ -9,7 +9,7 @@ use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
 use crate::vscode;
 use crate::zed;
-use firebrick_spec::{MountSpec, NetworkSpec, PortMapping, VolumesSpec};
+use firebrick_spec::{MountSpec, NetworkSpec, PortMapping, VolumesSpec, with_port};
 use microsandbox::sandbox::{
     HostPermissions, MountBuilder, OwnedVolumeStorage, SandboxBuilder, SandboxHandle,
     SandboxStatus, VolumeMount,
@@ -256,7 +256,8 @@ pub struct SandboxManager {
     // can't miss a secret that is being set, and concurrent sets can't mix up values.
     secrets_lock: tokio::sync::Mutex<()>,
     // One lock per sandbox name, held while the sandbox is started, stopped, removed, connected
-    // to or recreated, so recreating a sandbox can't interleave with another operation on it.
+    // to, recreated or its ports change, so recreating a sandbox can't interleave with another
+    // operation on it.
     sandbox_locks: SandboxLocks,
     // Held while the ports of a sandbox are read or stored and its forwards are reconciled, so a
     // request with stale ports can't undo the forwards of a newer one.
@@ -380,6 +381,86 @@ impl SandboxManager {
         };
 
         self.forwards.apply(name, &ports).await
+    }
+
+    /// Adds the forward to the ports stored with the sandbox, replacing a stored one with the
+    /// same host port, and opens it when the sandbox runs. Returns whether the sandbox runs.
+    /// Fails with `FailedPrecondition` when the host port can't be listened on, and then keeps
+    /// the stored ports and the open forwards.
+    pub async fn forward_port(&self, name: &str, port: PortMapping) -> Result<bool, SandboxError> {
+        let _guard = self.lock_sandbox(name).await;
+        let _ports = self.ports_lock.lock().await;
+        let sb = get_sandbox(name).await?;
+        let stored = stored_ports(&sb);
+        let change = PortsChange {
+            ports: with_port(&stored, port),
+            stored,
+            requested: Some(port),
+        };
+
+        self.change_ports(&sb, &change).await
+    }
+
+    /// Removes the forward of the host port from the ports stored with the sandbox, and closes
+    /// it when the sandbox runs. Returns whether the sandbox runs. Fails with `NotFound` when
+    /// the sandbox doesn't forward the host port.
+    pub async fn remove_port(&self, name: &str, host: u16) -> Result<bool, SandboxError> {
+        let _guard = self.lock_sandbox(name).await;
+        let _ports = self.ports_lock.lock().await;
+        let sb = get_sandbox(name).await?;
+        let stored = stored_ports(&sb);
+        let ports: Vec<PortMapping> = stored.iter().filter(|p| p.host != host).copied().collect();
+
+        if ports.len() == stored.len() {
+            return Err(SandboxError::not_found(format!(
+                "port {host} isn't forwarded for sandbox {name}"
+            )));
+        }
+
+        let change = PortsChange {
+            stored,
+            ports,
+            requested: None,
+        };
+
+        self.change_ports(&sb, &change).await
+    }
+
+    /// Makes the open forwards of a running sandbox match the changed ports, then stores them
+    /// with the sandbox. Returns whether the sandbox runs. When a new forward can't be opened or
+    /// the ports can't be stored, reopens the stored forwards and fails.
+    async fn change_ports(
+        &self,
+        sb: &SandboxHandle,
+        change: &PortsChange,
+    ) -> Result<bool, SandboxError> {
+        let running = sb.status_snapshot() == SandboxStatus::Running;
+
+        if running {
+            self.apply_new_ports(sb.name(), change).await?;
+        }
+
+        let saved = save_ports(sb, &change.ports).await;
+
+        if saved.is_err() && running {
+            self.forwards.apply(sb.name(), &change.stored).await;
+        }
+
+        saved.map(|()| running)
+    }
+
+    /// Makes the open forwards of the sandbox match the changed ports. Fails with
+    /// `FailedPrecondition` when a new forward can't be opened, after reopening the stored
+    /// forwards.
+    async fn apply_new_ports(&self, name: &str, change: &PortsChange) -> Result<(), SandboxError> {
+        let report = self.forwards.apply(name, &change.ports).await;
+        let Some(failure) = report.failed.iter().find(|f| change.is_new(f.port)) else {
+            return Ok(());
+        };
+
+        self.forwards.apply(name, &change.stored).await;
+
+        Err(SandboxError::failed_precondition(failure.reason.clone()))
     }
 
     /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`],
@@ -1016,6 +1097,25 @@ async fn start_existing_sandbox(
     }
 }
 
+/// A change to the ports stored with a sandbox.
+struct PortsChange {
+    /// The ports stored before the change.
+    stored: Vec<PortMapping>,
+    /// The ports after the change.
+    ports: Vec<PortMapping>,
+    /// The forward the change asks for, if any.
+    requested: Option<PortMapping>,
+}
+
+impl PortsChange {
+    /// Whether the change opens the forward: it's the requested one, which must open even when
+    /// it's stored already, or it isn't stored. A stored forward that already failed to open
+    /// doesn't block other changes.
+    fn is_new(&self, port: PortMapping) -> bool {
+        self.requested == Some(port) || !self.stored.contains(&port)
+    }
+}
+
 /// Returns the ports stored with the sandbox.
 fn stored_ports(sb: &SandboxHandle) -> Vec<PortMapping> {
     sb.config()
@@ -1025,24 +1125,34 @@ fn stored_ports(sb: &SandboxHandle) -> Vec<PortMapping> {
         .unwrap_or_default()
 }
 
-/// Stores the ports with the sandbox when they differ from the stored ones, logging a warning
-/// when that fails. The label doesn't affect the running VM, so it's applied on the next start
-/// rather than restarting the sandbox.
+/// Stores the ports with the sandbox like [`save_ports`], logging a warning when that fails.
 async fn store_ports(sb: &SandboxHandle, ports: &[PortMapping]) {
+    if let Err(err) = save_ports(sb, ports).await {
+        tracing::warn!("{err}");
+    }
+}
+
+/// Stores the ports with the sandbox when they differ from the stored ones. The label doesn't
+/// affect the running VM, so it's applied on the next start rather than restarting the sandbox.
+async fn save_ports(sb: &SandboxHandle, ports: &[PortMapping]) -> Result<(), SandboxError> {
     if stored_ports(sb) == ports {
-        return;
+        return Ok(());
     }
 
-    let result = sb
-        .modify()
+    sb.modify()
         .label(forward::PORTS_LABEL, forward::label_value(ports))
         .next_start()
         .apply()
-        .await;
+        .await
+        .map_err(|err| {
+            tracing::error!(error = ?err, "failed to store the ports of sandbox {}", sb.name());
+            SandboxError::internal(format!(
+                "failed to store the ports of sandbox {}",
+                sb.name()
+            ))
+        })?;
 
-    if let Err(err) = result {
-        tracing::warn!("failed to store the ports of sandbox {}: {err}", sb.name());
-    }
+    Ok(())
 }
 
 /// Whether the sandbox installs its workspace's mise tools on start.
