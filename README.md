@@ -599,26 +599,35 @@ sandbox gets the global secret with the same name again. A running sandbox keeps
 using a removed secret until it restarts. `fbk rm` removes the sandbox's own
 secrets too. If a token leaked, revoke it where you created it as well.
 
-To let `git` push and pull over HTTPS with `GH_TOKEN`, configure a credential
-helper in the sandbox that hands git the placeholder as the password:
+Keep in mind that:
+
+- Don't use SSH keys for git: the sandbox's SSH server doesn't support agent
+  forwarding (`ssh -A`), and copying a private key into the sandbox puts the
+  real key where the agent can read it. Use [git over HTTPS](#git-over-https)
+  instead.
+- The values are stored unencrypted in files only your user can read. If your
+  machine may be compromised, rotate the tokens where you created them and set
+  the new values.
+
+#### Git over HTTPS
+
+Sandboxes that run `firebrick-base`, or an image built on it, push and pull
+GitHub repositories over HTTPS with `GH_TOKEN`, or `GITHUB_TOKEN` when
+`GH_TOKEN` isn't set, without configuring git. The image's credential helper
+hands git the placeholder as the password; git sends it base64-encoded in a
+Basic `Authorization` header, and the host decodes it, replaces the placeholder
+and encodes it again. This works only when the token's allowed hosts include
+`github.com`, as the defaults do. Without either secret, git prompts for
+credentials as usual, and a helper in your own `~/.gitconfig`, such as the one
+`gh auth setup-git` configures, still works.
+
+For a custom image that isn't based on `firebrick-base`, configure an equivalent
+helper in the sandbox:
 
 ```sh
 git config --global credential.https://github.com.helper \
   '!f() { test "$1" = get && echo username=x-access-token && echo "password=$GH_TOKEN"; }; f'
 ```
-
-git sends the placeholder base64-encoded in a Basic `Authorization` header, and
-the host decodes it, replaces the placeholder and encodes it again. If `gh` is
-installed in the sandbox, `gh auth setup-git` configures an equivalent helper.
-
-Keep in mind that:
-
-- Don't use SSH keys for git: the sandbox's SSH server doesn't support agent
-  forwarding (`ssh -A`), and copying a private key into the sandbox puts the
-  real key where the agent can read it. Use git over HTTPS instead.
-- The values are stored unencrypted in files only your user can read. If your
-  machine may be compromised, rotate the tokens where you created them and set
-  the new values.
 
 ### Connecting over SSH
 
@@ -658,11 +667,13 @@ dialog.
 ### Base image
 
 The [`Dockerfile`](Dockerfile) describes a base image for sandboxes with `git`,
-`curl`, `sudo`, [mise](https://mise.jdx.dev), the Docker engine and an
-unprivileged `agent` user. Releases publish it as
-`ghcr.io/wmeints/firebrick-base:<tag>`, and sandboxes run the image that matches
-the installed firebrick version unless the `image` field in `.firebrick.yml`
-names another one, such as an image built on top of it.
+`curl`, `sudo`, [mise](https://mise.jdx.dev), the Docker engine, an unprivileged
+`agent` user, `firebrick-open` as `xdg-open` and `$BROWSER`, and the
+`firebrick-git-credential` helper for [git over HTTPS](#git-over-https) to
+github.com. Releases publish it as `ghcr.io/wmeints/firebrick-base:<tag>`, and
+sandboxes run the image that matches the installed firebrick version unless the
+`image` field in `.firebrick.yml` names another one, such as an image built on
+top of it.
 
 The image's init starts `dockerd` when the sandbox boots, and `agent` is in the
 `docker` group, so agents can run `docker`, `docker compose` and `docker buildx`

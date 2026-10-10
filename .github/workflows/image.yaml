@@ -35,3 +35,55 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: false
+
+      # Load the amd64 image into the local Docker daemon for the smoke checks.
+      # The layers come from the build above.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: firebrick-base:ci
+
+      # git's credential helper for github.com returns GH_TOKEN, or GITHUB_TOKEN
+      # when GH_TOKEN is unset, and nothing for other hosts or without a token.
+      - name: Check the git credential helper
+        run: |
+          fill() {
+            printf 'protocol=https\nhost=%s\n\n' "$1" > request
+            docker run --rm -i -e GIT_TERMINAL_PROMPT=0 "${@:2}" firebrick-base:ci \
+              git credential fill < request 2>&1 || true
+          }
+          expect() {
+            if ! grep -qxF "$1" <<< "$2"; then
+              printf 'expected %s in:\n%s\n' "$1" "$2"
+              exit 1
+            fi
+          }
+          reject() {
+            if grep -q '^password=' <<< "$1"; then
+              printf 'expected no password in:\n%s\n' "$1"
+              exit 1
+            fi
+          }
+
+          out=$(fill github.com -e 'GH_TOKEN=$MSB_GH_TOKEN' -e GITHUB_TOKEN=other)
+          expect 'username=x-access-token' "$out"
+          expect 'password=$MSB_GH_TOKEN' "$out"
+
+          out=$(fill github.com -e GITHUB_TOKEN=fallback)
+          expect 'username=x-access-token' "$out"
+          expect 'password=fallback' "$out"
+
+          out=$(docker run --rm firebrick-base:ci sh -c \
+            'printf "protocol=https\nhost=github.com\n\n" | firebrick-git-credential get; echo "exit=$?"')
+          [ "$out" = "exit=0" ] || { printf 'expected no output, got:\n%s\n' "$out"; exit 1; }
+
+          out=$(fill gitlab.com -e GH_TOKEN=token)
+          reject "$out"
+
+          # A helper in the agent's ~/.gitconfig still answers when the system one doesn't.
+          out=$(docker run --rm -e GIT_TERMINAL_PROMPT=0 firebrick-base:ci sh -c \
+            "git config --global credential.https://github.com.helper '!f() { echo username=me; echo password=from-user; }; f' \
+              && printf 'protocol=https\nhost=github.com\n\n' | git credential fill" 2>&1 || true)
+          expect 'password=from-user' "$out"
