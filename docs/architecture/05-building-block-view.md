@@ -173,15 +173,18 @@ C4Component
   name, regenerates the SSH config, the editor settings and Zed's remote
   projects after every start and remove and when the daemon starts, and connects
   to a sandbox by name or host name. `GetSandbox` returns the sandbox's working
-  directory, which is the workspace mount path, as `workspace_path`; it's empty
-  for a sandbox without one. A failed sync only logs a warning. `SetSecret`
-  stores a secret and adds it to the existing sandboxes firebrick created.
-  `ListSecrets` returns the names and allowed hosts, sorted by name, never the
-  values. `RemoveSecret` removes a secret from the existing sandboxes firebrick
-  created and then from the store, keeps it in the store when a sandbox fails so
-  the removal can be retried, and returns `NOT_FOUND` for an unknown name. A
-  lock around the secret store makes sure a sandbox that is being created can't
-  miss a secret that is being set.
+  directory, which is the workspace mount path, as `workspace_path`, and the
+  host directory bind-mounted there, canonicalized, as `workspace_host_path`.
+  Both are empty for a sandbox without a workspace. The CLI compares
+  `workspace_host_path` with the working directory before it uses an existing
+  sandbox. A failed sync only logs a warning. `SetSecret` stores a secret and
+  adds it to the existing sandboxes firebrick created. `ListSecrets` returns the
+  names and allowed hosts, sorted by name, never the values. `RemoveSecret`
+  removes a secret from the existing sandboxes firebrick created and then from
+  the store, keeps it in the store when a sandbox fails so the removal can be
+  retried, and returns `NOT_FOUND` for an unknown name. A lock around the secret
+  store makes sure a sandbox that is being created can't miss a secret that is
+  being set.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and

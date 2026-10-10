@@ -57,6 +57,10 @@ sequenceDiagram
         CLI->>CLI: Poll socket (max 5s)
     end
     CLI->>CLI: Resolve spec
+    CLI->>D: GetSandbox(name)
+    opt workspace_host_path isn't the canonical working directory
+        CLI-->>Dev: Error: sandbox NAME belongs to DIR
+    end
 
     loop Until the sandbox runs (max 120s)
         CLI->>D: GetSandbox(name)
