@@ -3,6 +3,7 @@ pub mod init;
 pub mod manage;
 pub mod network;
 pub mod port;
+pub mod progress;
 pub mod secret;
 pub mod session;
 pub mod ssh;
