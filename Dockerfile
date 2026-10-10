@@ -61,6 +61,39 @@ EOF
 # `xterm-ghostty`. Interactive shells fall back to xterm-256color for those.
 RUN echo 'infocmp "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color' >> /etc/bash.bashrc
 
+# The guest has no browser, so firebrick-open stands in for xdg-open and $BROWSER: it hands
+# http(s) URLs to fbkd through the FIFO that fbkd's URL relay reads, and fbkd opens them in the
+# browser on the host. Without a relay it gives up after 5 seconds and prints the URL instead.
+COPY --chmod=755 <<'EOF' /usr/local/bin/firebrick-open
+#!/bin/sh
+fifo=/tmp/.firebrick/open.fifo
+
+invalid() {
+    printf '%s\n' "firebrick-open: only http and https URLs can be opened on the host" >&2
+    exit 2
+}
+
+[ "$#" -eq 1 ] || invalid
+url=$1
+
+case "$url" in
+    [Hh][Tt][Tt][Pp]://* | [Hh][Tt][Tt][Pp][Ss]://*) ;;
+    *) invalid ;;
+esac
+
+case "$url" in
+    *[[:space:][:cntrl:]]*) invalid ;;
+esac
+
+# Writing to a missing FIFO would create a regular file, so check that the relay made it.
+if [ ! -p "$fifo" ] || ! timeout 5 sh -c 'printf "%s\n" "$1" > "$2"' _ "$url" "$fifo" 2>/dev/null; then
+    printf "firebrick-open: couldn't reach the host; open this URL yourself: %s\n" "$url" >&2
+    exit 1
+fi
+EOF
+RUN ln -s /usr/local/bin/firebrick-open /usr/local/bin/xdg-open
+ENV BROWSER=/usr/local/bin/xdg-open
+
 # Replace the default ubuntu user (uid/gid 1000) with the agent user, who can use docker
 # without sudo through the docker group.
 RUN userdel --remove ubuntu \

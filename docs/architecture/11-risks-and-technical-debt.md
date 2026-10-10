@@ -58,6 +58,14 @@
   A port that another process uses is skipped with a warning, so the sandbox's
   server isn't reachable there until the port is free and `fbk start` runs again
   ([ADR 0019](decisions/0019-forward-ports-through-the-ssh-servers-direct-tcpip.md)).
+- **Sandboxes can open URLs on the host:** any process in a sandbox can make the
+  host browser open an http or https URL without asking. `fbkd` refuses hosts on
+  the host's local network and, for sandboxes with enforced egress rules, hosts
+  the rules don't allow, but it checks the URL's host name, not the addresses it
+  resolves to: a public name that resolves to a private address still opens, and
+  data can still leave through an allowed host, such as a query string to
+  `github.com`. The browser sends the user's cookies with the request
+  ([ADR 0026](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)).
 - **Ageing Linux build runners:** Linux releases build on the `ubuntu-22.04`
   runners to support glibc 2.35. GitHub retires runner images before their
   Ubuntu release reaches end of support (April 2027), after which the release

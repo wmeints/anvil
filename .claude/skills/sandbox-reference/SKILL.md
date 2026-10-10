@@ -57,6 +57,10 @@ All calls live in `crates/daemon/src`. Reuse these before adding new ones:
   / `modify().remove_secret(..)` on existing sandboxes.
 - `session.rs` - `exec_stream_with(command, |e| e.args(..).stdin_pipe()
   .tty(true))` for `fbk run`.
+- `open.rs` - a long-running `exec_stream_with("sh", ..)` per sandbox as a
+  guest-to-host channel: the relay echoes lines from a FIFO and `fbkd` reads its
+  stdout, because the network policy and vsock routes are fixed at create time
+  (ADR 0026).
 - `tunnel.rs` / `ssh.rs` - `microsandbox::sandbox::ssh::SshServer` behind `fbk
   ssh-proxy`.
 - `runtime.rs` - `setup::ensure_runtime`, `setup::install_runtime` and

@@ -5,6 +5,7 @@
 //! `vm-tests` feature; run them with `cargo test -p firebrick-daemon --features vm-tests`.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementServiceClient;
@@ -17,6 +18,7 @@ use firebrick_daemon::api::{
     StartSandboxResponse, StopSandboxRequest, UpdateNetworkRequest, attach_request,
     attach_response, start_sandbox_response,
 };
+use firebrick_daemon::open::{self, Opener};
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{mise, sandboxes, server};
 use hyper_util::rt::TokioIo;
@@ -43,8 +45,28 @@ const DEFAULT_SIZE: AttachResize = AttachResize {
     height: 24,
 };
 
+/// Records the URLs the daemon opens instead of launching a browser.
+#[derive(Default)]
+struct RecordingOpener {
+    urls: Mutex<Vec<String>>,
+}
+
+impl Opener for RecordingOpener {
+    fn open(&self, url: &str) -> std::io::Result<()> {
+        self.urls.lock().unwrap().push(url.to_string());
+        Ok(())
+    }
+}
+
+impl RecordingOpener {
+    fn urls(&self) -> Vec<String> {
+        self.urls.lock().unwrap().clone()
+    }
+}
+
 struct TestDaemon {
     socket_path: PathBuf,
+    opener: Arc<RecordingOpener>,
     shutdown: Option<oneshot::Sender<()>>,
     handle: JoinHandle<Result<(), server::ServerError>>,
 }
@@ -70,12 +92,19 @@ impl TestDaemon {
         let _ = std::fs::remove_file(&socket_path);
 
         let (tx, rx) = oneshot::channel();
-        let handle = tokio::spawn(serve_until(socket_path.clone(), secrets, rx));
+        let opener = Arc::new(RecordingOpener::default());
+        let handle = tokio::spawn(serve_until(
+            socket_path.clone(),
+            secrets,
+            opener.clone(),
+            rx,
+        ));
 
         wait_for_socket(&socket_path).await;
 
         Self {
             socket_path,
+            opener,
             shutdown: Some(tx),
             handle,
         }
@@ -116,13 +145,16 @@ fn init_logging() {
         .try_init();
 }
 
-/// Serves the daemon on the socket until `stop` fires.
+/// Serves the daemon on the socket until `stop` fires, opening URLs with `opener`.
 async fn serve_until(
     path: PathBuf,
     secrets: SecretStore,
+    opener: Arc<RecordingOpener>,
     stop: oneshot::Receiver<()>,
 ) -> Result<(), server::ServerError> {
-    server::serve(&path, server::FirebrickServer::new(secrets), async {
+    let service = server::FirebrickServer::new(secrets, opener);
+
+    server::serve(&path, service, async {
         let _ = stop.await;
     })
     .await
@@ -2567,6 +2599,110 @@ async fn update_network_keeps_extra_mounts_and_port_forwards() {
     assert_eq!(code, 0, "unexpected output: {output:?}");
     assert!(output.contains("hello from host"), "{output:?}");
     assert!(output.contains("Read-only file system"), "{output:?}");
+}
+
+/// Writes a line to the URL relay's FIFO in the sandbox, waiting until the relay created it.
+/// The test image has no `firebrick-open` stand-in, so this writes to the FIFO directly.
+async fn write_to_relay(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    sandbox: &str,
+    line: &str,
+) {
+    let script = format!(
+        "for i in $(seq 100); do [ -p {fifo} ] && break; sleep 0.1; done; \
+         timeout 5 sh -c 'printf \"%s\\n\" \"$1\" > {fifo}' _ \"$1\"",
+        fifo = open::FIFO_PATH
+    );
+    let (output, code) = run_command(client, sandbox, "sh", &["-c", &script, "_", line]).await;
+
+    assert_eq!(code, 0, "failed to write to the relay: {output:?}");
+}
+
+/// Waits until the daemon opened the URLs.
+async fn wait_for_opened(daemon: &TestDaemon, expected: &[&str]) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+
+    while daemon.opener.urls() != expected {
+        assert!(
+            Instant::now() < deadline,
+            "expected {expected:?} to be opened, got {:?}",
+            daemon.opener.urls()
+        );
+        sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Counts the URL relays that run in the sandbox.
+async fn relay_count(client: &mut SandboxManagementServiceClient<Channel>, sandbox: &str) -> usize {
+    // Matches open::RELAY_NAME; the bracket keeps it from matching this command's own grep.
+    let script = "grep -l -a -- 'firebrick-open-rela[y]' /proc/[0-9]*/cmdline 2>/dev/null | wc -l";
+    let (output, code) = run_command(client, sandbox, "sh", &["-c", script]).await;
+
+    assert_eq!(code, 0, "failed to count relays: {output:?}");
+    output.trim().parse().expect("relay count isn't a number")
+}
+
+#[tokio::test]
+async fn opens_urls_from_the_sandbox_on_the_host() {
+    let name: &str = &sandbox_name("open-url");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("open-url").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, name).await;
+
+    write_to_relay(&mut client, name, "file:///etc/passwd").await;
+    write_to_relay(&mut client, name, "https://example.com").await;
+    wait_for_opened(&daemon, &["https://example.com/"]).await;
+
+    // Starting the sandbox again and attaching more sessions reuses the relay.
+    start_running_sandbox(&mut client, name).await;
+    run_command(&mut client, name, "true", &[]).await;
+    assert_eq!(relay_count(&mut client, name).await, 1);
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+}
+
+#[tokio::test]
+async fn url_relay_comes_back_after_restart() {
+    let name: &str = &sandbox_name("open-url-restart");
+    remove_sandbox(name).await;
+
+    let daemon = TestDaemon::start("open-url-restart").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, name).await;
+
+    restart_sandbox(&mut client, name).await;
+    write_to_relay(&mut client, name, "https://example.com/after-restart").await;
+    wait_for_opened(&daemon, &["https://example.com/after-restart"]).await;
+    assert_eq!(relay_count(&mut client, name).await, 1);
+
+    daemon.stop().await;
+    remove_sandbox(name).await;
+}
+
+#[tokio::test]
+async fn url_relay_follows_updated_network_rules() {
+    let name: &str = &sandbox_name("open-url-network");
+    remove_sandbox_and_snapshots(name).await;
+
+    let daemon = TestDaemon::start("open-url-network").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, name).await;
+
+    let updated = update_network(&mut client, name, allow_policy(true, &["example.org"])).await;
+    write_to_relay(&mut client, name, "https://example.com/not-allowed").await;
+    write_to_relay(&mut client, name, "http://localhost:3000/").await;
+    write_to_relay(&mut client, name, "https://example.org/allowed").await;
+    wait_for_opened(&daemon, &["https://example.org/allowed"]).await;
+    let relays = relay_count(&mut client, name).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(name).await;
+
+    assert!(matches!(updated, Ok(true)), "{updated:?}");
+    assert_eq!(relays, 1);
 }
 
 /// Asks the daemon to forward the host port to the guest port of the sandbox.

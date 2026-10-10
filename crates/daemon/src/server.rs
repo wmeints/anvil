@@ -16,6 +16,7 @@ use crate::api::{
     UpdateNetworkResponse, attach_request, ssh_tunnel_request, start_sandbox_response,
 };
 use crate::forward::{ForwardFailure, ForwardReport};
+use crate::open::{HostOpener, Opener};
 use crate::pull::PullUpdate;
 use crate::sandboxes::{
     NewSecret, Resources, SandboxError, SandboxInfo, SandboxManager, StartSandbox,
@@ -63,10 +64,11 @@ pub struct FirebrickServer {
 }
 
 impl FirebrickServer {
-    /// Creates a server that adds the secrets from `secrets` to sandboxes.
-    pub fn new(secrets: SecretStore) -> Self {
+    /// Creates a server that adds the secrets from `secrets` to sandboxes and opens the URLs
+    /// from sandboxes with `opener`.
+    pub fn new(secrets: SecretStore, opener: Arc<dyn Opener>) -> Self {
         Self {
-            sandboxes: Arc::new(SandboxManager::new(secrets)),
+            sandboxes: Arc::new(SandboxManager::new(secrets, opener)),
         }
     }
 }
@@ -539,10 +541,11 @@ fn parse_size_mib(size: &str) -> Result<u32, SandboxError> {
 }
 
 /// Reopens the port forwards of the sandboxes that are running, then serves the gRPC API on
-/// the socket until SIGINT or SIGTERM is received. The caller makes sure no other daemon serves
-/// on the socket, so it doesn't take that daemon's host ports.
+/// the socket until SIGINT or SIGTERM is received, opening the URLs from sandboxes in the
+/// host's browser. The caller makes sure no other daemon serves on the socket, so it doesn't
+/// take that daemon's host ports.
 pub async fn run(socket_path: &Path, secrets: SecretStore) -> Result<(), ServerError> {
-    let service = FirebrickServer::new(secrets);
+    let service = FirebrickServer::new(secrets, Arc::new(HostOpener));
     service.sandboxes.restore_forwards().await;
 
     serve(socket_path, service, shutdown_signal()).await
@@ -677,9 +680,13 @@ mod tests {
         path: PathBuf,
         stop: tokio::sync::oneshot::Receiver<()>,
     ) -> Result<(), ServerError> {
-        serve(&path, FirebrickServer::new(unused_store()), async {
-            let _ = stop.await;
-        })
+        serve(
+            &path,
+            FirebrickServer::new(unused_store(), Arc::new(HostOpener)),
+            async {
+                let _ = stop.await;
+            },
+        )
         .await
     }
 
@@ -1142,7 +1149,7 @@ mod tests {
     async fn set_secret_rejects_invalid_secret_without_storing_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secrets.yml");
-        let server = FirebrickServer::new(SecretStore::new(&path));
+        let server = FirebrickServer::new(SecretStore::new(&path), Arc::new(HostOpener));
 
         let status = server
             .set_secret(Request::new(SetSecretRequest {
@@ -1162,7 +1169,7 @@ mod tests {
     async fn list_secrets_returns_names_and_hosts_sorted() {
         let dir = tempfile::tempdir().unwrap();
         let store = store_with_secrets(&dir.path().join("secrets.yml"), &["B_TOKEN", "A_TOKEN"]);
-        let server = FirebrickServer::new(store);
+        let server = FirebrickServer::new(store, Arc::new(HostOpener));
 
         let secrets = server
             .list_secrets(Request::new(ListSecretsRequest {}))
@@ -1187,7 +1194,7 @@ mod tests {
         let store = store_with_secrets(&dir.path().join("secrets.yml"), &["A"]);
         let secret = Secret::new("A".into(), "value".into(), vec!["example.com".into()]).unwrap();
         store.set(secret.in_scope(Some("dev".into()))).unwrap();
-        let server = FirebrickServer::new(store);
+        let server = FirebrickServer::new(store, Arc::new(HostOpener));
 
         let scopes: Vec<Option<String>> = server
             .list_secrets(Request::new(ListSecretsRequest {}))
@@ -1204,7 +1211,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_secret_rejects_invalid_name() {
-        let server = FirebrickServer::new(unused_store());
+        let server = FirebrickServer::new(unused_store(), Arc::new(HostOpener));
 
         let status = server
             .remove_secret(Request::new(RemoveSecretRequest {
@@ -1224,7 +1231,7 @@ mod tests {
         let store = SecretStore::new(&path);
         let secret = Secret::new("A".into(), "value".into(), vec!["example.com".into()]).unwrap();
         store.set(secret).unwrap();
-        let server = FirebrickServer::new(store);
+        let server = FirebrickServer::new(store, Arc::new(HostOpener));
 
         let status = server
             .remove_secret(Request::new(RemoveSecretRequest {
@@ -1240,7 +1247,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_network_rejects_invalid_rule() {
-        let server = FirebrickServer::new(unused_store());
+        let server = FirebrickServer::new(unused_store(), Arc::new(HostOpener));
 
         let status = server
             .update_network(Request::new(UpdateNetworkRequest {

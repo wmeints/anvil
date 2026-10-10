@@ -827,3 +827,66 @@ handles this in `/etc/bash.bashrc` instead: interactive shells switch to
 The client authenticates with the client key the daemon created, and checks the
 sandbox against the host key pinned for `*.fbk` in the `known_hosts` file. The
 sandbox keeps running after the connection closes.
+
+## Opening a URL on the host
+
+Coding agents and CLIs call `xdg-open` or `$BROWSER` to show a page or start a
+login flow, such as `gh auth login --web`. The guest has no browser, so the
+`firebrick-base` image points both at `firebrick-open`, which hands the URL to
+`fbkd` through a FIFO. `fbkd` reads that FIFO with a relay process it starts in
+the sandbox as an exec stream, because microsandbox has no guest-to-host channel
+that can be added to an existing sandbox (see
+[ADR 0026](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)).
+This works the same for `fbk run`, `ssh <leaf>.fbk` and IDEs over SSH.
+
+```mermaid
+sequenceDiagram
+    participant D as fbkd
+    participant MS as microsandbox
+    participant R as Relay (sh -c)
+    participant A as Agent or CLI
+    participant O as firebrick-open
+    participant B as Host browser
+
+    Note over D: StartSandbox, Attach or SshTunnel
+    alt The sandbox has no relay yet
+        D->>MS: exec_stream_with("sh", -c relay script)
+        MS->>R: Start as the image's user
+        R->>R: Create /tmp/.firebrick (0700) and open.fifo when missing
+        R->>R: Open the FIFO and wait for lines
+    end
+
+    A->>O: xdg-open https://github.com/login/device
+    alt Not one http(s) URL without whitespace or control characters
+        O-->>A: Exit 2
+    end
+    O->>R: Write the URL and a newline to the FIFO (5 second timeout)
+    alt No FIFO, or no relay reads it in time
+        O-->>A: Print the URL, exit 1
+    end
+    O-->>A: Exit 0
+    R-->>D: Echo the line on stdout
+    D->>D: Validate the URL again, plus the 8 KiB limit, and parse it
+    alt Invalid, local host, host the egress rules deny, or over the rate limit
+        D->>D: Log a warning with the reason, without the URL
+    else Allowed
+        D->>B: xdg-open <url> (Linux) or open <url> (macOS)
+    end
+```
+
+`fbkd` doesn't open URLs whose host is `localhost` or an address of the host's
+local network, so a sandbox can't make the browser send requests to services on
+the host or the LAN. When the sandbox enforces egress rules, the host must also
+be one the rules allow, so the browser can't carry data to a host the sandbox
+itself can't reach. A sandbox with its network disabled opens no URLs at all. At
+most 5 URLs per sandbox open within 10 seconds.
+
+The relay keeps running after the session or SSH connection that started it
+closes, and a sandbox never has more than one. `UpdateNetwork` recreates a
+running sandbox, so `fbkd` starts a new relay for it that checks URLs against
+the new rules. When the sandbox stops, its exec stream ends and `fbkd` forgets
+the relay; the next `StartSandbox`, `Attach` or `SshTunnel` starts a new one. A
+sandbox that keeps running while `fbkd` restarts gets its relay back on the next
+such call. When the relay can't start, for example in an image without `sh`, or
+when the host has no `xdg-open`, `fbkd` logs a warning and the request still
+succeeds.

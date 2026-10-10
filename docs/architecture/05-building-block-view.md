@@ -165,6 +165,7 @@ C4Component
         Component(secrets, "secrets", "serde_yaml", "Secrets")
         Component(network, "network", "microsandbox-network", "Egress rules")
         Component(forward, "forward", "russh", "Port forwards")
+        Component(open, "open", "Rust", "URL relays")
         Component(pull, "pull", "Rust", "Image pull progress")
     }
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names")
@@ -172,6 +173,7 @@ C4Component
     System_Ext(sshconfig, "~/.ssh/config", "OpenSSH config")
     System_Ext(editors, "settings.json", "VS Code-family user settings")
     System_Ext(zedsettings, "zed/settings.json", "Zed user settings")
+    System_Ext(browser, "xdg-open / open", "Host browser")
 
     Rel(main, runtime, "Ensures runtime")
     Rel(main, ssh, "Ensures keys")
@@ -187,6 +189,9 @@ C4Component
     Rel(sandboxes, forward, "Reconciles port forwards")
     Rel(sandboxes, pull, "Reports image pull progress")
     Rel(forward, microsandbox, "Opens direct-tcpip channels")
+    Rel(sandboxes, open, "Starts URL relays")
+    Rel(open, microsandbox, "Runs the relay as an exec stream")
+    Rel(open, browser, "Opens URLs")
     Rel(sandboxes, ssh, "Host names, SSH config")
     Rel(sandboxes, vscode, "Syncs Remote-SSH platforms")
     Rel(sandboxes, zed, "Syncs remote projects")
@@ -300,7 +305,10 @@ C4Component
   a stopped sandbox they only update the label, and the forward opens on the
   next start. Both return whether the sandbox runs. They hold the sandbox's
   lock, so they can't interleave with a recreate by `UpdateNetwork`, and the
-  ports lock while they read, reconcile and store the ports.
+  ports lock while they read, reconcile and store the ports. `StartSandbox`,
+  `Attach`, `SshTunnel` and an `UpdateNetwork` of a running sandbox make sure
+  the sandbox's URL relay runs, through `open`; `StopSandbox`, `RemoveSandbox`
+  and recreating the sandbox forget it.
 - `pull` - Turns microsandbox's `PullProgress` events into pull updates: it adds
   up the downloaded bytes per layer, takes the total from the manifest, and
   reports at most one update every 100 ms, one for each layer that finishes and
@@ -333,6 +341,39 @@ C4Component
   that session and no inactivity timeout, so forwards stay open while the
   sandbox runs. When nothing listens on the guest port, the host connection is
   closed and logged at `debug`.
+- `open` - Opens http and https URLs from a sandbox in the browser on the host
+  (see
+  [ADR 0026](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)
+  and
+  [Opening a URL on the host](06-runtime-view.md#opening-a-url-on-the-host)).
+  `Relays::ensure` starts the relay of a connected, running sandbox unless it
+  already has one: an inline `sh -c` script, run with `exec_stream_with` as the
+  image's user, that creates `/tmp/.firebrick` (mode `0700`) and the FIFO
+  `/tmp/.firebrick/open.fifo` when they're missing, keeps the FIFO open itself
+  and echoes each line written to it. A registry keyed by sandbox name holds at
+  most one relay per sandbox; an entry goes away when its exec stream ends or
+  when `Relays::forget` is called because the sandbox stopped or is being
+  recreated, so the next `StartSandbox`, `Attach`, `SshTunnel` or
+  `UpdateNetwork` of a running sandbox starts a new relay. `fbkd` splits the
+  relay's output into lines and checks each one: it must start with `http://` or
+  `https://` in any case, have no whitespace or control characters, be at most 8
+  KiB and parse with the `url` crate, which reads the host the way a browser
+  does (`http://2130706433/` is `127.0.0.1`). It rejects `localhost`,
+  `*.localhost` and loopback, private, shared, link-local, unique local and
+  unspecified IP addresses. When the sandbox enforces egress rules, read from
+  its `firebrick.network` label with `network::rules_of`, the host must also
+  pass `network::allows_host`, which matches the rules the way microsandbox
+  does: deny rules first, then allow rules, else deny. Domain rules only match
+  host names and IP rules only IP addresses, because `fbkd` doesn't resolve
+  names. A sandbox whose label can't be read, or one with a network policy that
+  predates the label, opens nothing. At most 5 URLs per sandbox open within 10
+  seconds. `fbkd` opens the URL as the `url` crate serializes it through an
+  `Opener`; `HostOpener` runs `xdg-open <url>` on Linux and `open <url>` on
+  macOS with `tokio::process`, without a shell, and doesn't wait for it; tests
+  pass an opener that records the URLs. A rejected line is logged at `warn`
+  without the URL, with the reason. A relay that can't start or exits with an
+  error is logged as a warning with its stderr, and an opener that fails is
+  logged as a warning; neither fails the request.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,
@@ -488,6 +529,16 @@ images. It builds on `ubuntu:26.04` and adds:
   false`; then nothing starts `dockerd`, and the agent can start it in the
   background with `sudo sh -c 'dockerd >/var/log/dockerd.log 2>&1 &'`. See
   [ADR 0007](decisions/0007-disable-guest-ipv6-in-the-base-image.md).
+- `/usr/local/bin/firebrick-open` - a stand-in for a browser, symlinked as
+  `/usr/local/bin/xdg-open` and set as `BROWSER`, so `gh auth login --web`,
+  Python's `webbrowser` and Node's `open` package hand their URLs to it. It
+  takes exactly one http or https URL without whitespace or control characters
+  and writes it to `/tmp/.firebrick/open.fifo`, where the relay of `fbkd` reads
+  it and opens it in the browser on the host. Anything else exits 2 with
+  `firebrick-open: only http and https URLs can be opened on the host`. When the
+  FIFO is missing or no relay reads it within 5 seconds, it exits 1 and prints
+  `firebrick-open: couldn't reach the host; open this URL yourself: <url>`. See
+  [Opening a URL on the host](06-runtime-view.md#opening-a-url-on-the-host).
 
 The release workflow publishes the image as
 `ghcr.io/wmeints/firebrick-base:<tag>` (see

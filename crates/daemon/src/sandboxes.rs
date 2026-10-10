@@ -1,10 +1,11 @@
 //! Sandbox management on top of microsandbox: the sandbox lifecycle, the workspace's mise
-//! tools, the secrets of sandboxes, their port forwards, SSH host names, the generated SSH
-//! config, the editors' Remote-SSH settings and Zed's remote projects.
+//! tools, the secrets of sandboxes, their port forwards, their URL relays, SSH host names, the
+//! generated SSH config, the editors' Remote-SSH settings and Zed's remote projects.
 
 use crate::forward::{self, ForwardReport, Forwards, SshConnector};
 use crate::mise::{self, MiseError};
 use crate::network;
+use crate::open::{Opener, Relays};
 use crate::pull::{self, PullUpdate};
 use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
@@ -272,10 +273,11 @@ fn default_docker_volume_mib() -> u32 {
     firebrick_spec::parse_size_mib(&VolumesSpec::default().docker).unwrap_or(20 * 1024)
 }
 
-/// Manages sandboxes, the secrets they get and their port forwards.
+/// Manages sandboxes, the secrets they get, their port forwards and their URL relays.
 pub struct SandboxManager {
     secrets: SecretStore,
     forwards: Forwards,
+    relays: Relays,
     // Held while secrets are stored or added to sandboxes, so a sandbox that is being created
     // can't miss a secret that is being set, and concurrent sets can't mix up values.
     secrets_lock: tokio::sync::Mutex<()>,
@@ -317,11 +319,13 @@ impl Drop for SandboxGuard<'_> {
 }
 
 impl SandboxManager {
-    /// Creates a manager that adds the secrets from `secrets` to sandboxes.
-    pub fn new(secrets: SecretStore) -> Self {
+    /// Creates a manager that adds the secrets from `secrets` to sandboxes and opens the URLs
+    /// from sandboxes with `opener`.
+    pub fn new(secrets: SecretStore, opener: Arc<dyn Opener>) -> Self {
         Self {
             secrets,
             forwards: Forwards::new(SshConnector::default()),
+            relays: Relays::new(opener),
             secrets_lock: tokio::sync::Mutex::new(()),
             sandbox_locks: std::sync::Mutex::new(HashMap::new()),
             ports_lock: tokio::sync::Mutex::new(()),
@@ -350,10 +354,10 @@ impl SandboxManager {
 
     /// Starts an existing sandbox or creates a new one when it doesn't exist, installs the
     /// workspace's mise tools when it started, then syncs the SSH config and the editor
-    /// settings, also when starting failed. Once the sandbox runs, stores the requested ports
-    /// and opens its forwards, also when it was already running. `resources` is only called
-    /// when the sandbox is created, and `on_pull` only gets the progress of an image that is
-    /// downloaded for a new sandbox.
+    /// settings, also when starting failed. Once the sandbox runs, stores the requested ports,
+    /// opens its forwards and starts its URL relay, also when it was already running.
+    /// `resources` is only called when the sandbox is created, and `on_pull` only gets the
+    /// progress of an image that is downloaded for a new sandbox.
     pub async fn start(
         &self,
         request: StartSandbox<'_>,
@@ -368,6 +372,7 @@ impl SandboxManager {
 
         sync_ssh_config().await;
         result?;
+        self.start_relay(request.name).await;
 
         Ok(self.open_forwards(request.name, request.ports).await)
     }
@@ -490,7 +495,7 @@ impl SandboxManager {
     }
 
     /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`],
-    /// then closes its forwards.
+    /// then closes its forwards and forgets its URL relay.
     pub async fn stop(&self, name: &str) -> Result<(), SandboxError> {
         let _guard = self.lock_sandbox(name).await;
         let sb = self.get_or_close_forwards(name).await?;
@@ -501,6 +506,7 @@ impl SandboxManager {
         })?;
 
         self.forwards.close(name).await;
+        self.relays.forget(name);
 
         Ok(())
     }
@@ -522,6 +528,7 @@ impl SandboxManager {
         // The sandbox doesn't run anymore, also when removing it fails below.
         if force || !live {
             self.forwards.close(name).await;
+            self.relays.forget(name);
         }
 
         sb.remove().await.map_err(|err| remove_failed(name, err))?;
@@ -572,19 +579,23 @@ impl SandboxManager {
             .collect())
     }
 
-    /// Connects to the running sandbox with the name.
+    /// Connects to the running sandbox with the name and starts its URL relay.
     pub async fn connect(&self, name: &str) -> Result<Sandbox, SandboxError> {
         let _guard = self.lock_sandbox(name).await;
 
-        get_sandbox(name)
+        let sb = get_sandbox(name)
             .await?
             .connect()
             .await
-            .map_err(|err| connect_failed(name, &err))
+            .map_err(|err| connect_failed(name, &err))?;
+
+        self.relays.ensure(&sb).await;
+
+        Ok(sb)
     }
 
-    /// Connects to the sandbox with the SSH host name, starting it when needed, and opens its
-    /// stored forwards.
+    /// Connects to the sandbox with the SSH host name, starting it when needed, opens its
+    /// stored forwards and starts its URL relay.
     pub async fn connect_by_hostname(&self, hostname: &str) -> Result<Sandbox, SandboxError> {
         let name = sandbox_name_by_hostname(hostname).await?;
         let _guard = self.lock_sandbox(&name).await;
@@ -600,6 +611,7 @@ impl SandboxManager {
             })?;
 
         self.open_forwards(sb.name(), None).await;
+        self.relays.ensure(&sb).await;
 
         Ok(sb)
     }
@@ -631,19 +643,30 @@ impl SandboxManager {
 
         let result = self.replace(&sb, &settings, network).await;
         sync_ssh_config().await;
-        self.reopen_forwards(name).await;
+        self.reopen_forwards_and_relay(name).await;
 
         result.map(|()| true)
     }
 
-    /// Opens the stored forwards of the sandbox when it runs after an update of its rules.
-    async fn reopen_forwards(&self, name: &str) {
+    /// Opens the stored forwards and starts the URL relay of the sandbox when it runs after an
+    /// update of its rules. The relay checks URLs against the new rules.
+    async fn reopen_forwards_and_relay(&self, name: &str) {
         let running = Sandbox::get(name)
             .await
             .is_ok_and(|sb| sb.status_snapshot() == SandboxStatus::Running);
 
         if running {
             self.open_forwards(name, None).await;
+            self.start_relay(name).await;
+        }
+    }
+
+    /// Connects to the running sandbox and starts its URL relay unless it has one, logging a
+    /// warning when it can't connect.
+    async fn start_relay(&self, name: &str) {
+        match async { Sandbox::get(name).await?.connect().await }.await {
+            Ok(sb) => self.relays.ensure(&sb).await,
+            Err(err) => tracing::warn!("failed to start the URL relay of sandbox {name}: {err}"),
         }
     }
 
@@ -663,6 +686,7 @@ impl SandboxManager {
                 .await
                 .map_err(|err| update_failed(name, &err))?;
             self.forwards.close(name).await;
+            self.relays.forget(name);
         }
 
         let snapshot = match snapshot_and_remove(sb).await {
@@ -1717,6 +1741,7 @@ fn is_not_found(envelope: &OciEnvelope) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::open::HostOpener;
 
     /// Returns a manager with a store at `path` that has a secret for `example.com` under each
     /// name.
@@ -1729,7 +1754,7 @@ mod tests {
             store.set(secret).unwrap();
         }
 
-        SandboxManager::new(store)
+        SandboxManager::new(store, Arc::new(HostOpener))
     }
 
     /// Returns a listing that fails with each error in turn, then succeeds, and counts its calls.
@@ -2042,7 +2067,7 @@ mod tests {
         for (name, sandbox) in entries {
             store.set(scoped_secret(name, sandbox)).unwrap();
         }
-        let manager = SandboxManager::new(store);
+        let manager = SandboxManager::new(store, Arc::new(HostOpener));
 
         let listed = manager.list_secrets().unwrap();
 
@@ -2061,7 +2086,7 @@ mod tests {
     async fn set_secret_returns_not_found_for_missing_sandbox_without_storing_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secrets.yml");
-        let manager = SandboxManager::new(SecretStore::new(&path));
+        let manager = SandboxManager::new(SecretStore::new(&path), Arc::new(HostOpener));
         let sandbox = format!("fbk-unit-missing-{}", std::process::id());
 
         let result = manager
@@ -2129,7 +2154,7 @@ mod tests {
     async fn set_secret_rejects_invalid_secret_without_storing_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secrets.yml");
-        let manager = SandboxManager::new(SecretStore::new(&path));
+        let manager = SandboxManager::new(SecretStore::new(&path), Arc::new(HostOpener));
 
         let result = manager
             .set_secret(NewSecret {
