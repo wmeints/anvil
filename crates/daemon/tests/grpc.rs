@@ -23,11 +23,13 @@ use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{mise, sandboxes, server};
 use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
-use microsandbox::sandbox::{OwnedVolumeStorage, RootfsSource, SandboxSpec, VolumeMount};
+use microsandbox::sandbox::{
+    OwnedVolumeStorage, RootfsSource, SandboxHandle, SandboxSpec, VolumeMount,
+};
 use microsandbox::snapshot::{Snapshot, SnapshotHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UnixStream};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OnceCell, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
@@ -83,6 +85,7 @@ impl TestDaemon {
 
     async fn start_with_secrets(name: &str, secrets: SecretStore) -> Self {
         init_logging();
+        STALE_SWEEP.get_or_init(sweep_stale_sandboxes).await;
 
         let socket_path =
             std::env::temp_dir().join(format!("fbk-it-{}-{}.sock", std::process::id(), name));
@@ -171,6 +174,91 @@ async fn wait_for_socket(path: &Path) {
     }
 }
 
+/// Prefix of every sandbox the tests create, followed by the id of the test process.
+const SANDBOX_PREFIX: &str = "fbk-it-";
+
+/// Runs the sweep of sandboxes left behind by killed test runs once per test process.
+static STALE_SWEEP: OnceCell<()> = OnceCell::const_new();
+
+/// Returns the name of a test sandbox: `fbk-it-<pid>-<test>`. The process id keeps concurrent
+/// test runs that share the microsandbox home from touching each other's sandboxes.
+fn sandbox_name(test: &str) -> String {
+    format!("{SANDBOX_PREFIX}{}-{test}", std::process::id())
+}
+
+/// Returns the id of the test process that created the sandbox, if the name has one.
+fn sandbox_pid(name: &str) -> Option<u32> {
+    let (pid, _) = name.strip_prefix(SANDBOX_PREFIX)?.split_once('-')?;
+    pid.parse().ok()
+}
+
+/// Whether a process with the id still runs. `kill -0` works on both Linux and macOS.
+fn process_is_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Removes the sandboxes, and their host directories, of test processes that no longer run.
+///
+/// Panics when the microsandbox home can't be listed, because no test can run against it.
+async fn sweep_stale_sandboxes() {
+    let all = sandboxes::list_all()
+        .await
+        .unwrap_or_else(|err| panic_unusable_home(err));
+
+    for sb in all.iter().filter(|sb| is_stale(sb.name())) {
+        remove_stale_sandbox(sb).await;
+    }
+
+    remove_stale_host_files();
+}
+
+/// Whether the name belongs to a test sandbox, or its host files, of a process that no longer
+/// runs. Names without a process id are never stale.
+fn is_stale(name: &str) -> bool {
+    sandbox_pid(name).is_some_and(|pid| !process_is_alive(pid))
+}
+
+fn panic_unusable_home(err: impl std::fmt::Display) -> ! {
+    let home = microsandbox::config::config()
+        .map(|config| config.home().display().to_string())
+        .unwrap_or_else(|_| "$MSB_HOME".to_string());
+
+    panic!("microsandbox home {home} is unusable: {err}; remove it and run the tests again")
+}
+
+/// Kills and removes a sandbox of a dead test process. A failure is logged, so one broken
+/// leftover doesn't fail the run.
+async fn remove_stale_sandbox(sb: &SandboxHandle) {
+    let removed = match sb.kill().await {
+        Ok(()) => sb.remove().await,
+        Err(err) => Err(err),
+    };
+
+    if let Err(err) = removed {
+        tracing::warn!("failed to remove stale test sandbox {}: {err}", sb.name());
+    }
+}
+
+/// Removes the workspaces, mount directories, sockets and secrets files that dead test
+/// processes left in the temp directory. They're all named `fbk-it-<pid>-...`, also when the
+/// process was killed before it created the sandbox.
+fn remove_stale_host_files() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        if is_stale(&entry.file_name().to_string_lossy()) {
+            let path = entry.path();
+            let _ = std::fs::remove_dir_all(&path).or_else(|_| std::fs::remove_file(&path));
+        }
+    }
+}
+
 /// Stops and removes a sandbox and its workspace, including ones left over from an earlier
 /// (failed) run.
 async fn remove_sandbox(name: &str) {
@@ -221,7 +309,7 @@ async fn wait_for_status(
 }
 
 /// Returns the host directory used as the workspace of a test sandbox. It's named after the
-/// sandbox only, so `remove_sandbox` also cleans up workspaces left over from a failed run.
+/// sandbox, so `remove_sandbox` and the sweep of stale sandboxes can find it again.
 fn workspace_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{name}-ws"))
 }
@@ -313,6 +401,24 @@ fn owned_volumes_dir(name: &str) -> PathBuf {
         .join("owned-volumes")
 }
 
+#[test]
+fn sandbox_pid_parses_the_pid_of_test_sandboxes_only() {
+    assert_eq!(sandbox_pid("fbk-it-48211-get"), Some(48211));
+    assert_eq!(sandbox_pid(&sandbox_name("get")), Some(std::process::id()));
+    assert_eq!(sandbox_pid("fbk-it-does-not-exist"), None);
+    assert_eq!(sandbox_pid("other-48211-get"), None);
+}
+
+#[test]
+fn process_is_alive_tells_live_from_dead_processes() {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+
+    assert!(process_is_alive(std::process::id()));
+    assert!(!process_is_alive(pid));
+}
+
 #[tokio::test]
 async fn list_sandboxes_succeeds() {
     let daemon = TestDaemon::start("list").await;
@@ -362,79 +468,79 @@ async fn get_sandbox_returns_not_found_for_unknown_sandbox() {
 
 #[tokio::test]
 async fn get_sandbox_returns_name_status_and_workspace_path() {
-    const NAME: &str = "fbk-it-get";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("get");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("get").await;
     let mut client = daemon.client().await;
 
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
-    let sandbox = get_sandbox(&mut client, NAME).await;
+    let sandbox = get_sandbox(&mut client, name).await;
 
-    assert_eq!(sandbox.name, NAME);
+    assert_eq!(sandbox.name, name);
     assert_eq!(sandbox.status(), SandboxStatus::Running);
     assert_eq!(
         sandbox.workspace_path,
-        guest_workspace(&workspace_path(NAME))
+        guest_workspace(&workspace_path(name))
     );
     assert_eq!(
         Path::new(&sandbox.workspace_host_path),
-        std::fs::canonicalize(workspace_path(NAME)).unwrap()
+        std::fs::canonicalize(workspace_path(name)).unwrap()
     );
 
-    stop_sandbox(&mut client, NAME).await;
+    stop_sandbox(&mut client, name).await;
 
     assert_eq!(
-        get_sandbox(&mut client, NAME).await.status(),
+        get_sandbox(&mut client, name).await.status(),
         SandboxStatus::Stopped
     );
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn sandbox_lifecycle() {
-    const NAME: &str = "fbk-it-lifecycle";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("lifecycle");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("lifecycle").await;
     let mut client = daemon.client().await;
 
     // Starting an unknown sandbox creates it.
-    start(&mut client, start_request(NAME))
+    start(&mut client, start_request(name))
         .await
         .expect("failed to create sandbox");
-    wait_for_status(&mut client, NAME, SandboxStatus::Running).await;
+    wait_for_status(&mut client, name, SandboxStatus::Running).await;
 
     client
         .stop_sandbox(StopSandboxRequest {
-            name: NAME.to_string(),
+            name: name.to_string(),
         })
         .await
         .expect("failed to stop sandbox");
-    wait_for_status(&mut client, NAME, SandboxStatus::Stopped).await;
+    wait_for_status(&mut client, name, SandboxStatus::Stopped).await;
 
     // Starting an existing sandbox restarts it.
-    start(&mut client, start_request(NAME))
+    start(&mut client, start_request(name))
         .await
         .expect("failed to restart sandbox");
-    wait_for_status(&mut client, NAME, SandboxStatus::Running).await;
+    wait_for_status(&mut client, name, SandboxStatus::Running).await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn start_sandbox_is_a_no_op_for_running_sandbox() {
-    const NAME: &str = "fbk-it-start-twice";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("start-twice");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("start-twice").await;
     let mut client = daemon.client().await;
 
-    let request = start_request(NAME);
+    let request = start_request(name);
     start_and_wait(&mut client, request.clone()).await;
 
     start(&mut client, request)
@@ -442,32 +548,32 @@ async fn start_sandbox_is_a_no_op_for_running_sandbox() {
         .expect("failed to start running sandbox");
 
     assert_eq!(
-        get_sandbox(&mut client, NAME).await.status(),
+        get_sandbox(&mut client, name).await.status(),
         SandboxStatus::Running
     );
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn start_sandbox_sends_no_pull_progress_for_cached_image_or_existing_sandbox() {
-    const FIRST: &str = "fbk-it-pull-cached-1";
-    const SECOND: &str = "fbk-it-pull-cached-2";
-    remove_sandbox(FIRST).await;
-    remove_sandbox(SECOND).await;
+    let first: &str = &sandbox_name("pull-cached-1");
+    let second: &str = &sandbox_name("pull-cached-2");
+    remove_sandbox(first).await;
+    remove_sandbox(second).await;
 
     let daemon = TestDaemon::start("pull-cached").await;
     let mut client = daemon.client().await;
 
     // Creating the first sandbox caches the image, if it wasn't already.
-    start_and_wait(&mut client, start_request(FIRST)).await;
+    start_and_wait(&mut client, start_request(first)).await;
 
-    let (created_progress, _) = start_stream(&mut client, start_request(SECOND))
+    let (created_progress, _) = start_stream(&mut client, start_request(second))
         .await
         .expect("failed to create sandbox from cached image");
-    stop_sandbox(&mut client, FIRST).await;
-    let (restarted_progress, _) = start_stream(&mut client, start_request(FIRST))
+    stop_sandbox(&mut client, first).await;
+    let (restarted_progress, _) = start_stream(&mut client, start_request(first))
         .await
         .expect("failed to restart sandbox");
 
@@ -475,21 +581,21 @@ async fn start_sandbox_sends_no_pull_progress_for_cached_image_or_existing_sandb
     assert_eq!(restarted_progress, vec![]);
 
     daemon.stop().await;
-    remove_sandbox(FIRST).await;
-    remove_sandbox(SECOND).await;
+    remove_sandbox(first).await;
+    remove_sandbox(second).await;
 }
 
 #[tokio::test]
 async fn concurrent_starts_of_stopped_sandbox_both_succeed() {
-    const NAME: &str = "fbk-it-start-race";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("start-race");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("start-race").await;
     let mut client = daemon.client().await;
 
-    let request = start_request(NAME);
+    let request = start_request(name);
     start_and_wait(&mut client, request.clone()).await;
-    stop_sandbox(&mut client, NAME).await;
+    stop_sandbox(&mut client, name).await;
 
     let mut other_client = client.clone();
     let (first, second) = tokio::join!(
@@ -499,16 +605,16 @@ async fn concurrent_starts_of_stopped_sandbox_both_succeed() {
 
     first.expect("first start failed");
     second.expect("second start failed");
-    wait_for_status(&mut client, NAME, SandboxStatus::Running).await;
+    wait_for_status(&mut client, name, SandboxStatus::Running).await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn start_sandbox_uses_requested_image_and_resources() {
-    const NAME: &str = "fbk-it-resources";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("resources");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("resources").await;
     let mut client = daemon.client().await;
@@ -522,11 +628,11 @@ async fn start_sandbox_uses_requested_image_and_resources() {
         volumes: Some(SandboxVolumes {
             docker: "1 GiB".to_string(),
         }),
-        ..start_request(NAME)
+        ..start_request(name)
     };
     start_and_wait(&mut client, request).await;
 
-    let spec = sandbox_spec(NAME).await;
+    let spec = sandbox_spec(name).await;
 
     assert!(
         matches!(&spec.image, RootfsSource::Oci(oci) if oci.reference.contains("alpine")),
@@ -539,52 +645,52 @@ async fn start_sandbox_uses_requested_image_and_resources() {
     assert!(spec.init.is_none(), "unexpected init: {:?}", spec.init);
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn sandbox_gets_default_docker_disk_that_survives_restart() {
-    const NAME: &str = "fbk-it-docker-disk";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("docker-disk");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("docker-disk").await;
     let mut client = daemon.client().await;
     // The test request has no resources or volumes and init disabled, like a non-firebrick image.
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
-    assert_eq!(docker_disk_mib(&sandbox_spec(NAME).await), Some(20 * 1024));
+    assert_eq!(docker_disk_mib(&sandbox_spec(name).await), Some(20 * 1024));
 
     let script = "mount | grep ' /var/lib/docker '; echo kept > /var/lib/docker/marker";
-    let (output, code) = run_command(&mut client, NAME, "sh", &["-c", script]).await;
+    let (output, code) = run_command(&mut client, name, "sh", &["-c", script]).await;
     assert_eq!(code, 0, "unexpected output: {output:?}");
     assert!(output.contains("type ext4"), "unexpected mount: {output:?}");
 
-    restart_sandbox(&mut client, NAME).await;
+    restart_sandbox(&mut client, name).await;
 
-    let (output, code) = run_command(&mut client, NAME, "cat", &["/var/lib/docker/marker"]).await;
+    let (output, code) = run_command(&mut client, name, "cat", &["/var/lib/docker/marker"]).await;
     assert_eq!(code, 0, "unexpected output: {output:?}");
     assert!(output.contains("kept"), "marker was lost: {output:?}");
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn remove_sandbox_removes_docker_disk() {
-    const NAME: &str = "fbk-it-docker-disk-rm";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("docker-disk-rm");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("docker-disk-rm").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
-    stop_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
+    stop_sandbox(&mut client, name).await;
 
-    let disk_dir = owned_volumes_dir(NAME);
+    let disk_dir = owned_volumes_dir(name);
     assert!(disk_dir.exists(), "no disk at {}", disk_dir.display());
 
     client
         .remove_sandbox(RemoveSandboxRequest {
-            name: NAME.to_string(),
+            name: name.to_string(),
             ..Default::default()
         })
         .await
@@ -593,13 +699,13 @@ async fn remove_sandbox_removes_docker_disk() {
     assert!(!disk_dir.exists(), "disk kept at {}", disk_dir.display());
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn start_sandbox_with_init_explains_missing_init() {
-    const NAME: &str = "fbk-it-missing-init";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("missing-init");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("missing-init").await;
     let mut client = daemon.client().await;
@@ -608,7 +714,7 @@ async fn start_sandbox_with_init_explains_missing_init() {
         &mut client,
         StartSandboxRequest {
             init: None,
-            ..start_request(NAME)
+            ..start_request(name)
         },
     )
     .await
@@ -620,17 +726,17 @@ async fn start_sandbox_with_init_explains_missing_init() {
         "{}",
         status.message()
     );
-    assert!(Sandbox::get(NAME).await.is_err(), "failed sandbox was kept");
+    assert!(Sandbox::get(name).await.is_err(), "failed sandbox was kept");
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn start_sandbox_with_unknown_image_tag_names_the_image() {
-    const NAME: &str = "fbk-it-unknown-image";
+    let name: &str = &sandbox_name("unknown-image");
     const IMAGE: &str = "alpine:0.0.404";
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("unknown-image").await;
     let mut client = daemon.client().await;
@@ -639,7 +745,7 @@ async fn start_sandbox_with_unknown_image_tag_names_the_image() {
         &mut client,
         StartSandboxRequest {
             image: IMAGE.to_string(),
-            ..start_request(NAME)
+            ..start_request(name)
         },
     )
     .await
@@ -650,16 +756,16 @@ async fn start_sandbox_with_unknown_image_tag_names_the_image() {
         status.message(),
         format!("failed to create sandbox: image {IMAGE} doesn't exist")
     );
-    assert!(Sandbox::get(NAME).await.is_err(), "failed sandbox was kept");
+    assert!(Sandbox::get(name).await.is_err(), "failed sandbox was kept");
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn start_sandbox_rejects_invalid_resources() {
-    const NAME: &str = "fbk-it-bad-resources";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("bad-resources");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("bad-resources").await;
     let mut client = daemon.client().await;
@@ -675,7 +781,7 @@ async fn start_sandbox_rejects_invalid_resources() {
                 volumes: Some(SandboxVolumes {
                     docker: docker.to_string(),
                 }),
-                ..start_request(NAME)
+                ..start_request(name)
             },
         )
         .await
@@ -686,11 +792,11 @@ async fn start_sandbox_rejects_invalid_resources() {
             Code::InvalidArgument,
             "{memory:?}, {docker:?}"
         );
-        assert!(Sandbox::get(NAME).await.is_err(), "sandbox was created");
+        assert!(Sandbox::get(name).await.is_err(), "sandbox was created");
     }
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
@@ -713,51 +819,51 @@ async fn remove_sandbox_returns_not_found_for_unknown_sandbox() {
 
 #[tokio::test]
 async fn remove_sandbox_removes_stopped_sandbox() {
-    const NAME: &str = "fbk-it-remove";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("remove");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("remove").await;
     let mut client = daemon.client().await;
 
-    start(&mut client, start_request(NAME))
+    start(&mut client, start_request(name))
         .await
         .expect("failed to create sandbox");
-    wait_for_status(&mut client, NAME, SandboxStatus::Running).await;
+    wait_for_status(&mut client, name, SandboxStatus::Running).await;
 
     client
         .stop_sandbox(StopSandboxRequest {
-            name: NAME.to_string(),
+            name: name.to_string(),
         })
         .await
         .expect("failed to stop sandbox");
-    wait_for_status(&mut client, NAME, SandboxStatus::Stopped).await;
+    wait_for_status(&mut client, name, SandboxStatus::Stopped).await;
 
     client
         .remove_sandbox(RemoveSandboxRequest {
-            name: NAME.to_string(),
+            name: name.to_string(),
             force: false,
         })
         .await
         .expect("failed to remove sandbox");
 
-    assert_eq!(sandbox_status(&mut client, NAME).await, None);
+    assert_eq!(sandbox_status(&mut client, name).await, None);
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn remove_sandbox_refuses_running_sandbox() {
-    const NAME: &str = "fbk-it-remove-running";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("remove-running");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("remove-running").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
     let status = client
         .remove_sandbox(RemoveSandboxRequest {
-            name: NAME.to_string(),
+            name: name.to_string(),
             force: false,
         })
         .await
@@ -766,26 +872,26 @@ async fn remove_sandbox_refuses_running_sandbox() {
     assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
     assert!(status.message().contains("running"), "{status:?}");
     assert_eq!(
-        sandbox_status(&mut client, NAME).await,
+        sandbox_status(&mut client, name).await,
         Some(SandboxStatus::Running)
     );
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn remove_sandbox_with_force_stops_and_removes_running_sandbox() {
-    const NAME: &str = "fbk-it-remove-force";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("remove-force");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("remove-force").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
     client
         .remove_sandbox(RemoveSandboxRequest {
-            name: NAME.to_string(),
+            name: name.to_string(),
             force: true,
         })
         .await
@@ -793,63 +899,63 @@ async fn remove_sandbox_with_force_stops_and_removes_running_sandbox() {
 
     let status = client
         .get_sandbox(GetSandboxRequest {
-            name: NAME.to_string(),
+            name: name.to_string(),
         })
         .await
         .expect_err("the removed sandbox should be gone");
     assert_eq!(status.code(), Code::NotFound);
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn remove_sandbox_with_force_removes_stopped_sandbox() {
-    const NAME: &str = "fbk-it-remove-force-stopped";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("remove-force-stopped");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("remove-force-stopped").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
-    stop_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
+    stop_sandbox(&mut client, name).await;
 
     client
         .remove_sandbox(RemoveSandboxRequest {
-            name: NAME.to_string(),
+            name: name.to_string(),
             force: true,
         })
         .await
         .expect("failed to force-remove stopped sandbox");
 
-    assert_eq!(sandbox_status(&mut client, NAME).await, None);
+    assert_eq!(sandbox_status(&mut client, name).await, None);
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn stop_or_kill_kills_sandbox_that_misses_the_timeout() {
-    const NAME: &str = "fbk-it-stop-or-kill";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("stop-or-kill");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("stop-or-kill").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
     // A zero budget makes the graceful stop time out before it asks the guest to shut down,
     // so only the kill can stop the sandbox.
-    let sb = Sandbox::get(NAME).await.expect("failed to get sandbox");
+    let sb = Sandbox::get(name).await.expect("failed to get sandbox");
     sandboxes::stop_or_kill(&sb, Duration::ZERO)
         .await
         .expect("failed to stop or kill sandbox");
 
     assert_eq!(
-        sandbox_status(&mut client, NAME).await,
+        sandbox_status(&mut client, name).await,
         Some(SandboxStatus::Stopped)
     );
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 fn attach_start(name: &str, command: &str, args: &[&str], size: AttachResize) -> AttachRequest {
@@ -1032,14 +1138,14 @@ async fn attach_returns_not_found_for_unknown_sandbox() {
 
 #[tokio::test]
 async fn attach_runs_command_and_streams_output() {
-    const NAME: &str = "fbk-it-attach";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("attach");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("attach").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
-    let start = attach_start(NAME, "sh", &["-c", "read x; echo got:$x"], DEFAULT_SIZE);
+    let start = attach_start(name, "sh", &["-c", "read x; echo got:$x"], DEFAULT_SIZE);
     let (tx, responses) = open_session(&mut client, start).await;
     tx.send(attach_input(b"hi\n")).await.unwrap();
 
@@ -1050,40 +1156,40 @@ async fn attach_runs_command_and_streams_output() {
     assert_eq!(code, 0);
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn attach_uses_generic_terminal_type() {
-    const NAME: &str = "fbk-it-attach-term";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("attach-term");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("attach-term").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
     // Without an explicit TERM, the session would get the daemon's own, which the guest may
     // not have a terminfo entry for (for example `xterm-ghostty`).
-    let (output, code) = run_print_env(&mut client, NAME, "TERM").await;
+    let (output, code) = run_print_env(&mut client, name, "TERM").await;
 
     assert_eq!(output.trim(), "xterm-256color");
     assert_eq!(code, 0);
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn attach_applies_window_size_and_resize() {
-    const NAME: &str = "fbk-it-attach-resize";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("attach-resize");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("attach-resize").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
     let start = attach_start(
-        NAME,
+        name,
         "sh",
         &["-c", "stty size; read x; stty size"],
         AttachResize {
@@ -1110,7 +1216,7 @@ async fn attach_applies_window_size_and_resize() {
     assert_eq!(code, 0);
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 /// Waits until no process with the name runs in the sandbox.
@@ -1141,30 +1247,30 @@ async fn process_output(sb: &Sandbox, command: &str) -> Vec<u8> {
 
 #[tokio::test]
 async fn attach_disconnect_ends_session() {
-    const NAME: &str = "fbk-it-attach-disconnect";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("attach-disconnect");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("attach-disconnect").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
-    let start = attach_start(NAME, "sleep", &["300"], DEFAULT_SIZE);
+    let start = attach_start(name, "sleep", &["300"], DEFAULT_SIZE);
     let (tx, responses) = open_session(&mut client, start).await;
 
     sleep(Duration::from_millis(500)).await;
     drop(tx);
     drop(responses);
 
-    wait_for_process_exit(NAME, "sleep").await;
+    wait_for_process_exit(name, "sleep").await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn start_sandbox_rejects_relative_workspace() {
-    const NAME: &str = "fbk-it-relative-workspace";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("relative-workspace");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("relative-workspace").await;
     let mut client = daemon.client().await;
@@ -1172,7 +1278,7 @@ async fn start_sandbox_rejects_relative_workspace() {
     let status = start(
         &mut client,
         StartSandboxRequest {
-            name: NAME.to_string(),
+            name: name.to_string(),
             workspace: "project".to_string(),
             ..Default::default()
         },
@@ -1187,10 +1293,10 @@ async fn start_sandbox_rejects_relative_workspace() {
 
 #[tokio::test]
 async fn workspace_is_mounted_read_write() {
-    const NAME: &str = "fbk-it-workspace";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("workspace");
+    remove_sandbox(name).await;
 
-    let request = start_request(NAME);
+    let request = start_request(name);
     let workspace = PathBuf::from(&request.workspace);
     let guest_path = guest_workspace(&workspace);
     std::fs::write(workspace.join("from-host.txt"), "hello from host").unwrap();
@@ -1202,7 +1308,7 @@ async fn workspace_is_mounted_read_write() {
     let script = format!(
         "pwd; cat {guest_path}/from-host.txt; echo; echo hello from guest > {guest_path}/from-guest.txt"
     );
-    let (output, code) = run_command(&mut client, NAME, "sh", &["-c", &script]).await;
+    let (output, code) = run_command(&mut client, name, "sh", &["-c", &script]).await;
 
     assert_eq!(code, 0, "unexpected output: {output:?}");
     assert!(
@@ -1219,15 +1325,15 @@ async fn workspace_is_mounted_read_write() {
     );
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn workspace_is_owned_by_agent_user() {
-    const NAME: &str = "fbk-it-workspace-owner";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("workspace-owner");
+    remove_sandbox(name).await;
 
-    let request = start_request(NAME);
+    let request = start_request(name);
     let workspace = PathBuf::from(&request.workspace);
     let guest_path = guest_workspace(&workspace);
     std::fs::write(workspace.join("from-host.txt"), "hello from host").unwrap();
@@ -1241,7 +1347,7 @@ async fn workspace_is_owned_by_agent_user() {
         "stat -c %u:%g {guest_path} {guest_path}/from-host.txt; \
          setpriv --reuid=1000 --regid=1000 --clear-groups touch {guest_path}/from-agent.txt"
     );
-    let (output, code) = run_command(&mut client, NAME, "sh", &["-c", &script]).await;
+    let (output, code) = run_command(&mut client, name, "sh", &["-c", &script]).await;
 
     assert_eq!(code, 0, "unexpected output: {output:?}");
     assert_eq!(
@@ -1252,7 +1358,7 @@ async fn workspace_is_owned_by_agent_user() {
     assert!(workspace.join("from-agent.txt").exists());
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 /// Creates an empty host directory to mount next to the workspace of a test sandbox.
@@ -1275,18 +1381,18 @@ fn mount(host: &Path, guest: &str, readonly: bool) -> Mount {
 
 #[tokio::test]
 async fn extra_mounts_are_writable_unless_readonly() {
-    const NAME: &str = "fbk-it-extra-mounts";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("extra-mounts");
+    remove_sandbox(name).await;
 
-    let writable = test_mount_dir(NAME, "rw");
-    let readonly = test_mount_dir(NAME, "ro");
+    let writable = test_mount_dir(name, "rw");
+    let readonly = test_mount_dir(name, "ro");
     std::fs::write(readonly.join("from-host.txt"), "hello from host").unwrap();
     let request = StartSandboxRequest {
         mounts: vec![
             mount(&writable, "/mnt/rw", false),
             mount(&readonly, "/mnt/ro", true),
         ],
-        ..start_request(NAME)
+        ..start_request(name)
     };
 
     let daemon = TestDaemon::start("extra-mounts").await;
@@ -1297,10 +1403,10 @@ async fn extra_mounts_are_writable_unless_readonly() {
     let script = "setpriv --reuid=1000 --regid=1000 --clear-groups touch /mnt/rw/from-agent.txt \
                   && cat /mnt/ro/from-host.txt \
                   && ! touch /mnt/ro/from-guest.txt";
-    let (output, code) = run_command(&mut client, NAME, "sh", &["-c", script]).await;
+    let (output, code) = run_command(&mut client, name, "sh", &["-c", script]).await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     assert_eq!(code, 0, "unexpected output: {output:?}");
     assert!(output.contains("hello from host"), "{output:?}");
@@ -1314,11 +1420,11 @@ async fn extra_mounts_are_writable_unless_readonly() {
 
 #[tokio::test]
 async fn start_sandbox_rejects_mount_at_workspace_guest_path() {
-    const NAME: &str = "fbk-it-mount-conflict";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("mount-conflict");
+    remove_sandbox(name).await;
 
-    let extra = test_mount_dir(NAME, "extra");
-    let request = start_request(NAME);
+    let extra = test_mount_dir(name, "extra");
+    let request = start_request(name);
     let guest = guest_workspace(Path::new(&request.workspace));
     let request = StartSandboxRequest {
         mounts: vec![mount(&extra, &guest, false)],
@@ -1328,10 +1434,10 @@ async fn start_sandbox_rejects_mount_at_workspace_guest_path() {
     let daemon = TestDaemon::start("mount-conflict").await;
     let mut client = daemon.client().await;
     let status = start(&mut client, request).await.unwrap_err();
-    let exists = Sandbox::get(NAME).await.is_ok();
+    let exists = Sandbox::get(name).await.is_ok();
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
     let _ = std::fs::remove_dir_all(extra);
 
     assert_eq!(status.code(), Code::InvalidArgument);
@@ -1380,8 +1486,8 @@ async fn restart_sandbox(client: &mut SandboxManagementServiceClient<Channel>, n
 
 #[tokio::test]
 async fn new_sandbox_sees_secret_placeholder_only() {
-    const NAME: &str = "fbk-it-secret-new";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("secret-new");
+    remove_sandbox(name).await;
 
     let dir = tempfile::tempdir().unwrap();
     let store = SecretStore::new(dir.path().join("secrets.yml"));
@@ -1389,9 +1495,9 @@ async fn new_sandbox_sees_secret_placeholder_only() {
 
     let daemon = TestDaemon::start_with_secrets("secret-new", store).await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
-    let output = print_env(&mut client, NAME, "FIREBRICK_IT_TOKEN").await;
+    let output = print_env(&mut client, name, "FIREBRICK_IT_TOKEN").await;
 
     assert!(
         output.contains("$MSB_FIREBRICK_IT_TOKEN"),
@@ -1400,26 +1506,26 @@ async fn new_sandbox_sees_secret_placeholder_only() {
     assert!(!output.contains("fbk-it-secret-value"));
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn existing_sandbox_sees_added_secret_after_restart() {
-    const NAME: &str = "fbk-it-secret-existing";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("secret-existing");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("secret-existing").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
-    let handle = Sandbox::get(NAME).await.unwrap();
+    let handle = Sandbox::get(name).await.unwrap();
     secrets::add_to_sandbox(&handle, &test_secret("FIREBRICK_IT_TOKEN"))
         .await
         .expect("failed to add secret");
 
-    restart_sandbox(&mut client, NAME).await;
+    restart_sandbox(&mut client, name).await;
 
-    let output = print_env(&mut client, NAME, "FIREBRICK_IT_TOKEN").await;
+    let output = print_env(&mut client, name, "FIREBRICK_IT_TOKEN").await;
 
     assert!(
         output.contains("$MSB_FIREBRICK_IT_TOKEN"),
@@ -1428,13 +1534,13 @@ async fn existing_sandbox_sees_added_secret_after_restart() {
     assert!(!output.contains("fbk-it-secret-value"));
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn existing_sandbox_loses_removed_secret_after_restart() {
-    const NAME: &str = "fbk-it-secret-removed";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("secret-removed");
+    remove_sandbox(name).await;
 
     let dir = tempfile::tempdir().unwrap();
     let store = SecretStore::new(dir.path().join("secrets.yml"));
@@ -1442,22 +1548,22 @@ async fn existing_sandbox_loses_removed_secret_after_restart() {
 
     let daemon = TestDaemon::start_with_secrets("secret-removed", store).await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
     // The RemoveSecret RPC would change every firebrick sandbox on the host, so remove the secret
     // from the test sandbox only.
-    let handle = Sandbox::get(NAME).await.unwrap();
+    let handle = Sandbox::get(name).await.unwrap();
     secrets::remove_from_sandbox(&handle, "FIREBRICK_IT_TOKEN")
         .await
         .expect("failed to remove secret");
-    restart_sandbox(&mut client, NAME).await;
+    restart_sandbox(&mut client, name).await;
 
-    let (output, code) = run_print_env(&mut client, NAME, "FIREBRICK_IT_TOKEN").await;
+    let (output, code) = run_print_env(&mut client, name, "FIREBRICK_IT_TOKEN").await;
 
     assert_ne!(code, 0, "secret is still set: {output:?}");
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 /// Returns the allowed hosts microsandbox stores for the sandbox's secret, as debug text. The
@@ -1541,11 +1647,11 @@ async fn assert_sees_secret_for_host(
 
 #[tokio::test]
 async fn sandbox_scoped_secret_overrides_global_secret_after_restart() {
-    const SCOPED: &str = "fbk-it-secret-scoped";
-    const OTHER: &str = "fbk-it-secret-unscoped";
+    let scoped: &str = &sandbox_name("secret-scoped");
+    let other: &str = &sandbox_name("secret-unscoped");
     const VAR: &str = "FIREBRICK_IT_SCOPED_TOKEN";
-    remove_sandbox(SCOPED).await;
-    remove_sandbox(OTHER).await;
+    remove_sandbox(scoped).await;
+    remove_sandbox(other).await;
 
     // The global secret is stored up front, because the global SetSecret RPC would change every
     // firebrick sandbox on the host.
@@ -1557,30 +1663,30 @@ async fn sandbox_scoped_secret_overrides_global_secret_after_restart() {
 
     let daemon = TestDaemon::start_with_secrets("secret-scoped", store).await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, SCOPED).await;
-    start_running_sandbox(&mut client, OTHER).await;
+    start_running_sandbox(&mut client, scoped).await;
+    start_running_sandbox(&mut client, other).await;
 
-    set_scoped_secret(&mut client, SCOPED, VAR, "scoped.example.com").await;
-    restart_sandbox(&mut client, SCOPED).await;
-    restart_sandbox(&mut client, OTHER).await;
+    set_scoped_secret(&mut client, scoped, VAR, "scoped.example.com").await;
+    restart_sandbox(&mut client, scoped).await;
+    restart_sandbox(&mut client, other).await;
 
-    assert_sees_secret_for_host(&mut client, SCOPED, VAR, "scoped.example.com").await;
-    assert_sees_secret_for_host(&mut client, OTHER, VAR, "global.example.com").await;
+    assert_sees_secret_for_host(&mut client, scoped, VAR, "scoped.example.com").await;
+    assert_sees_secret_for_host(&mut client, other, VAR, "global.example.com").await;
 
-    remove_scoped_secret(&mut client, SCOPED, VAR).await;
-    restart_sandbox(&mut client, SCOPED).await;
+    remove_scoped_secret(&mut client, scoped, VAR).await;
+    restart_sandbox(&mut client, scoped).await;
 
-    assert_sees_secret_for_host(&mut client, SCOPED, VAR, "global.example.com").await;
+    assert_sees_secret_for_host(&mut client, scoped, VAR, "global.example.com").await;
 
     daemon.stop().await;
-    remove_sandbox(SCOPED).await;
-    remove_sandbox(OTHER).await;
+    remove_sandbox(scoped).await;
+    remove_sandbox(other).await;
 }
 
 #[tokio::test]
 async fn remove_sandbox_removes_its_scoped_secrets() {
-    const NAME: &str = "fbk-it-secret-scoped-rm";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("secret-scoped-rm");
+    remove_sandbox(name).await;
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("secrets.yml");
@@ -1589,14 +1695,14 @@ async fn remove_sandbox_removes_its_scoped_secrets() {
 
     let daemon = TestDaemon::start_with_secrets("secret-scoped-rm", SecretStore::new(&path)).await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
-    set_scoped_secret(&mut client, NAME, "FIREBRICK_IT_TOKEN", "example.com").await;
+    set_scoped_secret(&mut client, name, "FIREBRICK_IT_TOKEN", "example.com").await;
     assert_eq!(SecretStore::new(&path).load().unwrap().len(), 2);
 
     client
         .remove_sandbox(RemoveSandboxRequest {
-            name: NAME.to_string(),
+            name: name.to_string(),
             force: true,
         })
         .await
@@ -1605,28 +1711,28 @@ async fn remove_sandbox_removes_its_scoped_secrets() {
     assert_eq!(SecretStore::new(&path).load().unwrap(), [global]);
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 #[tokio::test]
 async fn start_sandbox_skips_mise_when_image_has_none() {
-    const NAME: &str = "fbk-it-mise-missing";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("mise-missing");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("mise-missing").await;
     let mut client = daemon.client().await;
     // The test image has no mise, so both the create and the restart only log a warning.
     std::fs::write(
-        test_workspace(NAME).join("mise.toml"),
+        test_workspace(name).join("mise.toml"),
         "[tools]\nnode = \"22\"\n",
     )
     .unwrap();
 
-    start_running_sandbox(&mut client, NAME).await;
-    restart_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
+    restart_sandbox(&mut client, name).await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 }
 
 /// Returns the mise label microsandbox stores for the sandbox.
@@ -1640,27 +1746,27 @@ async fn mise_label(name: &str) -> Option<String> {
 
 #[tokio::test]
 async fn start_sandbox_stores_the_mise_setting() {
-    const ENABLED: &str = "fbk-it-mise-enabled";
-    const DISABLED: &str = "fbk-it-mise-disabled";
-    remove_sandbox(ENABLED).await;
-    remove_sandbox(DISABLED).await;
+    let enabled: &str = &sandbox_name("mise-enabled");
+    let disabled: &str = &sandbox_name("mise-disabled");
+    remove_sandbox(enabled).await;
+    remove_sandbox(disabled).await;
 
     let daemon = TestDaemon::start("mise-setting").await;
     let mut client = daemon.client().await;
 
-    start_running_sandbox(&mut client, ENABLED).await;
+    start_running_sandbox(&mut client, enabled).await;
     let request = StartSandboxRequest {
         mise: Some(false),
-        ..start_request(DISABLED)
+        ..start_request(disabled)
     };
     start_and_wait(&mut client, request).await;
 
-    assert_eq!(mise_label(ENABLED).await.as_deref(), Some("true"));
-    assert_eq!(mise_label(DISABLED).await.as_deref(), Some("false"));
+    assert_eq!(mise_label(enabled).await.as_deref(), Some("true"));
+    assert_eq!(mise_label(disabled).await.as_deref(), Some("false"));
 
     daemon.stop().await;
-    remove_sandbox(ENABLED).await;
-    remove_sandbox(DISABLED).await;
+    remove_sandbox(enabled).await;
+    remove_sandbox(disabled).await;
 }
 
 /// Image with `curl` for the network tests; the default test image has no HTTP client.
@@ -1708,18 +1814,18 @@ async fn start_enforced_sandbox(
 
 #[tokio::test]
 async fn enforced_network_policy_answers_hosts_it_does_not_allow_with_deny_page() {
-    const NAME: &str = "fbk-it-network-allow";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("network-allow");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("network-allow").await;
     let mut client = daemon.client().await;
-    start_enforced_sandbox(&mut client, NAME, &["example.com"], &[]).await;
+    start_enforced_sandbox(&mut client, name, &["example.com"], &[]).await;
 
-    let allowed = fetch(&mut client, NAME, "https://example.com").await;
-    let not_allowed = fetch(&mut client, NAME, "https://example.org").await;
+    let allowed = fetch(&mut client, name, "https://example.com").await;
+    let not_allowed = fetch(&mut client, name, "https://example.org").await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     assert!(allowed.trim_end().ends_with("200"), "{allowed:?}");
     assert!(
@@ -1735,18 +1841,18 @@ async fn enforced_network_policy_answers_hosts_it_does_not_allow_with_deny_page(
 
 #[tokio::test]
 async fn enforced_network_policy_denies_host_that_is_also_allowed() {
-    const NAME: &str = "fbk-it-network-deny";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("network-deny");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("network-deny").await;
     let mut client = daemon.client().await;
-    start_enforced_sandbox(&mut client, NAME, &["*.example.net"], &["example.net"]).await;
+    start_enforced_sandbox(&mut client, name, &["*.example.net"], &["example.net"]).await;
 
-    let allowed = fetch(&mut client, NAME, "https://www.example.net").await;
-    let denied = fetch(&mut client, NAME, "https://example.net").await;
+    let allowed = fetch(&mut client, name, "https://www.example.net").await;
+    let denied = fetch(&mut client, name, "https://example.net").await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     // The allowed subdomain proves the rules apply, so the failure comes from the deny rule.
     assert!(!allowed.trim_end().ends_with("000"), "{allowed:?}");
@@ -1755,25 +1861,25 @@ async fn enforced_network_policy_denies_host_that_is_also_allowed() {
 
 #[tokio::test]
 async fn enforced_network_policy_allows_and_denies_ip_addresses() {
-    const NAME: &str = "fbk-it-network-ip";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("network-ip");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("network-ip").await;
     let mut client = daemon.client().await;
     // Cloudflare's resolvers answer plain HTTP on their addresses.
     start_enforced_sandbox(
         &mut client,
-        NAME,
+        name,
         &["1.0.0.0/24", "1.1.1.0/24"],
         &["1.1.1.1"],
     )
     .await;
 
-    let allowed = fetch(&mut client, NAME, "http://1.0.0.1").await;
-    let denied = fetch(&mut client, NAME, "http://1.1.1.1").await;
+    let allowed = fetch(&mut client, name, "http://1.0.0.1").await;
+    let denied = fetch(&mut client, name, "http://1.1.1.1").await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     assert!(!allowed.trim_end().ends_with("000"), "{allowed:?}");
     assert!(denied.trim_end().ends_with("000"), "{denied:?}");
@@ -1789,7 +1895,7 @@ async fn start_sandbox_rejects_invalid_network_rule() {
             allow: vec!["github.com:443".to_string()],
             ..Default::default()
         }),
-        ..start_request("fbk-it-network-invalid")
+        ..start_request(&sandbox_name("network-invalid"))
     };
 
     let status = start(&mut client, request).await.unwrap_err();
@@ -1962,28 +2068,28 @@ async fn start_existing(client: &mut SandboxManagementServiceClient<Channel>, na
 
 #[tokio::test]
 async fn update_network_of_running_sandbox_keeps_its_disk_and_settings() {
-    const NAME: &str = "fbk-it-update-running";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("update-running");
+    remove_sandbox_and_snapshots(name).await;
 
     let dir = tempfile::tempdir().unwrap();
     let store = store_with_test_secret(dir.path());
     let daemon = TestDaemon::start_with_secrets("update-running", store).await;
     let mut client = daemon.client().await;
-    start_enforced_sandbox(&mut client, NAME, &["example.com"], &[]).await;
-    write_markers(&mut client, NAME).await;
-    let before = kept_settings(&mut client, NAME).await;
-    let denied = fetch(&mut client, NAME, "https://example.org").await;
+    start_enforced_sandbox(&mut client, name, &["example.com"], &[]).await;
+    write_markers(&mut client, name).await;
+    let before = kept_settings(&mut client, name).await;
+    let denied = fetch(&mut client, name, "https://example.org").await;
 
     let network = allow_policy(true, &["example.com", "example.org"]);
-    assert!(update_network(&mut client, NAME, network).await.unwrap());
+    assert!(update_network(&mut client, name, network).await.unwrap());
 
-    let after = after_update(&mut client, NAME).await;
-    let markers = read_markers(&mut client, NAME).await;
-    let allowed = fetch(&mut client, NAME, "https://example.org").await;
-    let secret = print_env(&mut client, NAME, "FIREBRICK_IT_TOKEN").await;
+    let after = after_update(&mut client, name).await;
+    let markers = read_markers(&mut client, name).await;
+    let allowed = fetch(&mut client, name, "https://example.org").await;
+    let secret = print_env(&mut client, name, "FIREBRICK_IT_TOKEN").await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     assert!(denied.trim_end().ends_with("403"), "{denied:?}");
     assert_eq!(after.status, Some(SandboxStatus::Running));
@@ -2001,27 +2107,27 @@ async fn update_network_of_running_sandbox_keeps_its_disk_and_settings() {
 
 #[tokio::test]
 async fn update_network_of_stopped_sandbox_keeps_it_stopped() {
-    const NAME: &str = "fbk-it-update-stopped";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("update-stopped");
+    remove_sandbox_and_snapshots(name).await;
 
     let daemon = TestDaemon::start("update-stopped").await;
     let mut client = daemon.client().await;
-    start_enforced_sandbox(&mut client, NAME, &["example.com"], &[]).await;
-    write_markers(&mut client, NAME).await;
-    let before = kept_settings(&mut client, NAME).await;
-    stop_sandbox(&mut client, NAME).await;
+    start_enforced_sandbox(&mut client, name, &["example.com"], &[]).await;
+    write_markers(&mut client, name).await;
+    let before = kept_settings(&mut client, name).await;
+    stop_sandbox(&mut client, name).await;
 
     let network = allow_policy(false, &["example.com"]);
-    assert!(update_network(&mut client, NAME, network).await.unwrap());
+    assert!(update_network(&mut client, name, network).await.unwrap());
 
-    let after = after_update(&mut client, NAME).await;
-    start_existing(&mut client, NAME).await;
-    let markers = read_markers(&mut client, NAME).await;
+    let after = after_update(&mut client, name).await;
+    start_existing(&mut client, name).await;
+    let markers = read_markers(&mut client, name).await;
     // Without enforcement, the rules no longer deny anything.
-    let unrestricted = fetch(&mut client, NAME, "https://example.org").await;
+    let unrestricted = fetch(&mut client, name, "https://example.org").await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     assert_eq!(after.status, Some(SandboxStatus::Stopped));
     assert_eq!(after.settings, before);
@@ -2057,23 +2163,23 @@ async fn update_network_returns_not_found_for_unknown_sandbox() {
 
 #[tokio::test]
 async fn failed_recreate_keeps_the_snapshot_and_names_it() {
-    const NAME: &str = "fbk-it-update-failed";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("update-failed");
+    remove_sandbox_and_snapshots(name).await;
 
     let dir = tempfile::tempdir().unwrap();
     let store = store_with_test_secret(dir.path());
     let daemon = TestDaemon::start_with_secrets("update-failed", store).await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
     // The recreate loads the secrets, so a store it can't read makes it fail.
     std::fs::write(dir.path().join("secrets.yml"), "not: [valid").unwrap();
 
-    let status = update_network(&mut client, NAME, allow_policy(true, &["example.org"]))
+    let status = update_network(&mut client, name, allow_policy(true, &["example.org"]))
         .await
         .unwrap_err();
 
-    let exists = Sandbox::get(NAME).await.is_ok();
-    let snapshots = network_snapshots(NAME).await;
+    let exists = Sandbox::get(name).await.is_ok();
+    let snapshots = network_snapshots(name).await;
     let paths: Vec<String> = snapshots
         .iter()
         .filter_map(|snapshot| snapshot.path().ok())
@@ -2081,7 +2187,7 @@ async fn failed_recreate_keeps_the_snapshot_and_names_it() {
         .collect();
 
     daemon.stop().await;
-    remove_sandbox_and_snapshots(NAME).await;
+    remove_sandbox_and_snapshots(name).await;
 
     assert_eq!(status.code(), Code::Internal);
     assert!(!exists, "the half-created sandbox should be removed");
@@ -2089,7 +2195,7 @@ async fn failed_recreate_keeps_the_snapshot_and_names_it() {
     assert_eq!(
         status.message(),
         format!(
-            "failed to update the network rules of {NAME}; the sandbox was kept as snapshot {}",
+            "failed to update the network rules of {name}; the sandbox was kept as snapshot {}",
             paths[0]
         )
     );
@@ -2097,26 +2203,26 @@ async fn failed_recreate_keeps_the_snapshot_and_names_it() {
 
 #[tokio::test]
 async fn update_network_finishes_when_the_client_disconnects() {
-    const NAME: &str = "fbk-it-update-disconnect";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("update-disconnect");
+    remove_sandbox_and_snapshots(name).await;
 
     let daemon = TestDaemon::start("update-disconnect").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
     let network = allow_policy(true, &["example.com"]);
 
     // Recreating the sandbox takes seconds, so the client gives up while it runs.
     let cancelled = tokio::time::timeout(
         Duration::from_millis(100),
-        update_network(&mut client.clone(), NAME, network.clone()),
+        update_network(&mut client.clone(), name, network.clone()),
     )
     .await;
     // Waits for the cancelled update, which holds the sandbox's lock.
-    let again = update_network(&mut client, NAME, network).await;
-    let snapshots = leftover_snapshots(NAME).await;
+    let again = update_network(&mut client, name, network).await;
+    let snapshots = leftover_snapshots(name).await;
 
     daemon.stop().await;
-    remove_sandbox_and_snapshots(NAME).await;
+    remove_sandbox_and_snapshots(name).await;
 
     assert!(cancelled.is_err(), "the update finished within 100 ms");
     assert_eq!(again.map_err(|status| status.to_string()), Ok(false));
@@ -2125,19 +2231,19 @@ async fn update_network_finishes_when_the_client_disconnects() {
 
 #[tokio::test]
 async fn update_network_can_update_the_same_sandbox_again() {
-    const NAME: &str = "fbk-it-update-twice";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("update-twice");
+    remove_sandbox_and_snapshots(name).await;
 
     let daemon = TestDaemon::start("update-twice").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
+    start_running_sandbox(&mut client, name).await;
 
-    let first = update_network(&mut client, NAME, allow_policy(true, &["example.org"])).await;
-    let second = update_network(&mut client, NAME, allow_policy(true, &["example.com"])).await;
-    let after = after_update(&mut client, NAME).await;
+    let first = update_network(&mut client, name, allow_policy(true, &["example.org"])).await;
+    let second = update_network(&mut client, name, allow_policy(true, &["example.com"])).await;
+    let after = after_update(&mut client, name).await;
 
     daemon.stop().await;
-    remove_sandbox_and_snapshots(NAME).await;
+    remove_sandbox_and_snapshots(name).await;
 
     assert!(matches!(first, Ok(true)), "{first:?}");
     assert!(matches!(second, Ok(true)), "{second:?}");
@@ -2157,23 +2263,23 @@ async fn update_network_can_update_the_same_sandbox_again() {
 
 #[tokio::test]
 async fn update_network_with_the_rules_the_sandbox_has_leaves_it_alone() {
-    const NAME: &str = "fbk-it-update-unchanged";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("update-unchanged");
+    remove_sandbox_and_snapshots(name).await;
 
     let daemon = TestDaemon::start("update-unchanged").await;
     let mut client = daemon.client().await;
-    start_enforced_sandbox(&mut client, NAME, &["example.com"], &[]).await;
-    let boot = boot_id(&mut client, NAME).await;
+    start_enforced_sandbox(&mut client, name, &["example.com"], &[]).await;
+    let boot = boot_id(&mut client, name).await;
 
-    let same = update_network(&mut client, NAME, allow_policy(true, &["example.com"])).await;
-    let same_boot = boot_id(&mut client, NAME).await;
-    let disabled = update_network(&mut client, NAME, allow_policy(false, &["example.com"])).await;
+    let same = update_network(&mut client, name, allow_policy(true, &["example.com"])).await;
+    let same_boot = boot_id(&mut client, name).await;
+    let disabled = update_network(&mut client, name, allow_policy(false, &["example.com"])).await;
     // Rules that aren't enforced don't change the sandbox.
     let still_disabled =
-        update_network(&mut client, NAME, allow_policy(false, &["example.org"])).await;
+        update_network(&mut client, name, allow_policy(false, &["example.org"])).await;
 
     daemon.stop().await;
-    remove_sandbox_and_snapshots(NAME).await;
+    remove_sandbox_and_snapshots(name).await;
 
     assert!(matches!(same, Ok(false)), "{same:?}");
     assert_eq!(same_boot, boot);
@@ -2263,27 +2369,27 @@ async fn update_network_disables_the_network_once() {
 
 #[tokio::test]
 async fn update_network_refuses_a_paused_sandbox() {
-    const NAME: &str = "fbk-it-update-paused";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("update-paused");
+    remove_sandbox_and_snapshots(name).await;
 
     let daemon = TestDaemon::start("update-paused").await;
     let mut client = daemon.client().await;
-    start_running_sandbox(&mut client, NAME).await;
-    let sb = Sandbox::get(NAME).await.unwrap();
+    start_running_sandbox(&mut client, name).await;
+    let sb = Sandbox::get(name).await.unwrap();
     sb.pause().await.unwrap();
 
-    let status = update_network(&mut client, NAME, allow_policy(true, &["example.org"])).await;
-    let paused = sandbox_status(&mut client, NAME).await;
+    let status = update_network(&mut client, name, allow_policy(true, &["example.org"])).await;
+    let paused = sandbox_status(&mut client, name).await;
 
     sb.resume().await.unwrap();
     daemon.stop().await;
-    remove_sandbox_and_snapshots(NAME).await;
+    remove_sandbox_and_snapshots(name).await;
 
     let status = status.unwrap_err();
     assert_eq!(status.code(), Code::FailedPrecondition);
     assert_eq!(
         status.message(),
-        format!("sandbox {NAME} is paused; resume it before updating its network rules")
+        format!("sandbox {name} is paused; resume it before updating its network rules")
     );
     assert_eq!(paused, Some(SandboxStatus::Paused));
 }
@@ -2401,8 +2507,8 @@ async fn start_with_ports(
 
 #[tokio::test]
 async fn forwards_host_port_to_sandbox_and_closes_removed_port() {
-    const NAME: &str = "fbk-it-port-forward";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("port-forward");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("port-forward").await;
     let mut client = daemon.client().await;
@@ -2411,11 +2517,11 @@ async fn forwards_host_port_to_sandbox_and_closes_removed_port() {
         // busybox in alpine has `nc`.
         image: "alpine:3.22".to_string(),
         ports: Some(forward_ports(host, GUEST_PORT)),
-        ..start_request(NAME)
+        ..start_request(name)
     };
 
     let started = start_with_ports(&mut client, request.clone()).await;
-    check_forward_both_ways(&mut client, NAME, host).await;
+    check_forward_both_ways(&mut client, name, host).await;
     let restarted = start_with_ports(
         &mut client,
         StartSandboxRequest {
@@ -2427,7 +2533,7 @@ async fn forwards_host_port_to_sandbox_and_closes_removed_port() {
     let closed = TcpStream::connect(("127.0.0.1", host)).await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     assert_eq!(started.forwards, forward_ports(host, GUEST_PORT).ports);
     assert!(started.failed_forwards.is_empty());
@@ -2463,10 +2569,10 @@ async fn forwards_ports_to_sandbox_without_network() {
 
 #[tokio::test]
 async fn update_network_keeps_extra_mounts_and_port_forwards() {
-    const NAME: &str = "fbk-it-update-mounts-ports";
-    remove_sandbox_and_snapshots(NAME).await;
+    let name: &str = &sandbox_name("update-mounts-ports");
+    remove_sandbox_and_snapshots(name).await;
 
-    let readonly = test_mount_dir(NAME, "ro");
+    let readonly = test_mount_dir(name, "ro");
     std::fs::write(readonly.join("from-host.txt"), "hello from host").unwrap();
     let daemon = TestDaemon::start("update-mounts-ports").await;
     let mut client = daemon.client().await;
@@ -2476,17 +2582,17 @@ async fn update_network_keeps_extra_mounts_and_port_forwards() {
         image: "alpine:3.22".to_string(),
         mounts: vec![mount(&readonly, "/mnt/ro", true)],
         ports: Some(forward_ports(host, GUEST_PORT)),
-        ..start_request(NAME)
+        ..start_request(name)
     };
     start_with_ports(&mut client, request).await;
 
-    let updated = update_network(&mut client, NAME, allow_policy(true, &["example.org"])).await;
+    let updated = update_network(&mut client, name, allow_policy(true, &["example.org"])).await;
     let script = "cat /mnt/ro/from-host.txt && ! touch /mnt/ro/from-guest.txt";
-    let (output, code) = run_command(&mut client, NAME, "sh", &["-c", script]).await;
-    check_forward_both_ways(&mut client, NAME, host).await;
+    let (output, code) = run_command(&mut client, name, "sh", &["-c", script]).await;
+    check_forward_both_ways(&mut client, name, host).await;
 
     daemon.stop().await;
-    remove_sandbox_and_snapshots(NAME).await;
+    remove_sandbox_and_snapshots(name).await;
     let _ = std::fs::remove_dir_all(readonly);
 
     assert!(matches!(updated, Ok(true)), "{updated:?}");
@@ -2656,22 +2762,22 @@ async fn start_alpine_sandbox(
 
 #[tokio::test]
 async fn forward_port_and_remove_port_change_forwards_of_running_sandbox() {
-    const NAME: &str = "fbk-it-port-live";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("port-live");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("port-live").await;
     let mut client = daemon.client().await;
     let host = free_port().await;
-    start_alpine_sandbox(&mut client, NAME).await;
+    start_alpine_sandbox(&mut client, name).await;
 
-    let forwarded = forward_port(&mut client, NAME, host, GUEST_PORT).await;
-    check_forward_both_ways(&mut client, NAME, host).await;
-    let removed = remove_port(&mut client, NAME, host).await;
+    let forwarded = forward_port(&mut client, name, host, GUEST_PORT).await;
+    check_forward_both_ways(&mut client, name, host).await;
+    let removed = remove_port(&mut client, name, host).await;
     let closed = TcpStream::connect(("127.0.0.1", host)).await;
-    let label = ports_label(NAME).await;
+    let label = ports_label(name).await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     assert!(forwarded.unwrap().running);
     assert!(removed.unwrap().running);
@@ -2681,21 +2787,21 @@ async fn forward_port_and_remove_port_change_forwards_of_running_sandbox() {
 
 #[tokio::test]
 async fn port_rpcs_reject_busy_and_unknown_ports_without_changing_the_label() {
-    const NAME: &str = "fbk-it-port-errors";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("port-errors");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("port-errors").await;
     let mut client = daemon.client().await;
     let busy = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let busy_port = busy.local_addr().unwrap().port();
-    start_alpine_sandbox(&mut client, NAME).await;
+    start_alpine_sandbox(&mut client, name).await;
 
-    let busy_status = forward_port(&mut client, NAME, busy_port, GUEST_PORT).await;
-    let unknown_status = remove_port(&mut client, NAME, busy_port).await;
-    let label = ports_label(NAME).await;
+    let busy_status = forward_port(&mut client, name, busy_port, GUEST_PORT).await;
+    let unknown_status = remove_port(&mut client, name, busy_port).await;
+    let label = ports_label(name).await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     let busy_status = busy_status.unwrap_err();
     assert_eq!(
@@ -2707,30 +2813,30 @@ async fn port_rpcs_reject_busy_and_unknown_ports_without_changing_the_label() {
     assert_eq!(unknown_status.code(), Code::NotFound, "{unknown_status:?}");
     assert_eq!(
         unknown_status.message(),
-        format!("port {busy_port} isn't forwarded for sandbox {NAME}")
+        format!("port {busy_port} isn't forwarded for sandbox {name}")
     );
     assert_eq!(label.as_deref(), Some(""));
 }
 
 #[tokio::test]
 async fn forward_port_on_stopped_sandbox_opens_when_it_starts() {
-    const NAME: &str = "fbk-it-port-stopped";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("port-stopped");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("port-stopped").await;
     let mut client = daemon.client().await;
     let host = free_port().await;
-    let request = start_alpine_sandbox(&mut client, NAME).await;
-    stop_sandbox(&mut client, NAME).await;
+    let request = start_alpine_sandbox(&mut client, name).await;
+    stop_sandbox(&mut client, name).await;
 
-    let forwarded = forward_port(&mut client, NAME, host, GUEST_PORT).await;
+    let forwarded = forward_port(&mut client, name, host, GUEST_PORT).await;
     let closed_while_stopped = TcpStream::connect(("127.0.0.1", host)).await;
     // Without ports, starting keeps the stored ones.
     let started = start_with_ports(&mut client, request).await;
-    check_forward_both_ways(&mut client, NAME, host).await;
+    check_forward_both_ways(&mut client, name, host).await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     assert!(!forwarded.unwrap().running);
     assert!(closed_while_stopped.is_err());
@@ -2739,8 +2845,8 @@ async fn forward_port_on_stopped_sandbox_opens_when_it_starts() {
 
 #[tokio::test]
 async fn forward_port_fails_for_a_stored_port_that_is_still_busy() {
-    const NAME: &str = "fbk-it-port-stored-busy";
-    remove_sandbox(NAME).await;
+    let name: &str = &sandbox_name("port-stored-busy");
+    remove_sandbox(name).await;
 
     let daemon = TestDaemon::start("port-stored-busy").await;
     let mut client = daemon.client().await;
@@ -2749,14 +2855,14 @@ async fn forward_port_fails_for_a_stored_port_that_is_still_busy() {
     let request = StartSandboxRequest {
         image: "alpine:3.22".to_string(),
         ports: Some(forward_ports(busy_port, GUEST_PORT)),
-        ..start_request(NAME)
+        ..start_request(name)
     };
     let started = start_with_ports(&mut client, request).await;
 
-    let status = forward_port(&mut client, NAME, busy_port, GUEST_PORT).await;
+    let status = forward_port(&mut client, name, busy_port, GUEST_PORT).await;
 
     daemon.stop().await;
-    remove_sandbox(NAME).await;
+    remove_sandbox(name).await;
 
     assert_eq!(started.failed_forwards.len(), 1);
     let status = status.unwrap_err();

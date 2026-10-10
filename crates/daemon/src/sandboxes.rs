@@ -976,7 +976,7 @@ fn with_workspace(builder: SandboxBuilder, workspace: Option<&Workspace>) -> San
 
 /// Returns the name of the sandbox with the SSH host name.
 async fn sandbox_name_by_hostname(hostname: &str) -> Result<String, SandboxError> {
-    Sandbox::list_with(|opt| opt.label(ssh::HOSTNAME_LABEL, hostname))
+    retry_while_not_found(|| Sandbox::list_with(|opt| opt.label(ssh::HOSTNAME_LABEL, hostname)))
         .await
         .map_err(|err| {
             tracing::error!(error = ?err, "failed to list sandboxes with host name {hostname}");
@@ -1377,6 +1377,26 @@ async fn assign_hostname(
 
 /// Returns every sandbox, following the list cursor across pages.
 async fn list_all_sandboxes() -> Result<Vec<SandboxHandle>, SandboxError> {
+    list_all().await.map_err(|err| {
+        tracing::error!(error = ?err, "failed to list sandboxes");
+        SandboxError::internal("failed to list sandboxes")
+    })
+}
+
+/// How often a listing starts over when a sandbox disappears while it runs.
+const LIST_ATTEMPTS: u32 = 5;
+
+/// Returns every sandbox in the microsandbox home, following the list cursor across pages.
+///
+/// microsandbox reloads each sandbox of a page after reading the page, so a sandbox that
+/// another process removes in between fails the listing with `SandboxNotFound`. The listing
+/// then starts over, up to [`LIST_ATTEMPTS`] times.
+pub async fn list_all() -> Result<Vec<SandboxHandle>, MicrosandboxError> {
+    retry_while_not_found(list_pages).await
+}
+
+/// Lists every page of sandboxes once.
+async fn list_pages() -> Result<Vec<SandboxHandle>, MicrosandboxError> {
     let mut sandboxes = vec![];
     let mut next_cursor: Option<String> = None;
 
@@ -1385,11 +1405,7 @@ async fn list_all_sandboxes() -> Result<Vec<SandboxHandle>, SandboxError> {
             Some(cursor) => opt.cursor(cursor),
             None => opt,
         })
-        .await
-        .map_err(|err| {
-            tracing::error!(error = ?err, "failed to list sandboxes");
-            SandboxError::internal("failed to list sandboxes")
-        })?;
+        .await?;
 
         sandboxes.extend(result.sandboxes);
 
@@ -1401,6 +1417,28 @@ async fn list_all_sandboxes() -> Result<Vec<SandboxHandle>, SandboxError> {
     }
 
     Ok(sandboxes)
+}
+
+/// Runs the listing again while it fails because a sandbox disappeared during it, up to
+/// [`LIST_ATTEMPTS`] times in total.
+async fn retry_while_not_found<T, F, Fut>(mut listing: F) -> Result<T, MicrosandboxError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, MicrosandboxError>>,
+{
+    let mut attempt = 1;
+
+    loop {
+        match listing().await {
+            Err(MicrosandboxError::SandboxNotFound(name)) if attempt < LIST_ATTEMPTS => {
+                tracing::debug!(
+                    "sandbox {name} disappeared while listing sandboxes; listing again"
+                );
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
 }
 
 /// A change to the secrets of existing sandboxes.
@@ -1717,6 +1755,63 @@ mod tests {
         }
 
         SandboxManager::new(store, Arc::new(HostOpener))
+    }
+
+    /// Returns a listing that fails with each error in turn, then succeeds, and counts its calls.
+    fn listing_failing_with(
+        errors: Vec<MicrosandboxError>,
+    ) -> (
+        Arc<std::sync::atomic::AtomicU32>,
+        impl FnMut() -> std::future::Ready<Result<(), MicrosandboxError>>,
+    ) {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = calls.clone();
+        let mut errors = errors.into_iter();
+        let listing = move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::ready(errors.next().map_or(Ok(()), Err))
+        };
+
+        (calls, listing)
+    }
+
+    fn not_found() -> MicrosandboxError {
+        MicrosandboxError::SandboxNotFound("removed".into())
+    }
+
+    #[tokio::test]
+    async fn listing_starts_over_when_a_sandbox_disappears_during_it() {
+        let (calls, listing) = listing_failing_with(vec![not_found(), not_found()]);
+
+        assert!(retry_while_not_found(listing).await.is_ok());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn listing_gives_up_after_the_last_attempt() {
+        let errors = (0..LIST_ATTEMPTS).map(|_| not_found()).collect();
+        let (calls, listing) = listing_failing_with(errors);
+
+        assert!(matches!(
+            retry_while_not_found(listing).await,
+            Err(MicrosandboxError::SandboxNotFound(_))
+        ));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            LIST_ATTEMPTS
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_returns_other_errors_without_retrying() {
+        let error = MicrosandboxError::Runtime("broken".into());
+        let (calls, listing) = listing_failing_with(vec![error]);
+
+        assert!(matches!(
+            retry_while_not_found(listing).await,
+            Err(MicrosandboxError::Runtime(_))
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     /// Returns a secret for `example.com` with the name, in the sandbox's scope or global.

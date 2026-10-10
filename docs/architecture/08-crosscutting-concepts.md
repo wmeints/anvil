@@ -20,6 +20,12 @@ carry secret values anywhere in its chain. serde_yaml quotes the values it can't
 parse, so a parse error of the secrets file only keeps the line and column of
 the error, not the serde_yaml error itself.
 
+Listing sandboxes is the one call where a missing sandbox isn't an error of the
+request. microsandbox reloads each sandbox after it reads a page of them, so a
+sandbox that another process removes in between fails the whole listing with
+`SandboxNotFound`. `sandboxes::list_all` then starts the listing over, up to
+five times, before `fbkd` reports the error.
+
 The `vm-tests` in `crates/daemon/tests/grpc.rs` run the daemon in-process and
 install a `tracing` subscriber that writes through libtest's output capture, at
 level `info` unless `RUST_LOG` says otherwise. A failing test prints the
@@ -27,6 +33,16 @@ daemon's log lines, including the original error behind a generic status, next
 to its panic message; a passing test prints nothing extra. The tests use the
 current-thread runtime, so the daemon logs on the test's own thread and its
 lines end up under the right test.
+
+Concurrent test runs share the microsandbox home `/tmp/firebrick-msb`, so every
+sandbox a test creates is named `fbk-it-<pid>-<test>` after the test process id,
+and so are its host workspace and mount directories. Before the first test of a
+process starts a daemon, the harness sweeps the home once: it kills and removes
+every `fbk-it-<pid>-*` sandbox whose process no longer runs, with its host
+directories, so a killed run doesn't leave VMs behind. Sandboxes of live
+processes and names without a pid are left alone, and a failure to remove one
+leftover is logged as a warning. When the home can't be listed at all, the test
+fails with a message to remove the home and run the tests again.
 
 ## Secret scopes
 
