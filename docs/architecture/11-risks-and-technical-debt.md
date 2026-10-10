@@ -51,6 +51,13 @@
   that pin certificates or bring their own CA store. microsandbox has no API for
   denied connections, so the host can't show them to the user
   ([ADR 0018](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)).
+- **Forwarded ports listen on the host:** `fbkd` listens on the loopback ports
+  in `.firebrick.yml`, so any process of any user on the host can connect to
+  them and reach the sandbox's servers behind them, like a dev server running on
+  the host. They only listen on `127.0.0.1` and `::1`, never on other addresses.
+  A port that another process uses is skipped with a warning, so the sandbox's
+  server isn't reachable there until the port is free and `fbk start` runs again
+  ([ADR 0019](decisions/0019-forward-ports-through-the-ssh-servers-direct-tcpip.md)).
 - **Ageing Linux build runners:** Linux releases build on the `ubuntu-22.04`
   runners to support glibc 2.35. GitHub retires runner images before their
   Ubuntu release reaches end of support (April 2027), after which the release

@@ -106,6 +106,14 @@ build on it when `Cargo.lock` has a newer version.
   Use `.next_start()` or `.restart()` to choose when changes apply.
 - The network policy has no `modify()` setting: it's fixed when the sandbox is
   created. Changing rules means recreating the sandbox.
+- A label change on a running sandbox is "restart-required": `apply()` without a
+  policy fails with `cannot apply modification: label requires restart`. With
+  `.next_start()` it's stored right away and visible through `Sandbox::get(..)
+  .config()`, without restarting the VM; `fbkd` stores `firebrick.ports` this
+  way.
+- Published ports (`SandboxBuilder::port`) are fixed at create time and target
+  the guest's interface IP, not its loopback, so `fbkd` forwards ports through
+  SSH `direct-tcpip` instead (ADR 0019).
 
 **Secrets**
 
@@ -155,6 +163,13 @@ build on it when `Cargo.lock` has a newer version.
 - The SSH server needs no `sshd` in the guest and supports exec, PTY, SFTP and
   `direct-tcpip` port forwarding. It doesn't support agent forwarding (see
   `docs/architecture/11-risks-and-technical-debt.md`).
+- `direct-tcpip` connects through agentd from inside the guest, so
+  `127.0.0.1:<port>` is the guest's loopback; the login user doesn't matter. A
+  rejected channel (nothing listening) is logged by microsandbox at `debug`.
+- `server_with(|o| o.host_key(key).authorized_key(base64))` takes in-memory
+  keys, so an in-process client needs no key files. `sb.ssh().connect()` returns
+  an `SshClient` without access to its `russh` handle, so it can't open
+  `direct-tcpip` channels; `forward.rs` connects its own `russh` client.
 
 **Terminals**
 
