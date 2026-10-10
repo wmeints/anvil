@@ -11,7 +11,8 @@ use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementS
 use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, GetSandboxRequest,
     GetSandboxResponse, ListSandboxesRequest, RemoveSandboxRequest, SandboxResources,
-    SandboxStatus, StartSandboxRequest, StopSandboxRequest, attach_request, attach_response,
+    SandboxStatus, SandboxVolumes, StartSandboxRequest, StopSandboxRequest, attach_request,
+    attach_response,
 };
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{sandboxes, server};
@@ -429,19 +430,18 @@ async fn start_sandbox_uses_requested_image_and_resources() {
     let daemon = TestDaemon::start("resources").await;
     let mut client = daemon.client().await;
 
-    client
-        .start_sandbox(StartSandboxRequest {
-            image: "alpine:3.22".to_string(),
-            resources: Some(SandboxResources {
-                cpu: 1,
-                memory: "1 GiB".to_string(),
-                disk: "1 GiB".to_string(),
-            }),
-            ..start_request(NAME)
-        })
-        .await
-        .expect("failed to create sandbox");
-    wait_for_status(&mut client, NAME, SandboxStatus::Running).await;
+    let request = StartSandboxRequest {
+        image: "alpine:3.22".to_string(),
+        resources: Some(SandboxResources {
+            cpu: 1,
+            memory: "1 GiB".to_string(),
+        }),
+        volumes: Some(SandboxVolumes {
+            docker: "1 GiB".to_string(),
+        }),
+        ..start_request(NAME)
+    };
+    start_and_wait(&mut client, request).await;
 
     let spec = sandbox_spec(NAME).await;
 
@@ -466,7 +466,7 @@ async fn sandbox_gets_default_docker_disk_that_survives_restart() {
 
     let daemon = TestDaemon::start("docker-disk").await;
     let mut client = daemon.client().await;
-    // The test request has no resources and init disabled, like a non-firebrick image.
+    // The test request has no resources or volumes and init disabled, like a non-firebrick image.
     start_running_sandbox(&mut client, NAME).await;
 
     assert_eq!(docker_disk_mib(&sandbox_spec(NAME).await), Some(20 * 1024));
@@ -549,20 +549,26 @@ async fn start_sandbox_rejects_invalid_resources() {
     let daemon = TestDaemon::start("bad-resources").await;
     let mut client = daemon.client().await;
 
-    for (memory, disk) in [("lots", ""), ("1 GiB", "20 GB")] {
+    for (memory, docker) in [("lots", ""), ("1 GiB", "20 GB")] {
         let status = client
             .start_sandbox(StartSandboxRequest {
                 resources: Some(SandboxResources {
                     cpu: 2,
                     memory: memory.to_string(),
-                    disk: disk.to_string(),
+                }),
+                volumes: Some(SandboxVolumes {
+                    docker: docker.to_string(),
                 }),
                 ..start_request(NAME)
             })
             .await
             .expect_err("start_sandbox should reject invalid resources");
 
-        assert_eq!(status.code(), Code::InvalidArgument, "{memory:?}, {disk:?}");
+        assert_eq!(
+            status.code(),
+            Code::InvalidArgument,
+            "{memory:?}, {docker:?}"
+        );
         assert!(Sandbox::get(NAME).await.is_err(), "sandbox was created");
     }
 

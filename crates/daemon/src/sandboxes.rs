@@ -62,8 +62,8 @@ pub struct Resources {
     pub cpus: u8,
     /// Memory in MiB.
     pub memory_mib: u32,
-    /// Size of the Docker data disk in MiB.
-    pub disk_mib: u32,
+    /// Size of the Docker volume in MiB.
+    pub docker_volume_mib: u32,
 }
 
 /// The sandbox to start, and the workspace and image to create it from when it doesn't exist.
@@ -627,7 +627,7 @@ fn sandbox_image(image: &str) -> &str {
 /// Path of the init that runs as PID 1 in sandboxes with `init` enabled.
 const INIT_PATH: &str = "/sbin/init";
 
-/// Gives the sandbox its vCPUs, memory and Docker data disk.
+/// Gives the sandbox its vCPUs, memory and Docker volume.
 fn with_resources(builder: SandboxBuilder, resources: Resources) -> SandboxBuilder {
     builder
         .cpus(resources.cpus)
@@ -635,7 +635,7 @@ fn with_resources(builder: SandboxBuilder, resources: Resources) -> SandboxBuild
         // A private ext4 disk, because Docker's overlayfs storage can't sit on the overlayfs
         // root. It lives until the sandbox is removed.
         .volume(DOCKER_DATA_PATH, |m| {
-            m.owned_with(|v| v.disk().size(resources.disk_mib))
+            m.owned_with(|v| v.disk().size(resources.docker_volume_mib))
         })
 }
 

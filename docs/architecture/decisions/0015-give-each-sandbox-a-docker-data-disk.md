@@ -24,9 +24,12 @@ it creates, whatever the image and whether or not `init` is on. It uses
 microsandbox's owned volumes: `.volume("/var/lib/docker", |m| m.owned_with(|v|
 v.disk().size(mib)))`.
 
-The size comes from the optional `resources.disk` field in `.firebrick.yml`, in
-the same units as `resources.memory`, and defaults to `20 GiB`. An empty `disk`
-in a `StartSandboxRequest` means the default, so older clients keep working.
+The size comes from the optional `volumes.docker` field in `.firebrick.yml`, in
+the same units as `resources.memory`, and defaults to `20 GiB`. Volumes get
+their own `volumes` section instead of a field under `resources`, so sizes of
+later volumes have a place to go. The gRPC `StartSandboxRequest` mirrors it with
+an optional `SandboxVolumes` message; a missing message or an empty `docker`
+size means the default, so older clients keep working.
 
 ## Consequences
 

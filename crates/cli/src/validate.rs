@@ -80,7 +80,7 @@ mod tests {
 
         assert_eq!(
             report,
-            ".firebrick.yml:4:3: error: resources: unknown field `memroy`, expected one of `cpu`, `memory`, `disk`"
+            ".firebrick.yml:4:3: error: resources: unknown field `memroy`, expected `cpu` or `memory`"
         );
     }
 }

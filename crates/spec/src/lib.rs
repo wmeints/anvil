@@ -27,9 +27,6 @@ pub enum SizeError {
     TooLarge(String),
 }
 
-/// Size of the Docker data disk a sandbox gets when its spec doesn't set one.
-pub const DEFAULT_DISK: &str = "20 GiB";
-
 /// Image a sandbox runs when its spec doesn't name one: the `firebrick-base` image that the
 /// release workflow publishes with the same version as this crate.
 pub const DEFAULT_IMAGE: &str = concat!(
@@ -82,9 +79,12 @@ pub struct SandboxSpec {
     pub image: Option<String>,
     /// Whether the sandbox runs the image's `/sbin/init` as PID 1. Defaults to `true`.
     pub init: Option<bool>,
+    /// Sizes of the volumes the sandbox gets. Missing fields use their defaults.
+    #[serde(default)]
+    pub volumes: VolumesSpec,
 }
 
-/// CPU, memory and disk resources assigned to a sandbox.
+/// CPU and memory resources assigned to a sandbox.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxResourcesSpec {
@@ -92,10 +92,6 @@ pub struct SandboxResourcesSpec {
     /// Memory size with a binary unit, such as `512 MiB` or `4Gi`.
     #[serde(deserialize_with = "deserialize_size")]
     pub memory: String,
-    /// Size of the disk mounted at `/var/lib/docker`, in the same units as `memory`.
-    /// Unset means [`DEFAULT_DISK`].
-    #[serde(default, deserialize_with = "deserialize_optional_size")]
-    pub disk: Option<String>,
 }
 
 impl Default for SandboxResourcesSpec {
@@ -104,9 +100,34 @@ impl Default for SandboxResourcesSpec {
         Self {
             cpu: 2,
             memory: "4 GiB".to_string(),
-            disk: Some(DEFAULT_DISK.to_string()),
         }
     }
+}
+
+/// Sizes of the volumes `fbkd` attaches to a sandbox, with binary units such as `20 GiB`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct VolumesSpec {
+    /// Size of the disk mounted at `/var/lib/docker`.
+    #[serde(
+        default = "default_docker_volume",
+        deserialize_with = "deserialize_size"
+    )]
+    pub docker: String,
+}
+
+impl Default for VolumesSpec {
+    /// Returns the volume sizes a sandbox gets when its spec doesn't set them.
+    fn default() -> Self {
+        Self {
+            docker: default_docker_volume(),
+        }
+    }
+}
+
+/// Size of the Docker volume when the spec doesn't set one.
+fn default_docker_volume() -> String {
+    "20 GiB".to_string()
 }
 
 /// Parses a memory or disk size such as `512 MiB`, `512Mi`, `4 GiB` or `4Gi` into mebibytes.
@@ -139,13 +160,6 @@ pub fn parse_size_mib(value: &str) -> Result<u32, SizeError> {
 /// Deserializes a size, rejecting values that `parse_size_mib` can't read.
 fn deserialize_size<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     deserializer.deserialize_str(SizeVisitor)
-}
-
-/// Deserializes an optional size; serde only calls it when the field is present.
-fn deserialize_optional_size<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    deserialize_size(deserializer).map(Some)
 }
 
 /// Checks the size while the parser still points at the value, so a problem is
@@ -187,6 +201,7 @@ pub fn default_spec(name: String) -> SandboxSpec {
         image: Some(DEFAULT_IMAGE.to_string()),
         resources: Some(SandboxResourcesSpec::default()),
         init: Some(true),
+        volumes: VolumesSpec::default(),
     }
 }
 
@@ -364,41 +379,60 @@ pub mod tests {
     }
 
     #[test]
-    fn disk_is_optional() {
-        let file = write_spec("name: dev\nresources:\n  cpu: 2\n  memory: 4Gi\n");
+    fn volumes_are_optional() {
+        let file = write_spec("name: dev\n");
 
         let spec = from_file(file.path()).unwrap();
 
-        assert!(spec.resources.unwrap().disk.is_none());
+        assert_eq!(spec.volumes, VolumesSpec::default());
+        assert_eq!(spec.volumes.docker, "20 GiB");
     }
 
     #[test]
-    fn parses_disk() {
-        let file = write_spec("name: dev\nresources:\n  cpu: 2\n  memory: 4Gi\n  disk: 40 GiB\n");
+    fn docker_volume_is_optional() {
+        let file = write_spec("name: dev\nvolumes: {}\n");
 
         let spec = from_file(file.path()).unwrap();
 
-        assert_eq!(spec.resources.unwrap().disk.as_deref(), Some("40 GiB"));
+        assert_eq!(spec.volumes.docker, "20 GiB");
     }
 
     #[test]
-    fn invalid_disk_returns_diagnostic() {
-        for disk in ["20 GB", "0 GiB"] {
-            let file = write_spec(&format!(
-                "name: dev\nresources:\n  cpu: 2\n  memory: 4Gi\n  disk: {disk}\n"
-            ));
+    fn parses_docker_volume() {
+        let file = write_spec(
+            "name: dev\nresources:\n  cpu: 1\n  memory: 2GiB\nvolumes:\n  docker: 40GiB\n",
+        );
+
+        let spec = from_file(file.path()).unwrap();
+
+        assert_eq!(spec.volumes.docker, "40GiB");
+    }
+
+    #[test]
+    fn invalid_docker_volume_returns_diagnostic() {
+        for size in ["20 GB", "0 GiB"] {
+            let file = write_spec(&format!("name: dev\nvolumes:\n  docker: {size}\n"));
 
             let diagnostic = from_file(file.path()).unwrap_err().diagnostic().unwrap();
 
-            assert_eq!((diagnostic.line, diagnostic.column), (5, 9), "{disk:?}");
+            assert_eq!((diagnostic.line, diagnostic.column), (3, 11), "{size:?}");
             assert!(
                 diagnostic
                     .message
-                    .starts_with(&format!("resources.disk: invalid size `{disk}`")),
+                    .starts_with(&format!("volumes.docker: invalid size `{size}`")),
                 "{}",
                 diagnostic.message
             );
         }
+    }
+
+    #[test]
+    fn unknown_volume_returns_invalid_spec() {
+        let file = write_spec("name: dev\nvolumes:\n  dokcer: 20GiB\n");
+
+        let result = from_file(file.path());
+
+        assert!(matches!(result, Err(SandboxSpecError::InvalidSpec(_))));
     }
 
     #[test]
@@ -408,8 +442,8 @@ pub mod tests {
 
         assert_eq!(spec.image.as_deref(), Some(DEFAULT_IMAGE));
         assert_eq!((resources.cpu, resources.memory.as_str()), (2, "4 GiB"));
-        assert_eq!(resources.disk.as_deref(), Some(DEFAULT_DISK));
         assert_eq!(spec.init, Some(true));
+        assert_eq!(spec.volumes, VolumesSpec::default());
     }
 
     #[test]

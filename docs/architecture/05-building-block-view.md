@@ -145,14 +145,14 @@ C4Component
   API until `SIGINT` or `SIGTERM`.
 - `server` - Adapts `SandboxManagementService` to the modules below: it converts
   each request into plain values, calls `sandboxes`, `session` or `tunnel`, and
-  converts the result into a response. It converts requested resources to vCPUs
-  and MiB of memory and disk, falling back to the defaults from `firebrick-spec`
-  (for the disk also when the request's `disk` is empty), and rejects invalid
-  resources with `INVALID_ARGUMENT`. It maps the `SandboxError` of `sandboxes`
-  to gRPC status codes in one place. It refuses to start when the socket already
-  exists, gives the socket mode `0600` after binding it and removes it on
-  shutdown. It only hands a connection to tonic when the peer's UID, read with
-  `SO_PEERCRED`, is the daemon's own UID or root (see
+  converts the result into a response. It converts requested resources and
+  volumes to vCPUs and MiB, falling back to the defaults from `firebrick-spec`
+  (for the Docker volume also when the request's `docker` size is empty), and
+  rejects invalid values with `INVALID_ARGUMENT`. It maps the `SandboxError` of
+  `sandboxes` to gRPC status codes in one place. It refuses to start when the
+  socket already exists, gives the socket mode `0600` after binding it and
+  removes it on shutdown. It only hands a connection to tonic when the peer's
+  UID, read with `SO_PEERCRED`, is the daemon's own UID or root (see
   [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
@@ -242,11 +242,13 @@ C4Component
   CLI and daemon re-export it as their `api` module.
 - `firebrick-spec` (`crates/spec`) - Parses `.firebrick.yml` into a
   `SandboxSpec` with a `name`, an optional `image`, an optional `init` and
-  optional `resources` (`cpu`, `memory`, an optional `disk`), rejects unknown
-  fields and reports the line and column of a problem. It owns the defaults
+  optional `resources` (`cpu`, `memory`) and `volumes` (`docker`, the size of
+  the Docker data disk), rejects unknown fields and reports the line and column
+  of a problem. It owns the defaults
   (`ghcr.io/wmeints/firebrick-base:v<version>`, `init: true`, 2 vCPUs, `4 GiB`
-  of memory, a `20 GiB` disk) and `parse_size_mib`, which reads memory and disk
-  sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both use them.
+  of memory, a `20 GiB` Docker volume in `VolumesSpec::default()`) and
+  `parse_size_mib`, which reads memory and volume sizes in `Mi`/`MiB` or
+  `Gi`/`GiB`. The CLI and daemon both use them.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
   (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
   (`$XDG_STATE_HOME/firebrick`), the SSH directory
