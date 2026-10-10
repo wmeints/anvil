@@ -74,6 +74,10 @@ build on it when `Cargo.lock` has a newer version.
   `MicrosandboxError::SandboxStillRunning`. `connect_or_start_detached()`
   connects to a running sandbox, waits for a starting one, starts a stopped one,
   absorbs that race, and rejects draining and paused sandboxes.
+- `SandboxHandle::pause()` suspends a running VM without a snapshot and its
+  status becomes `Paused`; `resume()` continues the same processes
+  (`$M/sandbox/pause.rs`). firebrick never pauses sandboxes itself, but `msb`
+  can, so code that stops or recreates a sandbox has to expect `Paused`.
 - `Sandbox::list_with` rejects an empty cursor. Only call `.cursor(..)` with the
   cursor of the previous page.
 - `.init(path)` hands PID 1 to an init binary in the image after agentd's setup.

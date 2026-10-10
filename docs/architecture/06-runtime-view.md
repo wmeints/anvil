@@ -432,19 +432,30 @@ sequenceDiagram
     end
     CLI->>F: Read, or start from default_spec without a file
     CLI->>CLI: Add to allow, remove from deny
-    alt Nothing changed
-        CLI-->>Dev: network rules are already up to date
+    opt Changed or new
+        CLI->>F: Write the spec
     end
-    CLI->>F: Write the spec
     CLI->>D: UpdateNetwork(name, network)
     D->>D: Lock the sandbox
     D->>MS: Read cpus, memory, labels, workspace, init
+    alt firebrick.network label matches the rules
+        D-->>CLI: updated: false
+        CLI-->>Dev: network rules are already up to date
+    else Paused
+        D-->>CLI: FAILED_PRECONDITION
+        CLI-->>Dev: Error
+    end
     opt Running
         D->>MS: Stop (kill after 30s)
     end
     D->>MS: Disk snapshot of the sandbox
     D->>MS: Remove the sandbox
-    D->>MS: Create it from the snapshot with the same settings,<br/>the stored secrets and the new rules
+    alt Snapshot or remove fails
+        D->>MS: Start it again when it was running
+        D-->>CLI: INTERNAL, keeps its old rules
+        CLI-->>Dev: Error
+    end
+    D->>MS: Create it from the snapshot with the same settings,<br/>the stored secrets, the new rules and their label
     alt Recreate fails
         D->>MS: Remove what was created
         D-->>CLI: INTERNAL, names the kept snapshot
@@ -455,7 +466,7 @@ sequenceDiagram
         D->>MS: Stop the recreated sandbox
     end
     D->>D: Sync SSH config and editor settings
-    D-->>CLI: UpdateNetworkResponse
+    D-->>CLI: updated: true
     CLI-->>Dev: updated the network rules of my-project
     opt enforce is off after allow or deny
         CLI-->>Dev: Warning: the rules aren't enforced
@@ -468,8 +479,11 @@ processes don't: the sandbox cold-boots, like after `fbk stop` and `fbk start`.
 The new sandbox gets the same name, labels (and so the same SSH host name and
 mise setting), workspace mount, resources and `init` setting. When the sandbox
 doesn't exist, `fbkd` returns `NOT_FOUND` and the CLI reports that the rules
-apply when the sandbox starts. When the CLI can't reach the daemon, the file is
-already written and the rules apply at the next `fbk start`.
+apply when the sandbox starts. The CLI calls the daemon even when the file
+didn't change, so running the command again applies rules that an earlier,
+failed update or a hand edit left in the file only. The `firebrick.network`
+label makes that cheap: a sandbox that already has the rules isn't recreated,
+and neither is one whose rules aren't enforced, because they don't change it.
 
 Between removing and creating the sandbox, it briefly doesn't exist, so an SSH
 connection to its host name fails during that time. Other requests for the

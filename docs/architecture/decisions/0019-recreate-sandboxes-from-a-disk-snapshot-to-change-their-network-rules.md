@@ -30,8 +30,13 @@ Docker disk. Two APIs create a sandbox from it:
 ## Decision
 
 `fbk network` writes the change to `.firebrick.yml` first and then sends the
-whole network section to `fbkd` with a new `UpdateNetwork` RPC. `fbkd` applies
-it to an existing sandbox by:
+whole network section to `fbkd` with a new `UpdateNetwork` RPC, also when the
+file didn't change, so a sandbox that missed an earlier update or a hand edit
+catches up. Every sandbox `fbkd` creates gets a `firebrick.network` label that
+records its rules, or `off` when they aren't enforced. When the label already
+matches, `fbkd` leaves the sandbox alone and answers `updated: false`. It
+refuses a paused sandbox with `FAILED_PRECONDITION`, because the recreated
+sandbox can't be paused again. Otherwise, it applies the rules by:
 
 1. Reading the sandbox's settings from its stored config: labels, workspace
    mount, workdir, vCPUs, memory, Docker disk size and `init`.
@@ -41,8 +46,11 @@ it to an existing sandbox by:
    chain `create_sandbox` uses, the stored secrets and the new rules.
 4. Stopping it again when it was stopped, and deleting the snapshot.
 
-When the recreate fails, `fbkd` removes what was created, keeps the snapshot and
-names it in the error and the log, so the user can recover the sandbox.
+When the snapshot or the remove fails, `fbkd` starts a sandbox that was running
+again, so it keeps its old rules and state. When the recreate fails, `fbkd`
+removes what was created, keeps the snapshot and names it in the error and the
+log, so the user can recover the sandbox. When only stopping the recreated
+sandbox fails, the error says the rules were updated.
 
 microsandbox files the snapshot in a group named after the sandbox, where its
 bare name doesn't select it, so `fbkd` refers to the snapshot by its path.
@@ -60,5 +68,7 @@ bare name doesn't select it, so `fbkd` refers to the snapshot by its path.
   `fbkd` makes start, stop, remove and connect requests for the sandbox wait.
 - The CLI rewrites `.firebrick.yml` through serde, which drops its comments and
   formatting.
+- Sandboxes created before the `firebrick.network` label existed are recreated
+  on their first `fbk network` command, even when their rules don't change.
 - The network section is the only create-time setting that can change without
   `fbk rm`.

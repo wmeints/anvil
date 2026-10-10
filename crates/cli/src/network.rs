@@ -38,9 +38,11 @@ fn parse_rules(rules: &[String]) -> Result<Vec<NetworkRule>, InvalidNetworkRule>
     rules.iter().map(|rule| rule.parse()).collect()
 }
 
-/// Applies the change to `.firebrick.yml` in the working directory, then to the sandbox when it
-/// exists. Without a spec file, it creates one with the default settings and the name
-/// `fbk start` would use. Warns when rules are added while enforcement is off.
+/// Applies the change to `.firebrick.yml` in the working directory, then sends the network
+/// section to the sandbox when it exists, also when the file didn't change, so a sandbox that
+/// missed an earlier update or a hand edit catches up. Without a spec file, it creates one with
+/// the default settings and the name `fbk start` would use. Warns when rules are added while
+/// enforcement is off.
 pub async fn update(change: NetworkChange, working_dir: &Path) -> Result<()> {
     let spec_path = working_dir.join(SPEC_FILE_NAME);
     let (spec, created) = match read_spec(&spec_path)? {
@@ -48,13 +50,7 @@ pub async fn update(change: NetworkChange, working_dir: &Path) -> Result<()> {
         None => (new_spec(working_dir).await?, true),
     };
     let (spec, changed) = edit_spec(&spec_path, spec, &change, created)?;
-
-    let result = if changed {
-        apply_to_sandbox(&spec).await
-    } else {
-        println!("network rules are already up to date");
-        Ok(())
-    };
+    let result = apply_to_sandbox(&spec, changed).await;
 
     if let Some(warning) = enforcement_warning(&change, &spec) {
         eprintln!("{warning}");
@@ -120,12 +116,20 @@ fn apply(change: &NetworkChange, spec: &mut SandboxSpec) -> bool {
     added || changed
 }
 
-/// Sends the network section of the spec to the daemon, which applies it to the sandbox, and
-/// prints the outcome.
-async fn apply_to_sandbox(spec: &SandboxSpec) -> Result<()> {
+/// Sends the network section of the spec to the daemon, which applies it to the sandbox when
+/// the sandbox doesn't have it yet, and prints the outcome. `file_changed` tells whether the
+/// spec file was just written.
+async fn apply_to_sandbox(spec: &SandboxSpec, file_changed: bool) -> Result<()> {
     let name = &spec.name;
     let mut client = client::connect().await.with_context(|| {
-        format!("updated {SPEC_FILE_NAME}, but failed to connect to the daemon; the rules apply when {name} starts")
+        if file_changed {
+            format!(
+                "updated {SPEC_FILE_NAME}, but failed to connect to the daemon; run the command \
+                 again to apply the rules to {name}"
+            )
+        } else {
+            "failed to connect to the daemon".to_string()
+        }
     })?;
 
     let request = UpdateNetworkRequest {
@@ -134,23 +138,31 @@ async fn apply_to_sandbox(spec: &SandboxSpec) -> Result<()> {
             spec.network.clone().unwrap_or_default(),
         )),
     };
-    let result = client.update_network(request).await.map(|_| ());
+    let result = client
+        .update_network(request)
+        .await
+        .map(|response| response.into_inner().updated);
 
-    println!("{}", outcome(name, result)?);
+    println!("{}", outcome(name, file_changed, result)?);
 
     Ok(())
 }
 
-/// Returns the message for the daemon's answer. A sandbox that doesn't exist gets the rules
-/// from the spec file when it starts.
-fn outcome(name: &str, result: Result<(), Status>) -> Result<String> {
-    match result {
-        Ok(()) => Ok(format!("updated the network rules of {name}")),
-        Err(status) if status.code() == Code::NotFound => Ok(format!(
-            "updated {SPEC_FILE_NAME}; the rules apply when {name} starts"
-        )),
-        Err(status) => Err(anyhow!("{}", status.message())),
-    }
+/// Returns the message for the daemon's answer, which tells whether the sandbox was recreated.
+/// A sandbox that doesn't exist gets the rules from the spec file when it starts.
+fn outcome(name: &str, file_changed: bool, result: Result<bool, Status>) -> Result<String> {
+    let sandbox_updated = match result {
+        Ok(updated) => Some(updated),
+        Err(status) if status.code() == Code::NotFound => None,
+        Err(status) => return Err(anyhow!("{}", status.message())),
+    };
+
+    Ok(match (file_changed, sandbox_updated) {
+        (_, Some(true)) => format!("updated the network rules of {name}"),
+        (false, _) => "network rules are already up to date".to_string(),
+        (true, Some(false)) => format!("updated {SPEC_FILE_NAME}; {name} is already up to date"),
+        (true, None) => format!("updated {SPEC_FILE_NAME}; the rules apply when {name} starts"),
+    })
 }
 
 /// Returns a warning when the change adds rules to a spec that doesn't enforce them, so the
@@ -392,22 +404,44 @@ mod tests {
         );
     }
 
+    fn not_found() -> Result<bool, Status> {
+        Err(Status::not_found("couldn't find specified sandbox"))
+    }
+
     #[test]
     fn outcome_reports_the_updated_sandbox() {
-        assert_eq!(
-            outcome("my-project", Ok(())).unwrap(),
-            "updated the network rules of my-project"
-        );
+        for file_changed in [true, false] {
+            assert_eq!(
+                outcome("my-project", file_changed, Ok(true)).unwrap(),
+                "updated the network rules of my-project"
+            );
+        }
     }
 
     #[test]
     fn outcome_for_a_missing_sandbox_says_when_the_rules_apply() {
-        let result = Err(Status::not_found("couldn't find specified sandbox"));
-
         assert_eq!(
-            outcome("my-project", result).unwrap(),
+            outcome("my-project", true, not_found()).unwrap(),
             "updated .firebrick.yml; the rules apply when my-project starts"
         );
+    }
+
+    #[test]
+    fn outcome_reports_a_sandbox_that_already_has_the_rules() {
+        assert_eq!(
+            outcome("my-project", true, Ok(false)).unwrap(),
+            "updated .firebrick.yml; my-project is already up to date"
+        );
+    }
+
+    #[test]
+    fn outcome_without_any_change_is_up_to_date() {
+        for result in [Ok(false), not_found()] {
+            assert_eq!(
+                outcome("my-project", false, result).unwrap(),
+                "network rules are already up to date"
+            );
+        }
     }
 
     #[test]
@@ -417,7 +451,7 @@ mod tests {
         ));
 
         assert_eq!(
-            outcome("my-project", result).unwrap_err().to_string(),
+            outcome("my-project", true, result).unwrap_err().to_string(),
             "failed to update the network rules of my-project"
         );
     }

@@ -1433,19 +1433,27 @@ async fn start_sandbox_rejects_invalid_network_rule() {
     assert!(status.message().contains("github.com:443"), "{status:?}");
 }
 
-/// Asks the daemon to replace the egress rules of the sandbox.
+/// Asks the daemon to replace the egress rules of the sandbox. Returns whether it recreated the
+/// sandbox.
 async fn update_network(
     client: &mut SandboxManagementServiceClient<Channel>,
     name: &str,
     network: NetworkPolicy,
-) -> Result<(), tonic::Status> {
+) -> Result<bool, tonic::Status> {
     client
         .update_network(UpdateNetworkRequest {
             name: name.to_string(),
             network: Some(network),
         })
         .await
-        .map(|_| ())
+        .map(|response| response.into_inner().updated)
+}
+
+/// Returns the id of the sandbox's current boot, which changes when it is recreated.
+async fn boot_id(client: &mut SandboxManagementServiceClient<Channel>, name: &str) -> String {
+    let (output, _) = run_command(client, name, "cat", &["/proc/sys/kernel/random/boot_id"]).await;
+
+    output
 }
 
 /// Returns a network policy with the allow rules and no deny rules.
@@ -1592,7 +1600,7 @@ async fn update_network_of_running_sandbox_keeps_its_disk_and_settings() {
     let denied = fetch(&mut client, NAME, "https://example.org").await;
 
     let network = allow_policy(true, &["example.com", "example.org"]);
-    update_network(&mut client, NAME, network).await.unwrap();
+    assert!(update_network(&mut client, NAME, network).await.unwrap());
 
     let after = after_update(&mut client, NAME).await;
     let markers = read_markers(&mut client, NAME).await;
@@ -1629,7 +1637,7 @@ async fn update_network_of_stopped_sandbox_keeps_it_stopped() {
     stop_sandbox(&mut client, NAME).await;
 
     let network = allow_policy(false, &["example.com"]);
-    update_network(&mut client, NAME, network).await.unwrap();
+    assert!(update_network(&mut client, NAME, network).await.unwrap());
 
     let after = after_update(&mut client, NAME).await;
     start_existing(&mut client, NAME).await;
@@ -1728,8 +1736,8 @@ async fn update_network_can_update_the_same_sandbox_again() {
     daemon.stop().await;
     remove_sandbox_and_snapshots(NAME).await;
 
-    assert!(first.is_ok(), "{first:?}");
-    assert!(second.is_ok(), "{second:?}");
+    assert!(matches!(first, Ok(true)), "{first:?}");
+    assert!(matches!(second, Ok(true)), "{second:?}");
     assert_eq!(after.status, Some(SandboxStatus::Running));
     assert!(
         after.stored_network.contains("example.com"),
@@ -1742,4 +1750,57 @@ async fn update_network_can_update_the_same_sandbox_again() {
         after.stored_network
     );
     assert!(after.snapshots.is_empty(), "{:?}", after.snapshots);
+}
+
+#[tokio::test]
+async fn update_network_with_the_rules_the_sandbox_has_leaves_it_alone() {
+    const NAME: &str = "fbk-it-update-unchanged";
+    remove_sandbox_and_snapshots(NAME).await;
+
+    let daemon = TestDaemon::start("update-unchanged").await;
+    let mut client = daemon.client().await;
+    start_enforced_sandbox(&mut client, NAME, &["example.com"], &[]).await;
+    let boot = boot_id(&mut client, NAME).await;
+
+    let same = update_network(&mut client, NAME, allow_policy(true, &["example.com"])).await;
+    let same_boot = boot_id(&mut client, NAME).await;
+    let disabled = update_network(&mut client, NAME, allow_policy(false, &["example.com"])).await;
+    // Rules that aren't enforced don't change the sandbox.
+    let still_disabled =
+        update_network(&mut client, NAME, allow_policy(false, &["example.org"])).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(NAME).await;
+
+    assert!(matches!(same, Ok(false)), "{same:?}");
+    assert_eq!(same_boot, boot);
+    assert!(matches!(disabled, Ok(true)), "{disabled:?}");
+    assert!(matches!(still_disabled, Ok(false)), "{still_disabled:?}");
+}
+
+#[tokio::test]
+async fn update_network_refuses_a_paused_sandbox() {
+    const NAME: &str = "fbk-it-update-paused";
+    remove_sandbox_and_snapshots(NAME).await;
+
+    let daemon = TestDaemon::start("update-paused").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+    let sb = Sandbox::get(NAME).await.unwrap();
+    sb.pause().await.unwrap();
+
+    let status = update_network(&mut client, NAME, allow_policy(true, &["example.org"])).await;
+    let paused = sandbox_status(&mut client, NAME).await;
+
+    sb.resume().await.unwrap();
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(NAME).await;
+
+    let status = status.unwrap_err();
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    assert_eq!(
+        status.message(),
+        format!("sandbox {NAME} is paused; resume it before updating its network rules")
+    );
+    assert_eq!(paused, Some(SandboxStatus::Paused));
 }

@@ -104,9 +104,10 @@ C4Component
   `enforce`. Without `.firebrick.yml`, it writes `default_spec` with the name
   `manage` would pick, including a legacy name, plus the change. An invalid file
   is reported like `validate` reports it, and nothing changes. When the network
-  section didn't change, it skips the daemon. `NOT_FOUND` from the daemon means
-  the sandbox doesn't exist yet, so the file alone is enough. It warns when
-  `allow` or `deny` leave `enforce` off.
+  section didn't change, it leaves the file alone but still asks the daemon, so
+  the sandbox catches up with the file. `NOT_FOUND` from the daemon means the
+  sandbox doesn't exist yet, so the file alone is enough. It warns when `allow`
+  or `deny` leave `enforce` off.
 - `table` - Renders rows as a bordered table with `ratatui` into an in-memory
   buffer and returns it as plain text lines
   ([ADR 0003](decisions/0003-render-cli-tables-with-ratatui.md)).
@@ -221,9 +222,12 @@ C4Component
   [Updating the network rules](06-runtime-view.md#updating-the-network-rules)
   and
   [ADR 0019](decisions/0019-recreate-sandboxes-from-a-disk-snapshot-to-change-their-network-rules.md)).
-  Creating and recreating a sandbox share one builder chain. A lock per sandbox
-  name, held by start, stop, remove, connect and `UpdateNetwork`, keeps those
-  operations from interleaving with a recreate.
+  It skips a sandbox whose `firebrick.network` label already records the rules
+  and refuses a paused one. Creating and recreating a sandbox share one builder
+  chain, which also sets that label. A lock per sandbox name, held by start,
+  stop, remove, connect and `UpdateNetwork`, keeps those operations from
+  interleaving with a recreate; a lock is dropped when no task holds or waits
+  for it.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and

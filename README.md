@@ -357,8 +357,11 @@ updated the network rules of my-project
 
 - `fbk network allow <rule>...` adds the rules to `allow` and removes them from
   `deny`; `fbk network deny <rule>...` does the opposite. A rule that's already
-  there isn't added twice. When nothing changes, the command prints `network
-  rules are already up to date`.
+  there isn't added twice. When neither the file nor the sandbox changes, the
+  command prints `network rules are already up to date`.
+- When applying the rules to the sandbox fails, run the command again: it
+  applies the rules from `.firebrick.yml` to a sandbox that doesn't have them
+  yet, also after you edit the file by hand.
 - `fbk network policy enable` and `fbk network policy disable` set `enforce`.
 - When there's no `.firebrick.yml` yet, the command creates one with the
   defaults and the name `fbk start` uses, plus the change.
@@ -368,7 +371,9 @@ updated the network rules of my-project
   when it starts.
 - The sandbox keeps its files, installed packages and Docker data, but it
   restarts: running processes stop, as after `fbk stop` and `fbk start`. A
-  stopped sandbox stays stopped.
+  stopped sandbox stays stopped. A sandbox that already has the rules, or whose
+  rules aren't enforced, doesn't restart. A paused sandbox has to be resumed
+  first.
 - `fbk network` rewrites `.firebrick.yml`, which drops its comments and
   formatting.
 

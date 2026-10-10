@@ -139,7 +139,8 @@ impl SandboxManagementService for FirebrickServer {
         Ok(Response::new(StartSandboxResponse {}))
     }
 
-    /// Replaces the egress rules of an existing sandbox, recreating it from a disk snapshot.
+    /// Replaces the egress rules of an existing sandbox, recreating it from a disk snapshot
+    /// unless it already has them.
     async fn update_network(
         &self,
         request: Request<UpdateNetworkRequest>,
@@ -147,11 +148,12 @@ impl SandboxManagementService for FirebrickServer {
         let request_data = request.into_inner();
         let network = network_spec(request_data.network.as_ref())?;
 
-        self.sandboxes
+        let updated = self
+            .sandboxes
             .update_network(&request_data.name, &network)
             .await?;
 
-        Ok(Response::new(UpdateNetworkResponse {}))
+        Ok(Response::new(UpdateNetworkResponse { updated }))
     }
 
     /// Stores a secret and adds it to the existing sandboxes. Running sandboxes pick it up the

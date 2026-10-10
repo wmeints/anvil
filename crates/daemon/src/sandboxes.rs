@@ -223,7 +223,35 @@ pub struct SandboxManager {
     secrets_lock: tokio::sync::Mutex<()>,
     // One lock per sandbox name, held while the sandbox is started, stopped, removed, connected
     // to or recreated, so recreating a sandbox can't interleave with another operation on it.
-    sandbox_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    sandbox_locks: SandboxLocks,
+}
+
+/// The locks of the sandboxes that are in use, by sandbox name.
+type SandboxLocks = std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
+/// Holds the lock of a sandbox. Releasing it removes the lock from the map when no other task
+/// waits for it, so the map only holds the locks of sandboxes in use.
+struct SandboxGuard<'a> {
+    locks: &'a SandboxLocks,
+    name: String,
+    guard: Option<OwnedMutexGuard<()>>,
+}
+
+impl Drop for SandboxGuard<'_> {
+    fn drop(&mut self) {
+        let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(guard) = self.guard.take() else {
+            return;
+        };
+        // Tasks only take a reference while holding the map, so when the map and this guard
+        // hold the only references, no task waits for the lock or can start waiting.
+        let unused = Arc::strong_count(OwnedMutexGuard::mutex(&guard)) == 2;
+        drop(guard);
+
+        if unused {
+            locks.remove(&self.name);
+        }
+    }
 }
 
 impl SandboxManager {
@@ -237,7 +265,7 @@ impl SandboxManager {
     }
 
     /// Waits for and takes the lock of the sandbox with the name.
-    async fn lock_sandbox(&self, name: &str) -> OwnedMutexGuard<()> {
+    async fn lock_sandbox(&self, name: &str) -> SandboxGuard<'_> {
         let lock = {
             // The map stays consistent when a thread panics while holding it, so a poisoned
             // lock is safe to use.
@@ -249,7 +277,11 @@ impl SandboxManager {
             locks.entry(name.to_string()).or_default().clone()
         };
 
-        lock.lock_owned().await
+        SandboxGuard {
+            locks: &self.sandbox_locks,
+            name: name.to_string(),
+            guard: Some(lock.lock_owned().await),
+        }
     }
 
     /// Starts an existing sandbox or creates a new one when it doesn't exist, installs the
@@ -354,34 +386,65 @@ impl SandboxManager {
 
     /// Replaces the egress rules of an existing sandbox by recreating it from a disk snapshot,
     /// so it keeps its root disk, Docker disk and settings but not its processes. The sandbox
-    /// ends in the state it was in. When the recreate fails, the snapshot is kept so the user
-    /// can recover the sandbox, and the error names it.
+    /// ends in the state it was in. Returns whether it was recreated: a sandbox that already
+    /// has the rules is left alone. A paused sandbox is refused, because it can't be paused
+    /// again. When the recreate fails, the snapshot is kept so the user can recover the
+    /// sandbox, and the error names it.
     pub async fn update_network(
         &self,
         name: &str,
         network: &NetworkSpec,
-    ) -> Result<(), SandboxError> {
+    ) -> Result<bool, SandboxError> {
         let _guard = self.lock_sandbox(name).await;
         let sb = get_sandbox(name).await?;
         let settings = SandboxSettings::of(&sb).map_err(|err| update_failed(name, &err))?;
+
+        if settings.labels.get(network::RULES_LABEL) == Some(&network::rules_label(network)) {
+            return Ok(false);
+        }
+
+        if sb.status_snapshot() == SandboxStatus::Paused {
+            return Err(SandboxError::failed_precondition(format!(
+                "sandbox {name} is paused; resume it before updating its network rules"
+            )));
+        }
+
+        let result = self.replace(&sb, &settings, network).await;
+        sync_ssh_config().await;
+
+        result.map(|()| true)
+    }
+
+    /// Stops the sandbox when it's live, replaces it with one created from a snapshot of its
+    /// disk with the egress rules, and stops that one again when the sandbox was stopped.
+    async fn replace(
+        &self,
+        sb: &SandboxHandle,
+        settings: &SandboxSettings,
+        network: &NetworkSpec,
+    ) -> Result<(), SandboxError> {
+        let name = sb.name();
         let was_live = is_live(sb.status_snapshot());
 
         if was_live {
-            stop_or_kill(&sb, STOP_TIMEOUT)
+            stop_or_kill(sb, STOP_TIMEOUT)
                 .await
                 .map_err(|err| update_failed(name, &err))?;
         }
 
-        let snapshot = snapshot_and_remove(&sb).await?;
-        let result = match self.recreate(&settings, network, &snapshot).await {
-            // The recreated sandbox boots, so stop it again when it was stopped before.
-            Ok(()) if !was_live => stop_recreated(name).await,
-            result => result,
+        let snapshot = match snapshot_and_remove(sb).await {
+            Ok(snapshot) => snapshot,
+            Err(err) => return Err(snapshot_failed(sb, was_live, &err).await),
         };
 
-        sync_ssh_config().await;
+        self.recreate(settings, network, &snapshot).await?;
 
-        result
+        // The recreated sandbox boots, so stop it again when it was stopped before.
+        if !was_live {
+            stop_recreated(name).await?;
+        }
+
+        Ok(())
     }
 
     /// Creates the removed sandbox again from the snapshot with the new egress rules, then
@@ -618,34 +681,62 @@ async fn sandbox_name_by_hostname(hostname: &str) -> Result<String, SandboxError
 
 /// Takes a disk snapshot of the stopped sandbox, then removes the sandbox. Returns the path of
 /// the snapshot. When the sandbox can't be removed, the snapshot is deleted again.
-async fn snapshot_and_remove(sb: &SandboxHandle) -> Result<String, SandboxError> {
+async fn snapshot_and_remove(sb: &SandboxHandle) -> Result<String, MicrosandboxError> {
     let name = sb.name();
     let snapshot = Snapshot::builder(snapshot_name(name))
         .from_sandbox(name)
         .create()
-        .await
-        .map_err(|err| update_failed(name, &err))?;
+        .await?;
     // microsandbox files the snapshot under a group named after the sandbox, where its bare
     // name doesn't select it, so the path refers to it.
-    let path = snapshot
-        .path()
-        .map_err(|err| update_failed(name, &err))?
-        .to_string_lossy()
-        .into_owned();
+    let path = snapshot.path()?.to_string_lossy().into_owned();
 
     if let Err(err) = sb.remove().await {
         remove_snapshot(&path).await;
-        return Err(update_failed(name, &err));
+        return Err(err);
     }
 
     Ok(path)
 }
 
-/// Stops a sandbox that was recreated while it was stopped.
+/// Logs why the sandbox couldn't be snapshotted and removed, starts it again when it was live
+/// so it ends in the state it was in, and returns the error the client sees.
+async fn snapshot_failed(
+    sb: &SandboxHandle,
+    was_live: bool,
+    err: &MicrosandboxError,
+) -> SandboxError {
+    let name = sb.name();
+    let message = format!("failed to update the network rules of {name}; it keeps its old rules");
+    tracing::error!(error = ?err, "failed to snapshot and remove sandbox {name}");
+
+    if !was_live {
+        return SandboxError::internal(message);
+    }
+
+    match sb.start_detached().await {
+        Ok(_) => SandboxError::internal(message),
+        Err(err) => {
+            tracing::error!(error = ?err, "failed to start sandbox {name} again");
+            SandboxError::internal(format!("{message}, but it couldn't be started again"))
+        }
+    }
+}
+
+/// Stops a sandbox that was recreated while it was stopped. By then it has the new rules, so
+/// the error says so.
 async fn stop_recreated(name: &str) -> Result<(), SandboxError> {
-    stop_or_kill(&get_sandbox(name).await?, STOP_TIMEOUT)
-        .await
-        .map_err(|err| update_failed(name, &err))
+    let result = match Sandbox::get(name).await {
+        Ok(sb) => stop_or_kill(&sb, STOP_TIMEOUT).await,
+        Err(err) => Err(err),
+    };
+
+    result.map_err(|err| {
+        tracing::error!(error = ?err, "failed to stop sandbox {name} after updating its rules");
+        SandboxError::internal(format!(
+            "updated the network rules of {name}, but failed to stop it again"
+        ))
+    })
 }
 
 /// Returns a snapshot name for the sandbox that no other update uses.
@@ -693,14 +784,16 @@ async fn recreate_failed(name: &str, snapshot: &str, err: &str) -> SandboxError 
     ))
 }
 
-/// Adds the egress rules and the secrets to the builder and creates the sandbox. The rules go
-/// first, because they replace the TLS settings that the secrets turn on.
+/// Adds the egress rules, the label that records them and the secrets to the builder and
+/// creates the sandbox. The rules go first, because they replace the TLS settings that the
+/// secrets turn on.
 async fn create_with(
     builder: SandboxBuilder,
     secrets: &[Secret],
     network: &NetworkSpec,
 ) -> Result<Sandbox, MicrosandboxError> {
-    let builder = network::add_to_builder(builder, network)?;
+    let builder = network::add_to_builder(builder, network)?
+        .label(network::RULES_LABEL, network::rules_label(network));
 
     secrets::add_to_builder(builder, secrets).create().await
 }
@@ -1082,6 +1175,45 @@ mod tests {
         }
 
         SandboxManager::new(store)
+    }
+
+    /// Polls the future once and returns whether it's still pending.
+    async fn poll_once_pending<F: Future>(mut future: std::pin::Pin<&mut F>) -> bool {
+        std::future::poll_fn(|cx| std::task::Poll::Ready(future.as_mut().poll(cx).is_pending()))
+            .await
+    }
+
+    fn lock_count(manager: &SandboxManager) -> usize {
+        manager.sandbox_locks.lock().unwrap().len()
+    }
+
+    #[tokio::test]
+    async fn released_sandbox_lock_is_removed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = manager_with_secrets(&dir.path().join("secrets.yml"), &[]);
+
+        let guard = manager.lock_sandbox("fbk-unit-lock").await;
+        assert_eq!(lock_count(&manager), 1);
+        drop(guard);
+
+        assert_eq!(lock_count(&manager), 0);
+    }
+
+    #[tokio::test]
+    async fn sandbox_lock_is_kept_while_a_task_waits_for_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = manager_with_secrets(&dir.path().join("secrets.yml"), &[]);
+
+        let first = manager.lock_sandbox("fbk-unit-lock").await;
+        let second = manager.lock_sandbox("fbk-unit-lock");
+        tokio::pin!(second);
+        // Polls the waiting task once, so it takes its reference to the lock and waits.
+        assert!(poll_once_pending(second.as_mut()).await);
+        drop(first);
+        assert_eq!(lock_count(&manager), 1);
+
+        drop(second.await);
+        assert_eq!(lock_count(&manager), 0);
     }
 
     #[test]
