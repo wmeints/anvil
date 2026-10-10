@@ -51,7 +51,7 @@ pub async fn attach(
     args: Vec<String>,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<i32> {
-    let spec = resolve_spec(&working_dir)?;
+    let spec = resolve_spec(&working_dir, client).await?;
     let name = spec.name.clone();
 
     // Done before entering raw mode so progress messages render normally.

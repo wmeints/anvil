@@ -249,8 +249,10 @@ resources:
 | `resources.cpu`    | Number of vCPUs.                                                | `2`                                         |
 | `resources.memory` | Memory in `Mi`/`MiB` or `Gi`/`GiB`, such as `512 MiB` or `4Gi`. | `4 GiB`                                     |
 
-Without `.firebrick.yml`, Firebrick names the sandbox after the full path of the
-working directory and uses the defaults.
+Without `.firebrick.yml`, Firebrick uses the defaults and names the sandbox
+`firebrick-` followed by the first 6 characters of the SHA-256 hash of the full
+path of the working directory, such as `firebrick-d9f287`. A sandbox created by
+an older version keeps its name, such as `home_user_my_project`.
 
 The image, init and resources apply when the sandbox is created. To change them
 for an existing sandbox, run `fbk rm` and start it again.
