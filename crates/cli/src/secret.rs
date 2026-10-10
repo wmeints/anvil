@@ -1,35 +1,70 @@
 //! Secrets that sandboxes use without seeing their values.
 
 use anyhow::{Context, Result, anyhow, bail};
+use clap::ValueEnum;
 use serde::Serialize;
 use std::io::Read;
+use std::path::Path;
 use tonic::transport::Channel;
 
 use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use crate::api::{ListSecretsRequest, RemoveSecretRequest, SecretSummary, SetSecretRequest};
-use crate::manage::OutputFormat;
+use crate::manage::{self, OutputFormat};
 use crate::table;
 
-/// Stores a secret in the daemon, which adds it to all sandboxes.
+/// Which sandboxes a secret belongs to.
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scope {
+    /// Every sandbox, except the ones with a sandbox-scoped secret with the same name.
+    #[default]
+    Global,
+    /// The sandbox for the working directory only. It overrides a global secret with the same
+    /// name.
+    Sandbox,
+}
+
+/// Name `fbk secret ls` shows for the global scope.
+const GLOBAL_SCOPE: &str = "global";
+
+/// A secret to set. It has no `Debug`, so its value can't end up in logs.
+pub struct NewSecret {
+    /// Environment variable that exposes the secret in sandboxes.
+    pub name: String,
+    /// Value of the secret.
+    pub value: String,
+    /// Hosts that may receive the value. Empty uses the defaults for well-known names.
+    pub allowed_hosts: Vec<String>,
+    /// Which sandboxes get the secret.
+    pub scope: Scope,
+}
+
+/// Stores a secret in the daemon, which adds it to the sandboxes in its scope.
 pub async fn set(
-    name: String,
-    value: String,
-    allowed_hosts: Vec<String>,
+    secret: NewSecret,
+    working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
+    let name = secret.name;
+    let sandbox = scoped_sandbox(secret.scope, working_dir, client).await?;
     let response = client
         .set_secret(SetSecretRequest {
             name: name.clone(),
-            value,
-            allowed_hosts,
+            value: secret.value,
+            allowed_hosts: secret.allowed_hosts,
+            sandbox: sandbox.clone(),
         })
         .await
         .map_err(|status| anyhow!("{}", status.message()))?
         .into_inner();
 
-    println!(
-        "Secret {name} set. Sandboxes see the placeholder $MSB_{name}; running sandboxes get it after a restart."
-    );
+    match sandbox {
+        Some(sandbox) => println!(
+            "Secret {name} set for sandbox {sandbox}. The sandbox sees the placeholder $MSB_{name}; it gets it after a restart when it's running."
+        ),
+        None => println!(
+            "Secret {name} set. Sandboxes see the placeholder $MSB_{name}; running sandboxes get it after a restart."
+        ),
+    }
 
     for sandbox in response.failed_sandboxes {
         eprintln!(
@@ -63,45 +98,95 @@ pub async fn list(
     Ok(())
 }
 
-/// Removes a secret from all sandboxes and from the daemon. When a sandbox fails, the daemon
-/// keeps the secret so the removal can be retried.
+/// Removes a secret from the sandboxes in its scope and from the daemon. When a sandbox
+/// fails, the daemon keeps the secret so the removal can be retried.
 pub async fn remove(
     name: String,
+    scope: Scope,
+    working_dir: &Path,
     client: &mut SandboxManagementServiceClient<Channel>,
 ) -> Result<()> {
+    let sandbox = scoped_sandbox(scope, working_dir, client).await?;
     let response = client
-        .remove_secret(RemoveSecretRequest { name: name.clone() })
+        .remove_secret(RemoveSecretRequest {
+            name: name.clone(),
+            sandbox: sandbox.clone(),
+        })
         .await
         .map_err(|status| anyhow!("{}", status.message()))?
         .into_inner();
 
-    if !response.failed_sandboxes.is_empty() {
-        bail!(
-            "couldn't remove secret {name} from sandboxes {}, see the fbkd log for details. \
-             The secret is kept, so run `fbk secret rm {name}` again to retry",
-            response.failed_sandboxes.join(", ")
-        );
-    }
+    ensure_removed(&name, scope, &response.failed_sandboxes)?;
 
-    println!("Secret {name} removed. Running sandboxes keep using it until they restart.");
+    match sandbox {
+        Some(sandbox) => println!(
+            "Secret {name} removed from sandbox {sandbox}. A running sandbox keeps using it until it restarts."
+        ),
+        None => {
+            println!("Secret {name} removed. Running sandboxes keep using it until they restart.")
+        }
+    }
 
     Ok(())
 }
 
-/// Renders the secrets as a table with their name and allowed hosts.
+/// Fails with an error that explains how to retry when the secret couldn't be removed from
+/// some sandboxes.
+fn ensure_removed(name: &str, scope: Scope, failed_sandboxes: &[String]) -> Result<()> {
+    if failed_sandboxes.is_empty() {
+        return Ok(());
+    }
+
+    let retry = match scope {
+        Scope::Global => format!("fbk secret rm {name}"),
+        Scope::Sandbox => format!("fbk secret rm {name} --scope sandbox"),
+    };
+    bail!(
+        "couldn't remove secret {name} from sandboxes {}, see the fbkd log for details. \
+         The secret is kept, so run `{retry}` again to retry",
+        failed_sandboxes.join(", ")
+    );
+}
+
+/// Returns the sandbox for the working directory with the sandbox scope, or `None` with the
+/// global scope.
+async fn scoped_sandbox(
+    scope: Scope,
+    working_dir: &Path,
+    client: &mut SandboxManagementServiceClient<Channel>,
+) -> Result<Option<String>> {
+    match scope {
+        Scope::Global => Ok(None),
+        Scope::Sandbox => Ok(Some(manage::resolve_spec(working_dir, client).await?.name)),
+    }
+}
+
+/// Returns the scope `fbk secret ls` shows: the sandbox's name, or `global`.
+fn scope_of(secret: &SecretSummary) -> &str {
+    secret.sandbox.as_deref().unwrap_or(GLOBAL_SCOPE)
+}
+
+/// Renders the secrets as a table with their name, scope and allowed hosts.
 fn render_table(secrets: &[SecretSummary]) -> Result<String> {
-    let rows: Vec<[String; 2]> = secrets
+    let rows: Vec<[String; 3]> = secrets
         .iter()
-        .map(|secret| [secret.name.clone(), secret.allowed_hosts.join(", ")])
+        .map(|secret| {
+            [
+                secret.name.clone(),
+                scope_of(secret).to_string(),
+                secret.allowed_hosts.join(", "),
+            ]
+        })
         .collect();
 
-    table::render(["NAME", "ALLOWED HOSTS"], &rows)
+    table::render(["NAME", "SCOPE", "ALLOWED HOSTS"], &rows)
 }
 
 /// A secret as printed in the JSON output.
 #[derive(Serialize)]
 struct SecretListing<'a> {
     name: &'a str,
+    scope: &'a str,
     allowed_hosts: &'a [String],
 }
 
@@ -111,6 +196,7 @@ fn render_json(secrets: &[SecretSummary]) -> Result<String> {
         .iter()
         .map(|secret| SecretListing {
             name: &secret.name,
+            scope: scope_of(secret),
             allowed_hosts: &secret.allowed_hosts,
         })
         .collect();
@@ -142,22 +228,34 @@ mod tests {
         SecretSummary {
             name: name.to_string(),
             allowed_hosts: hosts.iter().map(|host| host.to_string()).collect(),
+            sandbox: None,
+        }
+    }
+
+    fn scoped_summary(name: &str, sandbox: &str, hosts: &[&str]) -> SecretSummary {
+        SecretSummary {
+            sandbox: Some(sandbox.to_string()),
+            ..summary(name, hosts)
         }
     }
 
     #[test]
-    fn table_lists_names_and_hosts() {
-        let secrets = [summary("GH_TOKEN", &["github.com", "api.github.com"])];
+    fn table_lists_names_scopes_and_hosts() {
+        let secrets = [
+            summary("GH_TOKEN", &["github.com", "api.github.com"]),
+            scoped_summary("MY_SECRET", "dev", &["example.com"]),
+        ];
 
         let table = render_table(&secrets).unwrap();
 
         assert_eq!(
             table,
-            "┌──────────┬────────────────────────────┐\n\
-             │ NAME     │ ALLOWED HOSTS              │\n\
-             ├──────────┼────────────────────────────┤\n\
-             │ GH_TOKEN │ github.com, api.github.com │\n\
-             └──────────┴────────────────────────────┘\n"
+            "┌───────────┬────────┬────────────────────────────┐\n\
+             │ NAME      │ SCOPE  │ ALLOWED HOSTS              │\n\
+             ├───────────┼────────┼────────────────────────────┤\n\
+             │ GH_TOKEN  │ global │ github.com, api.github.com │\n\
+             │ MY_SECRET │ dev    │ example.com                │\n\
+             └───────────┴────────┴────────────────────────────┘\n"
         );
     }
 
@@ -166,19 +264,26 @@ mod tests {
         let table = render_table(&[]).unwrap();
 
         assert!(table.contains("NAME"), "{table}");
+        assert!(table.contains("SCOPE"), "{table}");
         assert!(table.contains("ALLOWED HOSTS"), "{table}");
     }
 
     #[test]
-    fn json_lists_names_and_hosts() {
-        let secrets = [summary("A", &["example.com"])];
+    fn json_lists_names_scopes_and_hosts() {
+        let secrets = [
+            summary("A", &["example.com"]),
+            scoped_summary("A", "dev", &["example.org"]),
+        ];
 
         let json: serde_json::Value =
             serde_json::from_str(&render_json(&secrets).unwrap()).unwrap();
 
         assert_eq!(
             json,
-            serde_json::json!([{ "name": "A", "allowed_hosts": ["example.com"] }])
+            serde_json::json!([
+                { "name": "A", "scope": "global", "allowed_hosts": ["example.com"] },
+                { "name": "A", "scope": "dev", "allowed_hosts": ["example.org"] },
+            ])
         );
     }
 

@@ -11,8 +11,9 @@ use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementS
 use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, GetSandboxRequest,
     GetSandboxResponse, ListSandboxesRequest, Mount, NetworkPolicy, PortForward, PortForwards,
-    RemoveSandboxRequest, SandboxResources, SandboxStatus, SandboxVolumes, StartSandboxRequest,
-    StartSandboxResponse, StopSandboxRequest, attach_request, attach_response,
+    RemoveSandboxRequest, RemoveSecretRequest, SandboxResources, SandboxStatus, SandboxVolumes,
+    SetSecretRequest, StartSandboxRequest, StartSandboxResponse, StopSandboxRequest,
+    attach_request, attach_response,
 };
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{mise, sandboxes, server};
@@ -1324,6 +1325,154 @@ async fn existing_sandbox_loses_removed_secret_after_restart() {
     let (output, code) = run_print_env(&mut client, NAME, "FIREBRICK_IT_TOKEN").await;
 
     assert_ne!(code, 0, "secret is still set: {output:?}");
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+/// Returns the allowed hosts microsandbox stores for the sandbox's secret, as debug text. The
+/// guest sees the same placeholder for every value, so the hosts tell which secret it got.
+async fn stored_secret_hosts(sandbox: &str, var: &str) -> String {
+    let spec = sandbox_spec(sandbox).await;
+    let entry = spec
+        .network
+        .secrets
+        .iter()
+        .flat_map(|config| &config.secrets)
+        .find(|entry| entry.env_var == var)
+        .unwrap_or_else(|| panic!("sandbox {sandbox} has no secret {var}"));
+
+    format!("{:?}", entry.allowed_hosts)
+}
+
+/// Returns a secret with the name for the host.
+fn secret_for_host(name: &str, host: &str) -> Secret {
+    Secret::new(
+        name.to_string(),
+        "fbk-it-secret-value".to_string(),
+        vec![host.to_string()],
+    )
+    .unwrap()
+}
+
+/// Sets a secret for `host` scoped to the sandbox and checks it was added to the sandbox.
+async fn set_scoped_secret(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    sandbox: &str,
+    var: &str,
+    host: &str,
+) {
+    let response = client
+        .set_secret(SetSecretRequest {
+            name: var.to_string(),
+            value: "fbk-it-scoped-value".to_string(),
+            allowed_hosts: vec![host.to_string()],
+            sandbox: Some(sandbox.to_string()),
+        })
+        .await
+        .expect("failed to set scoped secret")
+        .into_inner();
+
+    assert!(response.failed_sandboxes.is_empty(), "{response:?}");
+}
+
+/// Removes the secret scoped to the sandbox and checks it was removed from the sandbox.
+async fn remove_scoped_secret(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    sandbox: &str,
+    var: &str,
+) {
+    let response = client
+        .remove_secret(RemoveSecretRequest {
+            name: var.to_string(),
+            sandbox: Some(sandbox.to_string()),
+        })
+        .await
+        .expect("failed to remove scoped secret")
+        .into_inner();
+
+    assert!(response.failed_sandboxes.is_empty(), "{response:?}");
+}
+
+/// Checks that the running sandbox sees the secret's placeholder, and that microsandbox stores
+/// the secret for `host`.
+async fn assert_sees_secret_for_host(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    sandbox: &str,
+    var: &str,
+    host: &str,
+) {
+    let output = print_env(client, sandbox, var).await;
+    assert!(output.contains(&format!("$MSB_{var}")), "{output:?}");
+
+    let hosts = stored_secret_hosts(sandbox, var).await;
+    assert!(hosts.contains(&format!("{host:?}")), "{sandbox}: {hosts}");
+}
+
+#[tokio::test]
+async fn sandbox_scoped_secret_overrides_global_secret_after_restart() {
+    const SCOPED: &str = "fbk-it-secret-scoped";
+    const OTHER: &str = "fbk-it-secret-unscoped";
+    const VAR: &str = "FIREBRICK_IT_SCOPED_TOKEN";
+    remove_sandbox(SCOPED).await;
+    remove_sandbox(OTHER).await;
+
+    // The global secret is stored up front, because the global SetSecret RPC would change every
+    // firebrick sandbox on the host.
+    let dir = tempfile::tempdir().unwrap();
+    let store = SecretStore::new(dir.path().join("secrets.yml"));
+    store
+        .set(secret_for_host(VAR, "global.example.com"))
+        .unwrap();
+
+    let daemon = TestDaemon::start_with_secrets("secret-scoped", store).await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, SCOPED).await;
+    start_running_sandbox(&mut client, OTHER).await;
+
+    set_scoped_secret(&mut client, SCOPED, VAR, "scoped.example.com").await;
+    restart_sandbox(&mut client, SCOPED).await;
+    restart_sandbox(&mut client, OTHER).await;
+
+    assert_sees_secret_for_host(&mut client, SCOPED, VAR, "scoped.example.com").await;
+    assert_sees_secret_for_host(&mut client, OTHER, VAR, "global.example.com").await;
+
+    remove_scoped_secret(&mut client, SCOPED, VAR).await;
+    restart_sandbox(&mut client, SCOPED).await;
+
+    assert_sees_secret_for_host(&mut client, SCOPED, VAR, "global.example.com").await;
+
+    daemon.stop().await;
+    remove_sandbox(SCOPED).await;
+    remove_sandbox(OTHER).await;
+}
+
+#[tokio::test]
+async fn remove_sandbox_removes_its_scoped_secrets() {
+    const NAME: &str = "fbk-it-secret-scoped-rm";
+    remove_sandbox(NAME).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("secrets.yml");
+    let global = secret_for_host("FIREBRICK_IT_TOKEN", "example.com");
+    SecretStore::new(&path).set(global.clone()).unwrap();
+
+    let daemon = TestDaemon::start_with_secrets("secret-scoped-rm", SecretStore::new(&path)).await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+
+    set_scoped_secret(&mut client, NAME, "FIREBRICK_IT_TOKEN", "example.com").await;
+    assert_eq!(SecretStore::new(&path).load().unwrap().len(), 2);
+
+    client
+        .remove_sandbox(RemoveSandboxRequest {
+            name: NAME.to_string(),
+            force: true,
+        })
+        .await
+        .expect("failed to remove sandbox");
+
+    assert_eq!(SecretStore::new(&path).load().unwrap(), [global]);
 
     daemon.stop().await;
     remove_sandbox(NAME).await;

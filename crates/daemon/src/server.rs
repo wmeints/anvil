@@ -14,7 +14,9 @@ use crate::api::{
     StopSandboxRequest, StopSandboxResponse, attach_request, ssh_tunnel_request,
 };
 use crate::forward::{ForwardFailure, ForwardReport};
-use crate::sandboxes::{Resources, SandboxError, SandboxInfo, SandboxManager, StartSandbox};
+use crate::sandboxes::{
+    NewSecret, Resources, SandboxError, SandboxInfo, SandboxManager, StartSandbox,
+};
 use crate::secrets::{Secret, SecretStore};
 use crate::session::{self, SessionCommand};
 use crate::tunnel;
@@ -221,8 +223,8 @@ impl SandboxManagementService for FirebrickServer {
         Ok(Response::new(start_response(report)))
     }
 
-    /// Stores a secret and adds it to the existing sandboxes. Running sandboxes pick it up the
-    /// next time they start.
+    /// Stores a secret and adds it to the existing sandboxes in its scope. Running sandboxes
+    /// pick it up the next time they start.
     async fn set_secret(
         &self,
         request: Request<SetSecretRequest>,
@@ -230,17 +232,18 @@ impl SandboxManagementService for FirebrickServer {
         let request_data = request.into_inner();
         let failed_sandboxes = self
             .sandboxes
-            .set_secret(
-                request_data.name,
-                request_data.value,
-                request_data.allowed_hosts,
-            )
+            .set_secret(NewSecret {
+                name: request_data.name,
+                value: request_data.value,
+                allowed_hosts: request_data.allowed_hosts,
+                sandbox: request_data.sandbox,
+            })
             .await?;
 
         Ok(Response::new(SetSecretResponse { failed_sandboxes }))
     }
 
-    /// Lists the stored secrets by name, without their values.
+    /// Lists the stored secrets by name and scope, without their values.
     async fn list_secrets(
         &self,
         _request: Request<ListSecretsRequest>,
@@ -255,14 +258,17 @@ impl SandboxManagementService for FirebrickServer {
         Ok(Response::new(ListSecretsResponse { secrets }))
     }
 
-    /// Removes a stored secret and removes it from the existing sandboxes. Running sandboxes
-    /// keep it until they restart.
+    /// Removes a stored secret and removes it from the existing sandboxes in its scope. Running
+    /// sandboxes keep it until they restart.
     async fn remove_secret(
         &self,
         request: Request<RemoveSecretRequest>,
     ) -> Result<Response<RemoveSecretResponse>, Status> {
-        let name = request.into_inner().name;
-        let failed_sandboxes = self.sandboxes.remove_secret(&name).await?;
+        let request = request.into_inner();
+        let failed_sandboxes = self
+            .sandboxes
+            .remove_secret(&request.name, request.sandbox.as_deref())
+            .await?;
 
         Ok(Response::new(RemoveSecretResponse { failed_sandboxes }))
     }
@@ -388,6 +394,7 @@ fn secret_summary(secret: &Secret) -> SecretSummary {
     SecretSummary {
         name: secret.name().to_string(),
         allowed_hosts: secret.allowed_hosts().to_vec(),
+        sandbox: secret.sandbox().map(str::to_string),
     }
 }
 
@@ -992,6 +999,7 @@ mod tests {
                 name: "NOT-A-NAME".to_string(),
                 value: "value".to_string(),
                 allowed_hosts: vec![],
+                sandbox: None,
             }))
             .await
             .expect_err("an invalid name should be rejected");
@@ -1017,9 +1025,31 @@ mod tests {
             .map(|name| SecretSummary {
                 name: name.to_string(),
                 allowed_hosts: vec!["example.com".to_string()],
+                sandbox: None,
             })
             .into();
         assert_eq!(secrets, expected);
+    }
+
+    #[tokio::test]
+    async fn list_secrets_returns_the_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_secrets(&dir.path().join("secrets.yml"), &["A"]);
+        let secret = Secret::new("A".into(), "value".into(), vec!["example.com".into()]).unwrap();
+        store.set(secret.in_scope(Some("dev".into()))).unwrap();
+        let server = FirebrickServer::new(store);
+
+        let scopes: Vec<Option<String>> = server
+            .list_secrets(Request::new(ListSecretsRequest {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .secrets
+            .into_iter()
+            .map(|secret| secret.sandbox)
+            .collect();
+
+        assert_eq!(scopes, [None, Some("dev".to_string())]);
     }
 
     #[tokio::test]
@@ -1029,6 +1059,7 @@ mod tests {
         let status = server
             .remove_secret(Request::new(RemoveSecretRequest {
                 name: "NOT-A-NAME".to_string(),
+                sandbox: None,
             }))
             .await
             .expect_err("an invalid name should be rejected");
@@ -1048,6 +1079,7 @@ mod tests {
         let status = server
             .remove_secret(Request::new(RemoveSecretRequest {
                 name: "B".to_string(),
+                sandbox: None,
             }))
             .await
             .expect_err("removing an unknown secret should fail");
