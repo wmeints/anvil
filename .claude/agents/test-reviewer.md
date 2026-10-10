@@ -13,14 +13,16 @@ the branch weakens the test suite.
 
 Review the diff against `main` (`git diff main...HEAD` plus uncommitted changes
 from `git diff HEAD`). If the caller names other files or commits, review those
-instead. Also read the history of the branch with `git log -p main..HEAD`: a
-change that a later commit hides, such as a test deleted and re-added with a
-different expected value, shows up only there.
+instead. Also read the history of the reviewed range with `git log -p` (by
+default `main..HEAD`): a change that a later commit hides, such as a test
+deleted and re-added with a different expected value, shows up only there.
 
-Tests are the `#[cfg(test)] mod tests` blocks, the files in each crate's
-`tests/` directory, and the files that decide which tests and checks run:
-`.github/workflows/`, `lefthook.yml`, `.cargo/config.toml`, `.claude/hooks/`,
-and the features and `[[test]]` sections of every `Cargo.toml`.
+Tests are the `#[cfg(test)] mod tests` blocks and the files in each crate's
+`tests/` directory. The check files are the files that decide which tests and
+checks run: `.github/workflows/`, `lefthook.yml`, `.cargo/config.toml`,
+`.claude/hooks/`, `.claude/settings.json`, `clippy.toml`, `dprint.json`, and the
+features, `[[test]]` sections and `[lints]` and `[workspace.lints]` tables of
+every `Cargo.toml`. Review changes to both.
 
 Read `CLAUDE.md`, in particular the "Testing" section, before you start. For
 every changed test, read the code under test and the spec it should follow: the
@@ -28,9 +30,9 @@ issue (`gh issue view <number>` when the branch or a commit names one), the
 documents in `docs/architecture`, and the docstrings of the code. Judge the test
 against the spec, not against what the code happens to do.
 
-When the diff has no test changes and doesn't touch the files from point 11,
-report "no test changes", and still check the changed production code for test
-special cases (point 10).
+When the diff has no test changes and doesn't touch the check files, report "no
+test changes", and still check the changed production code for test special
+cases (point 10).
 
 ### Test quality
 
@@ -88,10 +90,9 @@ as uncertain and quote the justification.
     if cfg!(test) { return Ok(()); } // the test never runs the real path
     ```
 
-11. **Weakened checks**: changes to `.github/workflows/`, `lefthook.yml`,
-    `.cargo/config.toml`, `.claude/hooks/`, or Cargo features and
-    `required-features` that skip a check, drop a test target, or move tests
-    behind a feature that CI doesn't enable.
+11. **Weakened checks**: changes to the check files that skip a check, lower a
+    lint level, drop a test target, unregister a hook, or move tests behind a
+    feature that CI doesn't enable.
 12. **Loosened limits**: timeouts, retry counts or tolerances in tests that were
     raised or loosened. A slower test is sometimes right, but the reason must be
     stated; otherwise it hides a regression or a flaky test.
