@@ -21,7 +21,7 @@
   and linted by ESLint and `astro check`, all failing on warnings. It is a
   static site under the GitHub Pages base path that makes no third-party
   requests. See
-  [ADR 0028](decisions/0028-check-the-website-with-eslint-prettier-vitest-and-playwright.md).
+  [ADR 0029](decisions/0029-check-the-website-with-eslint-prettier-vitest-and-playwright.md).
 
 - **Architecture documentation:** we use [Arc42][ARC42] style architecture
   documentation.

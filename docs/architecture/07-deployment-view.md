@@ -2,13 +2,20 @@
 
 ## Release artifacts
 
-Pushing a tag such as `v0.1.0` runs `.github/workflows/release.yaml`, which
-publishes:
+A release starts with a pull request that bumps the workspace version in
+`Cargo.toml` and adds the release notes to `CHANGELOG.md`; the `create-release`
+skill prepares it. When it merges, `.github/workflows/tag-release.yaml` tags the
+merge commit with the new version, such as `v0.4.0`, and calls
+`.github/workflows/release.yaml` with the tag. A push to main that changes
+`Cargo.toml` without changing the version releases nothing, because its tag
+exists already. Pushing a tag by hand runs `release.yaml` as well.
+`release.yaml` publishes:
 
 - A `firebrick-<tag>-<target>.tar.gz` archive per target, with a `.sha256`
-  checksum, attached to a GitHub release with generated release notes. Each
-  archive holds one directory with the `fbk` and `fbkd` binaries side by side,
-  because the CLI starts the daemon from its own directory.
+  checksum, attached to a GitHub release. The release notes are the tag's
+  section of `CHANGELOG.md`, followed by GitHub's generated list of pull
+  requests. Each archive holds one directory with the `fbk` and `fbkd` binaries
+  side by side, because the CLI starts the daemon from its own directory.
 - The `ghcr.io/wmeints/firebrick-base:<tag>` image, built from the `Dockerfile`
   for `linux/amd64` and `linux/arm64`. The image is pushed only after every
   archive has built. GHCR makes a package private when it's first published, so

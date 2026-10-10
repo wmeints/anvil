@@ -157,6 +157,10 @@ A change is done when:
 - Use the `sandbox-reference` skill before relying on how the `microsandbox`
   crate behaves. It shows where to find the source of the locked version and
   lists the behavior and limits we already know.
+- Use the `create-release` skill to release a new version. It opens a version
+  bump PR with the release notes in `CHANGELOG.md` and merges it once the checks
+  pass; `.github/workflows/tag-release.yaml` then tags the version and calls the
+  release workflow.
 - Use the `submit-pr` skill to open a PR. It runs the checks and the
   `review-branch` workflow (`.claude/workflows/review-branch.js`), so don't run
   the review agents before each commit. The workflow runs the

@@ -1,0 +1,56 @@
+name: Tag release
+
+# Tag the workspace version when a version bump reaches main, then publish the release.
+# A tag pushed with the GITHUB_TOKEN doesn't start other workflows, so this calls release.yaml directly.
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
+  workflow_dispatch:
+
+# Never run two taggers at once, and never cancel one halfway through a release.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Tag the workspace version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # A Cargo.toml change that keeps the version, such as a new dependency, has a tag already and releases nothing.
+      - name: Create the tag
+        id: tag
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "firebrick-spec") | .version')
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "Tag $tag exists, nothing to release"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $tag" "$GITHUB_SHA"
+          git push origin "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Release
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    uses: ./.github/workflows/release.yaml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+    permissions:
+      contents: write
+      packages: write

@@ -1,4 +1,4 @@
-# 28. Check the website with ESLint, Prettier, Vitest and Playwright
+# 29. Check the website with ESLint, Prettier, Vitest and Playwright
 
 ## Status
 

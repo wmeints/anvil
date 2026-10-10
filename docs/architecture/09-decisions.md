@@ -27,4 +27,5 @@
 - [ADR 0025 - Match image pull errors on their types](decisions/0025-match-image-pull-errors-on-their-types.md)
 - [ADR 0026 - Relay URLs to the host through an exec stream](decisions/0026-relay-urls-to-the-host-through-an-exec-stream.md)
 - [ADR 0027 - Build the website with Astro, Starlight and Tailwind](decisions/0027-build-the-website-with-astro-starlight-and-tailwind.md)
-- [ADR 0028 - Check the website with ESLint, Prettier, Vitest and Playwright](decisions/0028-check-the-website-with-eslint-prettier-vitest-and-playwright.md)
+- [ADR 0028 - Release by merging a version bump pull request](decisions/0028-release-by-merging-a-version-bump-pull-request.md)
+- [ADR 0029 - Check the website with ESLint, Prettier, Vitest and Playwright](decisions/0029-check-the-website-with-eslint-prettier-vitest-and-playwright.md)
