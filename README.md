@@ -229,11 +229,12 @@ fbk run bash
 The sandbox keeps running after the command exits.
 
 When the project pins its tools with [mise](https://mise.jdx.dev), Firebrick
-installs them when it creates or starts the sandbox. It trusts the `mise.toml`,
-`.mise.toml`, `mise/config.toml`, `.config/mise.toml` and `.tool-versions` files
-at the root of the project and runs `mise install`, so `fbk start` returns with
-the tools ready. When `mise install` fails, `fbk start` prints mise's error and
-the sandbox keeps running, so you can connect and fix the config. Images without
+installs them when `fbk start` or `fbk run` creates or starts the sandbox, but
+not when an SSH connection starts it. It trusts the `mise.toml`, `.mise.toml`,
+`mise/config.toml`, `.config/mise.toml` and `.tool-versions` files at the root
+of the project and runs `mise install`, so `fbk start` returns with the tools
+ready. When `mise install` fails, `fbk start` prints mise's error and the
+sandbox keeps running, so you can connect and fix the config. Images without
 mise skip this step. Set `mise: false` in `.firebrick.yml` to turn it off.
 
 ### Configuring a sandbox

@@ -211,10 +211,14 @@ start, or when the workspace has none of the files.
 
 The `mise` option in `.firebrick.yml` (default `true`) turns this off. fbkd
 stores it as the `firebrick.mise` label when it creates the sandbox and every
-later start follows the label, because `fbk start <name>`, `fbk run` and SSH
-connections send `StartSandbox` without the spec. A sandbox without the label
-was created before the option existed and installs the tools, like a request
-without `mise`.
+later `StartSandbox` follows the label, because `fbk start <name>` and `fbk run`
+send `StartSandbox` without the spec. A sandbox without the label was created
+before the option existed and installs the tools, like a request without `mise`.
+
+An SSH connection to a stopped sandbox starts it through the tunnel instead of
+`StartSandbox`, and doesn't install the mise tools, so the SSH handshake never
+waits for a long `mise install`. The tools from an earlier install stay on the
+sandbox's disk; run `fbk start` to install changed ones.
 
 - `mise trust` or `mise install` exits non-zero or doesn't finish within 30
   minutes: `StartSandbox` returns `FAILED_PRECONDITION` with `mise install
@@ -267,12 +271,11 @@ sequenceDiagram
         end
         D->>MS: List sandboxes for taken host names
         D->>D: Pick unique project.fbk host name
-        D->>MS: Create detached sandbox (image, init, cpus, memory, label,<br/>workspace mounted at /workspaces/project,<br/>owned ext4 disk at /var/lib/docker)
+        D->>MS: Create detached sandbox (image, init, cpus, memory,<br/>firebrick.hostname and firebrick.mise labels,<br/>workspace mounted at /workspaces/project,<br/>owned ext4 disk at /var/lib/docker)
         alt init on and image has no /sbin/init
             D->>MS: Remove the half-created sandbox
             Note over D: Result: FAILED_PRECONDITION (set init: false)
         end
-        D->>MS: Store mise setting as firebrick.mise label
     end
 
     opt Sandbox was created or started, mise on, workspace has a mise config file

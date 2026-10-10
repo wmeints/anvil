@@ -66,7 +66,7 @@ pub fn is_enabled(labels: &BTreeMap<String, String>) -> bool {
 }
 
 /// Returns the guest paths of the mise config files that can exist at the workspace root.
-pub fn config_paths(workspace: &str) -> Vec<String> {
+fn config_paths(workspace: &str) -> Vec<String> {
     let workspace = workspace.trim_end_matches('/');
     CONFIG_FILES
         .iter()
@@ -75,7 +75,7 @@ pub fn config_paths(workspace: &str) -> Vec<String> {
 }
 
 /// Returns the last `lines` non-empty lines of `output`.
-pub fn tail(output: &str, lines: usize) -> String {
+fn tail(output: &str, lines: usize) -> String {
     let all: Vec<&str> = output
         .lines()
         .filter(|line| !line.trim().is_empty())

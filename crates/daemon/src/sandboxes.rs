@@ -1,6 +1,6 @@
 //! Sandbox management on top of microsandbox: the sandbox lifecycle, the workspace's mise
-//! tools, the secrets of sandboxes, SSH host names, the generated SSH config, the editors' Remote-SSH settings and
-//! Zed's remote projects.
+//! tools, the secrets of sandboxes, SSH host names, the generated SSH config, the editors'
+//! Remote-SSH settings and Zed's remote projects.
 
 use crate::mise::{self, MiseError};
 use crate::secrets::{self, Secret, SecretStore};
@@ -323,21 +323,22 @@ impl SandboxManager {
         request: StartSandbox<'_>,
         resources: impl FnOnce() -> Result<Resources, SandboxError>,
     ) -> Result<(), SandboxError> {
-        let sb = self.create_sandbox(request, resources).await?;
+        let (sb, guest_path) = self.create_sandbox(request, resources).await?;
 
         if request.mise {
-            install_mise_tools(&sb, &workspace_mount_path(request.workspace)?).await?;
+            install_mise_tools(&sb, &guest_path).await?;
         }
 
         Ok(())
     }
 
-    /// Creates a sandbox for the workspace with the stored secrets.
+    /// Creates a sandbox for the workspace with the stored secrets. Returns it with the guest
+    /// path of its workspace.
     async fn create_sandbox(
         &self,
         request: StartSandbox<'_>,
         resources: impl FnOnce() -> Result<Resources, SandboxError>,
-    ) -> Result<Sandbox, SandboxError> {
+    ) -> Result<(Sandbox, String), SandboxError> {
         let guest_path = workspace_mount_path(request.workspace)?;
         let resources = resources()?;
         let hostname = ssh::pick_hostname(request.workspace, &taken_hostnames().await?);
@@ -369,7 +370,7 @@ impl SandboxManager {
 
         tracing::info!("created sandbox {} as {hostname}", request.name);
 
-        Ok(sb)
+        Ok((sb, guest_path))
     }
 }
 
