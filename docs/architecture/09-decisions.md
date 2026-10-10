@@ -14,3 +14,4 @@
 - [ADR 0012 - Rename Anvil to Firebrick](decisions/0012-rename-anvil-to-firebrick.md)
 - [ADR 0013 - Share the gRPC code through a proto crate](decisions/0013-share-the-grpc-code-through-a-proto-crate.md)
 - [ADR 0014 - Name sandboxes after a hash of the working directory](decisions/0014-name-sandboxes-after-a-hash-of-the-working-directory.md)
+- [ADR 0015 - Give each sandbox a Docker data disk](decisions/0015-give-each-sandbox-a-docker-data-disk.md)

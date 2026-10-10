@@ -11,13 +11,14 @@ use firebrick_daemon::api::sandbox_management_service_client::SandboxManagementS
 use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, GetSandboxRequest,
     GetSandboxResponse, ListSandboxesRequest, RemoveSandboxRequest, SandboxResources,
-    SandboxStatus, StartSandboxRequest, StopSandboxRequest, attach_request, attach_response,
+    SandboxStatus, SandboxVolumes, StartSandboxRequest, StopSandboxRequest, attach_request,
+    attach_response,
 };
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{sandboxes, server};
 use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
-use microsandbox::sandbox::{RootfsSource, SandboxSpec};
+use microsandbox::sandbox::{OwnedVolumeStorage, RootfsSource, SandboxSpec, VolumeMount};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -238,6 +239,27 @@ async fn sandbox_spec(name: &str) -> SandboxSpec {
         .spec
 }
 
+/// Returns the capacity in MiB of the sandbox-owned disk mounted at `/var/lib/docker`.
+fn docker_disk_mib(spec: &SandboxSpec) -> Option<u32> {
+    spec.mounts.iter().find_map(|mount| match mount {
+        VolumeMount::Owned {
+            guest,
+            storage: OwnedVolumeStorage::Disk { capacity_mib },
+            ..
+        } if guest == "/var/lib/docker" => Some(*capacity_mib),
+        _ => None,
+    })
+}
+
+/// Returns the host directory that holds the sandbox's owned volumes, such as its Docker disk.
+fn owned_volumes_dir(name: &str) -> PathBuf {
+    microsandbox::config::config()
+        .expect("failed to read microsandbox config")
+        .sandboxes_dir()
+        .join(name)
+        .join("owned-volumes")
+}
+
 #[tokio::test]
 async fn list_sandboxes_succeeds() {
     let daemon = TestDaemon::start("list").await;
@@ -408,18 +430,18 @@ async fn start_sandbox_uses_requested_image_and_resources() {
     let daemon = TestDaemon::start("resources").await;
     let mut client = daemon.client().await;
 
-    client
-        .start_sandbox(StartSandboxRequest {
-            image: "alpine:3.22".to_string(),
-            resources: Some(SandboxResources {
-                cpu: 1,
-                memory: "1 GiB".to_string(),
-            }),
-            ..start_request(NAME)
-        })
-        .await
-        .expect("failed to create sandbox");
-    wait_for_status(&mut client, NAME, SandboxStatus::Running).await;
+    let request = StartSandboxRequest {
+        image: "alpine:3.22".to_string(),
+        resources: Some(SandboxResources {
+            cpu: 1,
+            memory: "1 GiB".to_string(),
+        }),
+        volumes: Some(SandboxVolumes {
+            docker: "1 GiB".to_string(),
+        }),
+        ..start_request(NAME)
+    };
+    start_and_wait(&mut client, request).await;
 
     let spec = sandbox_spec(NAME).await;
 
@@ -430,7 +452,62 @@ async fn start_sandbox_uses_requested_image_and_resources() {
     );
     assert_eq!(spec.resources.cpus, 1);
     assert_eq!(spec.resources.memory_mib, 1024);
+    assert_eq!(docker_disk_mib(&spec), Some(1024));
     assert!(spec.init.is_none(), "unexpected init: {:?}", spec.init);
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
+async fn sandbox_gets_default_docker_disk_that_survives_restart() {
+    const NAME: &str = "fbk-it-docker-disk";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("docker-disk").await;
+    let mut client = daemon.client().await;
+    // The test request has no resources or volumes and init disabled, like a non-firebrick image.
+    start_running_sandbox(&mut client, NAME).await;
+
+    assert_eq!(docker_disk_mib(&sandbox_spec(NAME).await), Some(20 * 1024));
+
+    let script = "mount | grep ' /var/lib/docker '; echo kept > /var/lib/docker/marker";
+    let (output, code) = run_command(&mut client, NAME, "sh", &["-c", script]).await;
+    assert_eq!(code, 0, "unexpected output: {output:?}");
+    assert!(output.contains("type ext4"), "unexpected mount: {output:?}");
+
+    restart_sandbox(&mut client, NAME).await;
+
+    let (output, code) = run_command(&mut client, NAME, "cat", &["/var/lib/docker/marker"]).await;
+    assert_eq!(code, 0, "unexpected output: {output:?}");
+    assert!(output.contains("kept"), "marker was lost: {output:?}");
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+}
+
+#[tokio::test]
+async fn remove_sandbox_removes_docker_disk() {
+    const NAME: &str = "fbk-it-docker-disk-rm";
+    remove_sandbox(NAME).await;
+
+    let daemon = TestDaemon::start("docker-disk-rm").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+    stop_sandbox(&mut client, NAME).await;
+
+    let disk_dir = owned_volumes_dir(NAME);
+    assert!(disk_dir.exists(), "no disk at {}", disk_dir.display());
+
+    client
+        .remove_sandbox(RemoveSandboxRequest {
+            name: NAME.to_string(),
+            ..Default::default()
+        })
+        .await
+        .expect("failed to remove sandbox");
+
+    assert!(!disk_dir.exists(), "disk kept at {}", disk_dir.display());
 
     daemon.stop().await;
     remove_sandbox(NAME).await;
@@ -472,19 +549,28 @@ async fn start_sandbox_rejects_invalid_resources() {
     let daemon = TestDaemon::start("bad-resources").await;
     let mut client = daemon.client().await;
 
-    let status = client
-        .start_sandbox(StartSandboxRequest {
-            resources: Some(SandboxResources {
-                cpu: 2,
-                memory: "lots".to_string(),
-            }),
-            ..start_request(NAME)
-        })
-        .await
-        .expect_err("start_sandbox should reject invalid memory");
+    for (memory, docker) in [("lots", ""), ("1 GiB", "20 GB")] {
+        let status = client
+            .start_sandbox(StartSandboxRequest {
+                resources: Some(SandboxResources {
+                    cpu: 2,
+                    memory: memory.to_string(),
+                }),
+                volumes: Some(SandboxVolumes {
+                    docker: docker.to_string(),
+                }),
+                ..start_request(NAME)
+            })
+            .await
+            .expect_err("start_sandbox should reject invalid resources");
 
-    assert_eq!(status.code(), Code::InvalidArgument);
-    assert!(Sandbox::get(NAME).await.is_err(), "sandbox was created");
+        assert_eq!(
+            status.code(),
+            Code::InvalidArgument,
+            "{memory:?}, {docker:?}"
+        );
+        assert!(Sandbox::get(NAME).await.is_err(), "sandbox was created");
+    }
 
     daemon.stop().await;
     remove_sandbox(NAME).await;

@@ -19,7 +19,7 @@ use crate::session::{self, SessionCommand};
 use crate::tunnel;
 use anyhow::Result;
 use async_trait::async_trait;
-use firebrick_spec::SandboxResourcesSpec;
+use firebrick_spec::{SandboxResourcesSpec, VolumesSpec};
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -100,7 +100,7 @@ impl SandboxManagementService for FirebrickServer {
 
         self.sandboxes
             .start(start_sandbox_from(&request_data), || {
-                sandbox_resources(request_data.resources.clone())
+                sandbox_resources(&request_data)
             })
             .await?;
 
@@ -276,10 +276,10 @@ fn secret_summary(secret: &Secret) -> SecretSummary {
     }
 }
 
-/// Converts requested resources to vCPUs and MiB of memory, using the default resources when
-/// the request has none.
-fn sandbox_resources(resources: Option<SandboxResources>) -> Result<Resources, SandboxError> {
-    let resources = resources.unwrap_or_else(|| {
+/// Converts the requested resources and volumes to vCPUs and MiB, using the defaults for
+/// missing resources, missing volumes and an empty volume size.
+fn sandbox_resources(request: &StartSandboxRequest) -> Result<Resources, SandboxError> {
+    let resources = request.resources.clone().unwrap_or_else(|| {
         let defaults = SandboxResourcesSpec::default();
 
         SandboxResources {
@@ -287,15 +287,29 @@ fn sandbox_resources(resources: Option<SandboxResources>) -> Result<Resources, S
             memory: defaults.memory,
         }
     });
+    let docker_volume = request
+        .volumes
+        .as_ref()
+        .map(|volumes| volumes.docker.clone())
+        .filter(|size| !size.is_empty())
+        .unwrap_or_else(|| VolumesSpec::default().docker);
 
     let cpus = u8::try_from(resources.cpu)
         .ok()
         .filter(|cpus| *cpus > 0)
         .ok_or_else(|| SandboxError::InvalidArgument("cpu must be between 1 and 255".into()))?;
-    let memory_mib = firebrick_spec::parse_memory_mib(&resources.memory)
-        .map_err(|err| SandboxError::InvalidArgument(err.to_string()))?;
 
-    Ok(Resources { cpus, memory_mib })
+    Ok(Resources {
+        cpus,
+        memory_mib: parse_size_mib(&resources.memory)?,
+        docker_volume_mib: parse_size_mib(&docker_volume)?,
+    })
+}
+
+/// Parses a requested size into MiB, reporting a bad size as an invalid argument.
+fn parse_size_mib(size: &str) -> Result<u32, SandboxError> {
+    firebrick_spec::parse_size_mib(size)
+        .map_err(|err| SandboxError::InvalidArgument(err.to_string()))
 }
 
 /// Serves the gRPC API on the socket until SIGINT or SIGTERM is received.
@@ -397,6 +411,7 @@ fn map_sandbox_status(s: microsandbox::sandbox::SandboxStatus) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::SandboxVolumes;
     use crate::api::sandbox_management_service_client::SandboxManagementServiceClient;
     use hyper_util::rt::TokioIo;
     use microsandbox::sandbox::SandboxStatus as MsbStatus;
@@ -533,47 +548,77 @@ mod tests {
         }
     }
 
+    /// Returns a start request with the resources and Docker volume size.
+    fn resources_request(cpu: u32, memory: &str, docker: Option<&str>) -> StartSandboxRequest {
+        StartSandboxRequest {
+            resources: Some(SandboxResources {
+                cpu,
+                memory: memory.to_string(),
+            }),
+            volumes: docker.map(|docker| SandboxVolumes {
+                docker: docker.to_string(),
+            }),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn sandbox_resources_converts_request() {
-        let resources = SandboxResources {
-            cpu: 4,
-            memory: "8 GiB".to_string(),
-        };
+        let request = resources_request(4, "8 GiB", Some("40 GiB"));
 
         assert_eq!(
-            sandbox_resources(Some(resources)).unwrap(),
+            sandbox_resources(&request).unwrap(),
             Resources {
                 cpus: 4,
-                memory_mib: 8192
+                memory_mib: 8192,
+                docker_volume_mib: 40960,
             }
         );
     }
 
     #[test]
+    fn sandbox_resources_uses_default_docker_volume_when_missing_or_empty() {
+        for docker in [None, Some("")] {
+            let request = resources_request(4, "8 GiB", docker);
+
+            assert_eq!(
+                sandbox_resources(&request).unwrap().docker_volume_mib,
+                20480,
+                "{docker:?}"
+            );
+        }
+    }
+
+    #[test]
     fn sandbox_resources_falls_back_to_defaults() {
         assert_eq!(
-            sandbox_resources(None).unwrap(),
+            sandbox_resources(&StartSandboxRequest::default()).unwrap(),
             Resources {
                 cpus: 2,
-                memory_mib: 4096
+                memory_mib: 4096,
+                docker_volume_mib: 20480,
             }
         );
     }
 
     #[test]
     fn sandbox_resources_rejects_invalid_values() {
-        let cases = [(0, "1 GiB"), (256, "1 GiB"), (2, "lots"), (2, "")];
+        let cases = [
+            (0, "1 GiB", None),
+            (256, "1 GiB", None),
+            (2, "lots", None),
+            (2, "", None),
+            (2, "1 GiB", Some("20 GB")),
+            (2, "1 GiB", Some("0 GiB")),
+        ];
 
-        for (cpu, memory) in cases {
-            let resources = SandboxResources {
-                cpu,
-                memory: memory.to_string(),
-            };
+        for (cpu, memory, docker) in cases {
+            let request = resources_request(cpu, memory, docker);
 
             assert_eq!(
-                Status::from(sandbox_resources(Some(resources)).unwrap_err()).code(),
+                Status::from(sandbox_resources(&request).unwrap_err()).code(),
                 tonic::Code::InvalidArgument,
-                "cpu {cpu}, memory {memory:?} should be rejected"
+                "cpu {cpu}, memory {memory:?}, docker {docker:?} should be rejected"
             );
         }
     }

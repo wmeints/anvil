@@ -75,6 +75,17 @@ build on it when `Cargo.lock` has a newer version.
   `.init("auto")` probes common init paths and refuses to boot an image that has
   none, so firebrick passes an explicit path (ADR 0007).
 
+**Volumes**
+
+- `.volume(path, |m| m.owned_with(|v| v.disk().size(mib)))` attaches a
+  sandbox-owned ext4 disk (`/dev/vdX`, virtio-blk) at `path`. Microsandbox
+  formats it at create time as
+  `$MSB_HOME/sandboxes/<name>/owned-volumes/<id>/disk.raw`, keeps it across
+  stops and restarts and deletes it on `remove()`. The size must be positive.
+  The sandbox's `config().spec.mounts` lists it as `VolumeMount::Owned` with
+  `OwnedVolumeStorage::Disk { capacity_mib }`. `fbkd` puts Docker's data on such
+  a disk because the root filesystem is overlayfs (ADR 0015).
+
 **Changing existing sandboxes**
 
 - `modify()` changes cpus, memory, disk size, env, labels, workdir and secrets.

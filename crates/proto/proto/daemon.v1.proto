@@ -23,11 +23,18 @@ message StartSandboxRequest {
   string workspace = 4;
   // Whether the image's /sbin/init runs as PID 1. Unset means true.
   optional bool init = 5;
+  // Unset means the default volume sizes.
+  optional SandboxVolumes volumes = 6;
 }
 
 message SandboxResources {
   uint32 cpu = 1;
   string memory = 2;
+}
+
+message SandboxVolumes {
+  // Size of the disk mounted at /var/lib/docker. Empty means the default of 20 GiB.
+  string docker = 1;
 }
 
 message StartSandboxResponse {}
