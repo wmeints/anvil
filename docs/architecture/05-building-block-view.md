@@ -117,12 +117,14 @@ C4Component
         Component(secrets, "secrets", "serde_yaml", "Secrets")
         Component(network, "network", "microsandbox-network", "Egress rules")
         Component(forward, "forward", "russh", "Port forwards")
+        Component(open, "open", "Rust", "URL relays")
     }
     Component_Ext(utils, "firebrick-utils", "Rust", "File locations, names")
     System_Ext(microsandbox, "microsandbox", "MicroVM runtime")
     System_Ext(sshconfig, "~/.ssh/config", "OpenSSH config")
     System_Ext(editors, "settings.json", "VS Code-family user settings")
     System_Ext(zedsettings, "zed/settings.json", "Zed user settings")
+    System_Ext(browser, "xdg-open / open", "Host browser")
 
     Rel(main, runtime, "Ensures runtime")
     Rel(main, ssh, "Ensures keys")
@@ -137,6 +139,9 @@ C4Component
     Rel(sandboxes, network, "Applies egress rules")
     Rel(sandboxes, forward, "Reconciles port forwards")
     Rel(forward, microsandbox, "Opens direct-tcpip channels")
+    Rel(sandboxes, open, "Starts URL relays")
+    Rel(open, microsandbox, "Runs the relay as an exec stream")
+    Rel(open, browser, "Opens URLs")
     Rel(sandboxes, ssh, "Host names, SSH config")
     Rel(sandboxes, vscode, "Syncs Remote-SSH platforms")
     Rel(sandboxes, zed, "Syncs remote projects")
@@ -214,6 +219,8 @@ C4Component
   running), and keeps it when a request carries none. Once a sandbox runs after
   `StartSandbox`, or after `SshTunnel` started it, it hands the stored ports to
   `forward`; `StopSandbox` and `RemoveSandbox` close the sandbox's forwards.
+  `StartSandbox`, `Attach` and `SshTunnel` make sure the sandbox's URL relay
+  runs, through `open`; `StopSandbox` and `RemoveSandbox` forget it.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and
@@ -241,6 +248,26 @@ C4Component
   that session and no inactivity timeout, so forwards stay open while the
   sandbox runs. When nothing listens on the guest port, the host connection is
   closed and logged at `debug`.
+- `open` - Opens http and https URLs from a sandbox in the browser on the host
+  (see
+  [ADR 0022](decisions/0022-relay-urls-to-the-host-through-an-exec-stream.md)
+  and
+  [Opening a URL on the host](06-runtime-view.md#opening-a-url-on-the-host)).
+  `Relays::ensure` starts the relay of a running sandbox unless it already has
+  one: an inline `sh -c` script, run with `exec_stream_with` as the image's
+  user, that creates `/tmp/.firebrick` (mode `0700`) and the FIFO
+  `/tmp/.firebrick/open.fifo` when they're missing, keeps the FIFO open itself
+  and echoes each line written to it. A registry keyed by sandbox name holds at
+  most one relay per sandbox; an entry goes away when its exec stream ends or
+  when `Relays::forget` is called because the sandbox stopped, so the next
+  `StartSandbox`, `Attach` or `SshTunnel` starts a new relay. `fbkd` splits the
+  relay's output into lines and opens each line that starts with `http://` or
+  `https://` in any case, has no whitespace or control characters and is at most
+  8 KiB, through an `Opener`. `HostOpener` runs `xdg-open <url>` on Linux and
+  `open <url>` on macOS without a shell and doesn't wait for it; tests pass an
+  opener that records the URLs. An invalid line is logged as `ignoring invalid
+  URL from sandbox <name>` at `warn`, without the URL. A relay that can't start
+  or an opener that fails is logged as a warning and never fails the request.
 - `runtime` - Makes sure the microsandbox runtime (`msb` and `libkrunfw`)
   matches the runtime archive embedded in `fbkd` at build time, so it never
   needs network access. It extracts the archive when no runtime is installed,
@@ -376,6 +403,16 @@ images. It builds on `ubuntu:26.04` and adds:
   false`; then nothing starts `dockerd`, and the agent can start it in the
   background with `sudo sh -c 'dockerd >/var/log/dockerd.log 2>&1 &'`. See
   [ADR 0007](decisions/0007-disable-guest-ipv6-in-the-base-image.md).
+- `/usr/local/bin/firebrick-open` - a stand-in for a browser, symlinked as
+  `/usr/local/bin/xdg-open` and set as `BROWSER`, so `gh auth login --web`,
+  Python's `webbrowser` and Node's `open` package hand their URLs to it. It
+  takes exactly one http or https URL without whitespace or control characters
+  and writes it to `/tmp/.firebrick/open.fifo`, where the relay of `fbkd` reads
+  it and opens it in the browser on the host. Anything else exits 2 with
+  `firebrick-open: only http and https URLs can be opened on the host`. When the
+  FIFO is missing or no relay reads it within 5 seconds, it exits 1 and prints
+  `firebrick-open: couldn't reach the host; open this URL yourself: <url>`. See
+  [Opening a URL on the host](06-runtime-view.md#opening-a-url-on-the-host).
 
 The release workflow publishes the image as
 `ghcr.io/wmeints/firebrick-base:<tag>` (see

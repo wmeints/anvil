@@ -1,10 +1,11 @@
 //! Sandbox management on top of microsandbox: the sandbox lifecycle, the workspace's mise
-//! tools, the secrets of sandboxes, their port forwards, SSH host names, the generated SSH
-//! config, the editors' Remote-SSH settings and Zed's remote projects.
+//! tools, the secrets of sandboxes, their port forwards, their URL relays, SSH host names, the
+//! generated SSH config, the editors' Remote-SSH settings and Zed's remote projects.
 
 use crate::forward::{self, ForwardReport, Forwards, SshConnector};
 use crate::mise::{self, MiseError};
 use crate::network;
+use crate::open::{Opener, Relays};
 use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
 use crate::vscode;
@@ -17,6 +18,7 @@ use microsandbox::{MicrosandboxError, Sandbox};
 use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -141,10 +143,11 @@ fn workspace_host_path_of(handle: &SandboxHandle) -> Option<String> {
     })
 }
 
-/// Manages sandboxes, the secrets they get and their port forwards.
+/// Manages sandboxes, the secrets they get, their port forwards and their URL relays.
 pub struct SandboxManager {
     secrets: SecretStore,
     forwards: Forwards,
+    relays: Relays,
     // Held while secrets are stored or added to sandboxes, so a sandbox that is being created
     // can't miss a secret that is being set, and concurrent sets can't mix up values.
     secrets_lock: tokio::sync::Mutex<()>,
@@ -154,11 +157,13 @@ pub struct SandboxManager {
 }
 
 impl SandboxManager {
-    /// Creates a manager that adds the secrets from `secrets` to sandboxes.
-    pub fn new(secrets: SecretStore) -> Self {
+    /// Creates a manager that adds the secrets from `secrets` to sandboxes and opens the URLs
+    /// from sandboxes with `opener`.
+    pub fn new(secrets: SecretStore, opener: Arc<dyn Opener>) -> Self {
         Self {
             secrets,
             forwards: Forwards::new(SshConnector::default()),
+            relays: Relays::new(opener),
             secrets_lock: tokio::sync::Mutex::new(()),
             ports_lock: tokio::sync::Mutex::new(()),
         }
@@ -166,9 +171,9 @@ impl SandboxManager {
 
     /// Starts an existing sandbox or creates a new one when it doesn't exist, installs the
     /// workspace's mise tools when it started, then syncs the SSH config and the editor
-    /// settings, also when starting failed. Once the sandbox runs, stores the requested ports
-    /// and opens its forwards, also when it was already running. `resources` is only called
-    /// when the sandbox is created.
+    /// settings, also when starting failed. Once the sandbox runs, stores the requested ports,
+    /// opens its forwards and starts its URL relay, also when it was already running.
+    /// `resources` is only called when the sandbox is created.
     pub async fn start(
         &self,
         request: StartSandbox<'_>,
@@ -181,6 +186,7 @@ impl SandboxManager {
 
         sync_ssh_config().await;
         result?;
+        self.relays.ensure(request.name).await;
 
         Ok(self.open_forwards(request.name, request.ports).await)
     }
@@ -223,7 +229,7 @@ impl SandboxManager {
     }
 
     /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`],
-    /// then closes its forwards.
+    /// then closes its forwards and forgets its URL relay.
     pub async fn stop(&self, name: &str) -> Result<(), SandboxError> {
         let sb = self.get_or_close_forwards(name).await?;
 
@@ -233,6 +239,7 @@ impl SandboxManager {
         })?;
 
         self.forwards.close(name).await;
+        self.relays.forget(name);
 
         Ok(())
     }
@@ -253,6 +260,7 @@ impl SandboxManager {
         // The sandbox doesn't run anymore, also when removing it fails below.
         if force || !live {
             self.forwards.close(name).await;
+            self.relays.forget(name);
         }
 
         sb.remove().await.map_err(|err| match err {
@@ -296,17 +304,21 @@ impl SandboxManager {
             .collect())
     }
 
-    /// Connects to the running sandbox with the name.
+    /// Connects to the running sandbox with the name and starts its URL relay.
     pub async fn connect(&self, name: &str) -> Result<Sandbox, SandboxError> {
-        get_sandbox(name)
+        let sb = get_sandbox(name)
             .await?
             .connect()
             .await
-            .map_err(|err| connect_failed(name, &err))
+            .map_err(|err| connect_failed(name, &err))?;
+
+        self.relays.ensure(name).await;
+
+        Ok(sb)
     }
 
-    /// Connects to the sandbox with the SSH host name, starting it when needed, and opens its
-    /// stored forwards.
+    /// Connects to the sandbox with the SSH host name, starting it when needed, opens its
+    /// stored forwards and starts its URL relay.
     pub async fn connect_by_hostname(&self, hostname: &str) -> Result<Sandbox, SandboxError> {
         let sb = Sandbox::list_with(|opt| opt.label(ssh::HOSTNAME_LABEL, hostname))
             .await
@@ -326,6 +338,7 @@ impl SandboxManager {
             })?;
 
         self.open_forwards(sb.name(), None).await;
+        self.relays.ensure(sb.name()).await;
 
         Ok(sb)
     }
@@ -951,6 +964,7 @@ fn create_error(message: &str) -> SandboxError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::open::HostOpener;
 
     /// Returns a manager with a store at `path` that has a secret for `example.com` under each
     /// name.
@@ -963,7 +977,7 @@ mod tests {
             store.set(secret).unwrap();
         }
 
-        SandboxManager::new(store)
+        SandboxManager::new(store, Arc::new(HostOpener))
     }
 
     #[test]
@@ -1106,7 +1120,7 @@ mod tests {
     async fn set_secret_rejects_invalid_secret_without_storing_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secrets.yml");
-        let manager = SandboxManager::new(SecretStore::new(&path));
+        let manager = SandboxManager::new(SecretStore::new(&path), Arc::new(HostOpener));
 
         let result = manager
             .set_secret("NOT-A-NAME".into(), "value".into(), vec![])
