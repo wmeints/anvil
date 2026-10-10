@@ -22,6 +22,10 @@ vm-tests = []
 name = "grpc"
 required-features = ["vm-tests"]
 
+[[test]]
+name = "msb_home"
+required-features = ["vm-tests"]
+
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }

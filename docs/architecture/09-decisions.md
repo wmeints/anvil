@@ -22,3 +22,4 @@
 - [ADR 0020 - Look up user home directories with nix](decisions/0020-look-up-user-home-directories-with-nix.md)
 - [ADR 0021 - Recreate sandboxes from a disk snapshot to change their network rules](decisions/0021-recreate-sandboxes-from-a-disk-snapshot-to-change-their-network-rules.md)
 - [ADR 0022 - Scope secrets per sandbox](decisions/0022-scope-secrets-per-sandbox.md)
+- [ADR 0023 - Keep a firebrick microsandbox home in the XDG state directory](decisions/0023-keep-a-firebrick-microsandbox-home-in-the-xdg-state-directory.md)
