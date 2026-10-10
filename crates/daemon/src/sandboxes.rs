@@ -8,16 +8,19 @@ use crate::secrets::{self, Secret, SecretStore};
 use crate::ssh;
 use crate::vscode;
 use crate::zed;
-use firebrick_spec::NetworkSpec;
+use firebrick_spec::{NetworkSpec, VolumesSpec};
 use microsandbox::sandbox::{
-    HostPermissions, SandboxBuilder, SandboxHandle, SandboxStatus, VolumeMount,
+    HostPermissions, OwnedVolumeStorage, SandboxBuilder, SandboxHandle, SandboxStatus, VolumeMount,
 };
+use microsandbox::snapshot::Snapshot;
 use microsandbox::{MicrosandboxError, Sandbox};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::{Arc, PoisonError};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+use tokio::sync::OwnedMutexGuard;
 
 /// How long a sandbox gets to shut down gracefully before it is killed.
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -135,12 +138,92 @@ fn workspace_host_path_of(handle: &SandboxHandle) -> Option<String> {
     })
 }
 
+/// The settings a sandbox is created with, apart from its root filesystem and egress rules.
+/// Recreating a sandbox reads them from the sandbox, so it keeps them.
+#[derive(Debug, Clone)]
+struct SandboxSettings {
+    name: String,
+    /// Labels such as the SSH host name and the mise setting.
+    labels: BTreeMap<String, String>,
+    /// The host directory mounted as the workspace and its guest path, which is the workdir.
+    workspace: Option<Workspace>,
+    init: bool,
+    resources: Resources,
+}
+
+/// A host directory bind-mounted into the sandbox as its working directory.
+#[derive(Debug, Clone)]
+struct Workspace {
+    host: String,
+    guest: String,
+}
+
+impl SandboxSettings {
+    /// Reads the settings of an existing sandbox from the config microsandbox stores for it.
+    fn of(handle: &SandboxHandle) -> Result<Self, MicrosandboxError> {
+        let spec = handle.config()?.spec;
+        let workspace = workspace_host_path_of(handle)
+            .zip(workspace_path_of(handle))
+            .map(|(host, guest)| Workspace { host, guest });
+
+        Ok(Self {
+            name: handle.name().to_string(),
+            labels: spec.labels,
+            workspace,
+            init: spec.init.is_some(),
+            resources: Resources {
+                cpus: spec.resources.cpus,
+                memory_mib: spec.resources.memory_mib,
+                docker_volume_mib: docker_volume_mib(&spec.mounts),
+            },
+        })
+    }
+
+    /// Returns a builder for a detached sandbox with these settings, without a root filesystem.
+    fn builder(&self) -> SandboxBuilder {
+        let builder = self
+            .labels
+            .iter()
+            .fold(Sandbox::builder(&self.name), |builder, (key, value)| {
+                builder.label(key, value)
+            })
+            .detached(true);
+        let builder = with_workspace(builder, self.workspace.as_ref());
+
+        with_init(with_resources(builder, self.resources), self.init)
+    }
+}
+
+/// Returns the size of the sandbox's Docker disk, or the default size when it has none.
+fn docker_volume_mib(mounts: &[VolumeMount]) -> u32 {
+    mounts
+        .iter()
+        .find_map(|mount| match mount {
+            VolumeMount::Owned {
+                guest,
+                storage: OwnedVolumeStorage::Disk { capacity_mib },
+                ..
+            } if guest == DOCKER_DATA_PATH => Some(*capacity_mib),
+            _ => None,
+        })
+        .unwrap_or_else(default_docker_volume_mib)
+}
+
+/// Returns the default size of the Docker disk in MiB.
+fn default_docker_volume_mib() -> u32 {
+    // The default size is a constant that parses; 20 GiB matches it should that ever change.
+    firebrick_spec::parse_size_mib(&VolumesSpec::default().docker).unwrap_or(20 * 1024)
+}
+
 /// Manages sandboxes and the secrets they get.
 pub struct SandboxManager {
     secrets: SecretStore,
     // Held while secrets are stored or added to sandboxes, so a sandbox that is being created
     // can't miss a secret that is being set, and concurrent sets can't mix up values.
     secrets_lock: tokio::sync::Mutex<()>,
+    // One lock per sandbox name, held while the sandbox is started, stopped, removed, connected
+    // to or recreated, so recreating a sandbox can't interleave with another operation on it.
+    sandbox_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl SandboxManager {
@@ -149,7 +232,24 @@ impl SandboxManager {
         Self {
             secrets,
             secrets_lock: tokio::sync::Mutex::new(()),
+            sandbox_locks: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Waits for and takes the lock of the sandbox with the name.
+    async fn lock_sandbox(&self, name: &str) -> OwnedMutexGuard<()> {
+        let lock = {
+            // The map stays consistent when a thread panics while holding it, so a poisoned
+            // lock is safe to use.
+            let mut locks = self
+                .sandbox_locks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+
+            locks.entry(name.to_string()).or_default().clone()
+        };
+
+        lock.lock_owned().await
     }
 
     /// Starts an existing sandbox or creates a new one when it doesn't exist, installs the
@@ -161,6 +261,7 @@ impl SandboxManager {
         request: StartSandbox<'_>,
         resources: impl FnOnce() -> Result<Resources, SandboxError>,
     ) -> Result<(), SandboxError> {
+        let _guard = self.lock_sandbox(request.name).await;
         let result = match Sandbox::get(request.name).await {
             Ok(existing_sb) => start_existing_sandbox(&existing_sb, request).await,
             Err(_) => self.create_and_install(request, resources).await,
@@ -173,6 +274,8 @@ impl SandboxManager {
 
     /// Stops a running sandbox, killing it when it doesn't shut down within [`STOP_TIMEOUT`].
     pub async fn stop(&self, name: &str) -> Result<(), SandboxError> {
+        let _guard = self.lock_sandbox(name).await;
+
         stop_or_kill(&get_sandbox(name).await?, STOP_TIMEOUT)
             .await
             .map_err(|err| {
@@ -184,6 +287,7 @@ impl SandboxManager {
     /// Removes a sandbox, then syncs the SSH config and the editor settings. A running sandbox
     /// is only removed with `force`, which stops it first like [`SandboxManager::stop`].
     pub async fn remove(&self, name: &str, force: bool) -> Result<(), SandboxError> {
+        let _guard = self.lock_sandbox(name).await;
         let sb = get_sandbox(name).await?;
 
         if force && is_live(sb.status_snapshot()) {
@@ -223,6 +327,8 @@ impl SandboxManager {
 
     /// Connects to the running sandbox with the name.
     pub async fn connect(&self, name: &str) -> Result<Sandbox, SandboxError> {
+        let _guard = self.lock_sandbox(name).await;
+
         get_sandbox(name)
             .await?
             .connect()
@@ -232,22 +338,89 @@ impl SandboxManager {
 
     /// Connects to the sandbox with the SSH host name, starting it when needed.
     pub async fn connect_by_hostname(&self, hostname: &str) -> Result<Sandbox, SandboxError> {
-        Sandbox::list_with(|opt| opt.label(ssh::HOSTNAME_LABEL, hostname))
-            .await
-            .map_err(|err| {
-                tracing::error!(error = ?err, "failed to list sandboxes with host name {hostname}");
-                SandboxError::internal("failed to list sandboxes")
-            })?
-            .sandboxes
-            .into_iter()
-            .next()
-            .ok_or_else(|| SandboxError::not_found("couldn't find a sandbox with that host name"))?
+        let name = sandbox_name_by_hostname(hostname).await?;
+        let _guard = self.lock_sandbox(&name).await;
+
+        // Get the sandbox again, because it may have been recreated while waiting for the lock.
+        get_sandbox(&name)
+            .await?
             .connect_or_start_detached()
             .await
             .map_err(|err| {
                 tracing::error!(error = ?err, "failed to start sandbox with host name {hostname}");
                 SandboxError::failed_precondition("failed to start sandbox")
             })
+    }
+
+    /// Replaces the egress rules of an existing sandbox by recreating it from a disk snapshot,
+    /// so it keeps its root disk, Docker disk and settings but not its processes. The sandbox
+    /// ends in the state it was in. When the recreate fails, the snapshot is kept so the user
+    /// can recover the sandbox, and the error names it.
+    pub async fn update_network(
+        &self,
+        name: &str,
+        network: &NetworkSpec,
+    ) -> Result<(), SandboxError> {
+        let _guard = self.lock_sandbox(name).await;
+        let sb = get_sandbox(name).await?;
+        let settings = SandboxSettings::of(&sb).map_err(|err| update_failed(name, &err))?;
+        let was_live = is_live(sb.status_snapshot());
+
+        if was_live {
+            stop_or_kill(&sb, STOP_TIMEOUT)
+                .await
+                .map_err(|err| update_failed(name, &err))?;
+        }
+
+        let snapshot = snapshot_and_remove(&sb).await?;
+        let result = match self.recreate(&settings, network, &snapshot).await {
+            // The recreated sandbox boots, so stop it again when it was stopped before.
+            Ok(()) if !was_live => stop_recreated(name).await,
+            result => result,
+        };
+
+        sync_ssh_config().await;
+
+        result
+    }
+
+    /// Creates the removed sandbox again from the snapshot with the new egress rules, then
+    /// deletes the snapshot.
+    async fn recreate(
+        &self,
+        settings: &SandboxSettings,
+        network: &NetworkSpec,
+        snapshot: &str,
+    ) -> Result<(), SandboxError> {
+        let name = &settings.name;
+
+        if let Err(err) = self.create_from_snapshot(settings, network, snapshot).await {
+            return Err(recreate_failed(name, snapshot, &err).await);
+        }
+
+        remove_snapshot(snapshot).await;
+        tracing::info!("updated the network rules of sandbox {name}");
+
+        Ok(())
+    }
+
+    /// Creates the sandbox from the snapshot with its settings, the stored secrets and the
+    /// egress rules. microsandbox boots it.
+    async fn create_from_snapshot(
+        &self,
+        settings: &SandboxSettings,
+        network: &NetworkSpec,
+        snapshot: &str,
+    ) -> Result<Sandbox, String> {
+        let _secrets_guard = self.secrets_lock.lock().await;
+        let secrets = self.load_secrets().map_err(|err| err.to_string())?;
+
+        // `image(..)` would discard the pending snapshot, so the builder must not set one.
+        let builder = settings.builder().override_snapshot(snapshot);
+
+        create_with(builder, &secrets, network)
+            .await
+            .map_err(|err| format!("{err:?}"))
     }
 
     /// Stores a secret and adds it to the existing sandboxes. Running sandboxes pick it up the
@@ -368,20 +541,8 @@ impl SandboxManager {
         let _secrets_guard = self.secrets_lock.lock().await;
         let secrets = self.load_secrets()?;
 
-        let builder = Sandbox::builder(request.name)
-            .image(sandbox_image(request.image))
-            .label(ssh::HOSTNAME_LABEL, &hostname)
-            .label(mise::ENABLED_LABEL, mise::label_value(request.mise))
-            // Mounted read/write; Mirror propagates guest chmod changes to the host files.
-            // Mount has the ownership in the guest set to the 1000/1000 (agent) user.
-            .volume(&guest_path, |m| {
-                m.bind(request.workspace)
-                    .host_permissions(HostPermissions::Mirror)
-                    .owner(1000, 1000)
-            })
-            .workdir(&guest_path)
-            .detached(true);
-        let builder = with_init(with_resources(builder, resources), request.init);
+        let settings = new_sandbox_settings(request, &guest_path, &hostname, resources);
+        let builder = settings.builder().image(sandbox_image(request.image));
 
         let sb = match create_with(builder, &secrets, request.network).await {
             Ok(sb) => sb,
@@ -395,6 +556,141 @@ impl SandboxManager {
 
         Ok((sb, guest_path))
     }
+}
+
+/// Returns the settings of a new sandbox for the request, with its workspace mounted at
+/// `guest_path` and the SSH host name.
+fn new_sandbox_settings(
+    request: StartSandbox<'_>,
+    guest_path: &str,
+    hostname: &str,
+    resources: Resources,
+) -> SandboxSettings {
+    let labels = BTreeMap::from([
+        (ssh::HOSTNAME_LABEL.to_string(), hostname.to_string()),
+        (
+            mise::ENABLED_LABEL.to_string(),
+            mise::label_value(request.mise).to_string(),
+        ),
+    ]);
+
+    SandboxSettings {
+        name: request.name.to_string(),
+        labels,
+        workspace: Some(Workspace {
+            host: request.workspace.to_string(),
+            guest: guest_path.to_string(),
+        }),
+        init: request.init,
+        resources,
+    }
+}
+
+/// Mounts the workspace read/write and makes it the working directory. Mirror propagates guest
+/// chmod changes to the host files, and the agent user (1000:1000) owns the mount in the guest.
+fn with_workspace(builder: SandboxBuilder, workspace: Option<&Workspace>) -> SandboxBuilder {
+    let Some(workspace) = workspace else {
+        return builder;
+    };
+
+    builder
+        .volume(&workspace.guest, |m| {
+            m.bind(&workspace.host)
+                .host_permissions(HostPermissions::Mirror)
+                .owner(1000, 1000)
+        })
+        .workdir(&workspace.guest)
+}
+
+/// Returns the name of the sandbox with the SSH host name.
+async fn sandbox_name_by_hostname(hostname: &str) -> Result<String, SandboxError> {
+    Sandbox::list_with(|opt| opt.label(ssh::HOSTNAME_LABEL, hostname))
+        .await
+        .map_err(|err| {
+            tracing::error!(error = ?err, "failed to list sandboxes with host name {hostname}");
+            SandboxError::internal("failed to list sandboxes")
+        })?
+        .sandboxes
+        .first()
+        .map(|handle| handle.name().to_string())
+        .ok_or_else(|| SandboxError::not_found("couldn't find a sandbox with that host name"))
+}
+
+/// Takes a disk snapshot of the stopped sandbox, then removes the sandbox. Returns the path of
+/// the snapshot. When the sandbox can't be removed, the snapshot is deleted again.
+async fn snapshot_and_remove(sb: &SandboxHandle) -> Result<String, SandboxError> {
+    let name = sb.name();
+    let snapshot = Snapshot::builder(snapshot_name(name))
+        .from_sandbox(name)
+        .create()
+        .await
+        .map_err(|err| update_failed(name, &err))?;
+    // microsandbox files the snapshot under a group named after the sandbox, where its bare
+    // name doesn't select it, so the path refers to it.
+    let path = snapshot
+        .path()
+        .map_err(|err| update_failed(name, &err))?
+        .to_string_lossy()
+        .into_owned();
+
+    if let Err(err) = sb.remove().await {
+        remove_snapshot(&path).await;
+        return Err(update_failed(name, &err));
+    }
+
+    Ok(path)
+}
+
+/// Stops a sandbox that was recreated while it was stopped.
+async fn stop_recreated(name: &str) -> Result<(), SandboxError> {
+    stop_or_kill(&get_sandbox(name).await?, STOP_TIMEOUT)
+        .await
+        .map_err(|err| update_failed(name, &err))
+}
+
+/// Returns a snapshot name for the sandbox that no other update uses.
+fn snapshot_name(sandbox: &str) -> String {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+
+    format!("firebrick-network-{sandbox}-{}-{nonce}", std::process::id())
+}
+
+/// Deletes the snapshot, logging a warning when that fails. A leftover snapshot only takes up
+/// disk space, so it doesn't fail the update.
+async fn remove_snapshot(snapshot: &str) {
+    if let Err(err) = Snapshot::remove(snapshot, false).await {
+        tracing::warn!(error = ?err, "failed to remove snapshot {snapshot}");
+    }
+}
+
+/// Logs why updating the network rules failed and returns the error the client sees.
+fn update_failed(name: &str, err: &MicrosandboxError) -> SandboxError {
+    tracing::error!(error = ?err, "failed to update the network rules of sandbox {name}");
+    SandboxError::internal(format!("failed to update the network rules of {name}"))
+}
+
+/// Removes what a failed recreate left of the sandbox, logs the error and the snapshot that
+/// still holds the sandbox's disk, and returns the error the client sees.
+async fn recreate_failed(name: &str, snapshot: &str, err: &str) -> SandboxError {
+    if let Ok(sb) = Sandbox::get(name).await {
+        let _ = stop_or_kill(&sb, STOP_TIMEOUT).await;
+
+        if let Err(err) = sb.remove().await {
+            tracing::warn!(error = ?err, "failed to remove sandbox {name} after a failed recreate");
+        }
+    }
+
+    tracing::error!(
+        error = err,
+        "failed to recreate sandbox {name}; its disk is kept as snapshot {snapshot}"
+    );
+
+    SandboxError::internal(format!(
+        "failed to update the network rules of {name}; the sandbox was kept as snapshot \
+         {snapshot}"
+    ))
 }
 
 /// Adds the egress rules and the secrets to the builder and creates the sandbox. The rules go

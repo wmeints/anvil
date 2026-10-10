@@ -261,7 +261,7 @@ fn build_start_request(spec: SandboxSpec, workspace: &Path) -> StartSandboxReque
 }
 
 /// Turns the network section of a spec into its API message.
-fn network_policy(network: NetworkSpec) -> NetworkPolicy {
+pub(crate) fn network_policy(network: NetworkSpec) -> NetworkPolicy {
     let rules = |rules: Vec<NetworkRule>| rules.iter().map(ToString::to_string).collect();
 
     NetworkPolicy {

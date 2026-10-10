@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use firebrick_cli::api::sandbox_management_service_client::SandboxManagementServiceClient;
 use firebrick_cli::manage::OutputFormat;
+use firebrick_cli::network::{self, NetworkChange};
 use firebrick_cli::{client, init, manage, secret, session, ssh, validate};
 use tonic::transport::Channel;
 
@@ -56,6 +57,9 @@ enum Commands {
     /// Manage the secrets sandboxes use without seeing their values
     #[command(subcommand)]
     Secret(SecretCommands),
+    /// Change the network rules in .firebrick.yml and apply them to the sandbox
+    #[command(subcommand)]
+    Network(NetworkCommands),
     /// Tunnel an SSH connection to a sandbox over stdin/stdout (used by the generated SSH config)
     #[command(hide = true)]
     SshProxy {
@@ -79,6 +83,33 @@ enum SecretCommands {
         /// Name of the secret, e.g. GH_TOKEN
         name: String,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum NetworkCommands {
+    /// Allow the sandbox to connect to destinations, and stop denying them
+    Allow {
+        /// Host name, *.domain, IP address or CIDR range, e.g. example.org or *.npmjs.org
+        #[arg(required = true, value_name = "RULE")]
+        rules: Vec<String>,
+    },
+    /// Deny the sandbox to connect to destinations, and stop allowing them
+    Deny {
+        /// Host name, *.domain, IP address or CIDR range, e.g. example.org or 10.0.0.0/8
+        #[arg(required = true, value_name = "RULE")]
+        rules: Vec<String>,
+    },
+    /// Turn enforcement of the network rules on or off
+    #[command(subcommand)]
+    Policy(PolicyCommands),
+}
+
+#[derive(Subcommand, Debug)]
+enum PolicyCommands {
+    /// Deny outgoing traffic unless a rule allows it
+    Enable,
+    /// Allow all outgoing traffic; the rules are kept but not enforced
+    Disable,
 }
 
 #[derive(Args, Debug)]
@@ -120,6 +151,8 @@ async fn main() -> Result<()> {
         Commands::Validate => validate_spec(&working_dir),
         Commands::Init { force } => init_spec(&working_dir, force),
         Commands::Secret(SecretCommands::Set(args)) => set_secret(args).await,
+        // Changes the spec file first and only needs the daemon to apply it.
+        Commands::Network(command) => network::update(network_change(command)?, &working_dir).await,
         command => run_with_daemon(command, working_dir).await,
     }
 }
@@ -172,7 +205,10 @@ async fn run_with_daemon(command: Commands, working_dir: PathBuf) -> Result<()> 
         Commands::Secret(SecretCommands::Rm { name }) => {
             secret::remove(name, client_instance).await
         }
-        Commands::Validate | Commands::Init { .. } | Commands::Secret(SecretCommands::Set(_)) => {
+        Commands::Validate
+        | Commands::Init { .. }
+        | Commands::Secret(SecretCommands::Set(_))
+        | Commands::Network(_) => {
             unreachable!("handled before connecting to the daemon")
         }
     }
@@ -204,6 +240,16 @@ async fn ssh_proxy(
 
     // Exit right away rather than wait for the stdin thread, which blocks on a read.
     std::process::exit(0);
+}
+
+/// Returns the change to the network section of the spec, validating the rules.
+fn network_change(command: NetworkCommands) -> Result<NetworkChange> {
+    Ok(match command {
+        NetworkCommands::Allow { rules } => NetworkChange::allow(&rules)?,
+        NetworkCommands::Deny { rules } => NetworkChange::deny(&rules)?,
+        NetworkCommands::Policy(PolicyCommands::Enable) => NetworkChange::Enforce(true),
+        NetworkCommands::Policy(PolicyCommands::Disable) => NetworkChange::Enforce(false),
+    })
 }
 
 /// Returns the secret value from the arguments, or from stdin with `--from-stdin`.
@@ -361,5 +407,81 @@ mod tests {
     fn secret_set_requires_exactly_one_value_source() {
         assert!(parse_secret_set(&["GH_TOKEN"]).is_err());
         assert!(parse_secret_set(&["GH_TOKEN", "abc", "--from-stdin"]).is_err());
+    }
+
+    fn parse_network(args: &[&str]) -> Result<NetworkCommands, clap::Error> {
+        let cli = Cli::try_parse_from(["fbk", "network"].iter().chain(args))?;
+
+        match cli.command {
+            Commands::Network(command) => Ok(command),
+            command => panic!("unexpected command {command:?}"),
+        }
+    }
+
+    #[test]
+    fn network_allow_and_deny_take_one_or_more_rules() {
+        assert!(matches!(
+            parse_network(&["allow", "example.org", "*.npmjs.org"]).unwrap(),
+            NetworkCommands::Allow { rules } if rules == ["example.org", "*.npmjs.org"]
+        ));
+        assert!(matches!(
+            parse_network(&["deny", "10.0.0.0/8"]).unwrap(),
+            NetworkCommands::Deny { rules } if rules == ["10.0.0.0/8"]
+        ));
+        assert!(parse_network(&["allow"]).is_err());
+        assert!(parse_network(&["deny"]).is_err());
+    }
+
+    #[test]
+    fn network_policy_takes_enable_or_disable() {
+        assert!(matches!(
+            parse_network(&["policy", "enable"]).unwrap(),
+            NetworkCommands::Policy(PolicyCommands::Enable)
+        ));
+        assert!(matches!(
+            parse_network(&["policy", "disable"]).unwrap(),
+            NetworkCommands::Policy(PolicyCommands::Disable)
+        ));
+        assert!(parse_network(&["policy"]).is_err());
+    }
+
+    #[test]
+    fn network_enable_and_disable_are_not_commands() {
+        assert!(parse_network(&["enable"]).is_err());
+        assert!(parse_network(&["disable"]).is_err());
+    }
+
+    #[test]
+    fn network_change_maps_the_commands() {
+        let allow = NetworkCommands::Allow {
+            rules: vec!["example.org".to_string()],
+        };
+
+        assert_eq!(
+            network_change(allow).unwrap(),
+            NetworkChange::allow(&["example.org".to_string()]).unwrap()
+        );
+        assert_eq!(
+            network_change(NetworkCommands::Policy(PolicyCommands::Enable)).unwrap(),
+            NetworkChange::Enforce(true)
+        );
+        assert_eq!(
+            network_change(NetworkCommands::Policy(PolicyCommands::Disable)).unwrap(),
+            NetworkChange::Enforce(false)
+        );
+    }
+
+    #[test]
+    fn network_change_rejects_invalid_rules() {
+        let deny = NetworkCommands::Deny {
+            rules: vec!["https://example.org".to_string()],
+        };
+
+        assert!(
+            network_change(deny)
+                .unwrap_err()
+                .to_string()
+                .starts_with("invalid network rule \"https://example.org\"")
+        );
     }
 }

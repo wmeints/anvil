@@ -12,13 +12,14 @@ use firebrick_daemon::api::{
     AttachInput, AttachRequest, AttachResize, AttachResponse, AttachStart, GetSandboxRequest,
     GetSandboxResponse, ListSandboxesRequest, NetworkPolicy, RemoveSandboxRequest,
     SandboxResources, SandboxStatus, SandboxVolumes, StartSandboxRequest, StopSandboxRequest,
-    attach_request, attach_response,
+    UpdateNetworkRequest, attach_request, attach_response,
 };
 use firebrick_daemon::secrets::{self, Secret, SecretStore};
 use firebrick_daemon::{mise, sandboxes, server};
 use hyper_util::rt::TokioIo;
 use microsandbox::Sandbox;
 use microsandbox::sandbox::{OwnedVolumeStorage, RootfsSource, SandboxSpec, VolumeMount};
+use microsandbox::snapshot::{Snapshot, SnapshotHandle};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -1430,4 +1431,315 @@ async fn start_sandbox_rejects_invalid_network_rule() {
 
     assert_eq!(status.code(), Code::InvalidArgument);
     assert!(status.message().contains("github.com:443"), "{status:?}");
+}
+
+/// Asks the daemon to replace the egress rules of the sandbox.
+async fn update_network(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+    network: NetworkPolicy,
+) -> Result<(), tonic::Status> {
+    client
+        .update_network(UpdateNetworkRequest {
+            name: name.to_string(),
+            network: Some(network),
+        })
+        .await
+        .map(|_| ())
+}
+
+/// Returns a network policy with the allow rules and no deny rules.
+fn allow_policy(enforce: bool, allow: &[&str]) -> NetworkPolicy {
+    NetworkPolicy {
+        enforce,
+        allow: allow.iter().map(ToString::to_string).collect(),
+        deny: vec![],
+    }
+}
+
+/// Writes a marker file to the root disk and one to the Docker disk of the sandbox.
+async fn write_markers(client: &mut SandboxManagementServiceClient<Channel>, name: &str) {
+    let script = "echo kept > /var/tmp/marker && echo kept > /var/lib/docker/marker";
+    let (output, code) = run_command(client, name, "sh", &["-c", script]).await;
+
+    assert_eq!(code, 0, "failed to write markers: {output:?}");
+}
+
+/// Returns the contents of the marker files written by `write_markers`.
+async fn read_markers(client: &mut SandboxManagementServiceClient<Channel>, name: &str) -> String {
+    let (output, _) = run_command(
+        client,
+        name,
+        "cat",
+        &["/var/tmp/marker", "/var/lib/docker/marker"],
+    )
+    .await;
+
+    output
+}
+
+/// The settings of a sandbox that updating its network rules must keep.
+#[derive(Debug, PartialEq)]
+struct KeptSettings {
+    hostname: String,
+    workspace_host_path: String,
+    workspace_path: String,
+    cpus: u8,
+    memory_mib: u32,
+    init: bool,
+    docker_disk_mib: Option<u32>,
+}
+
+async fn kept_settings(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> KeptSettings {
+    let sandbox = get_sandbox(client, name).await;
+    let spec = sandbox_spec(name).await;
+
+    KeptSettings {
+        hostname: sandbox.hostname,
+        workspace_host_path: sandbox.workspace_host_path,
+        workspace_path: sandbox.workspace_path,
+        cpus: spec.resources.cpus,
+        memory_mib: spec.resources.memory_mib,
+        init: spec.init.is_some(),
+        docker_disk_mib: docker_disk_mib(&spec),
+    }
+}
+
+/// What a sandbox looks like right after its network rules were updated.
+struct AfterUpdate {
+    status: Option<SandboxStatus>,
+    settings: KeptSettings,
+    stored_network: String,
+    snapshots: Vec<String>,
+}
+
+async fn after_update(
+    client: &mut SandboxManagementServiceClient<Channel>,
+    name: &str,
+) -> AfterUpdate {
+    AfterUpdate {
+        status: sandbox_status(client, name).await,
+        settings: kept_settings(client, name).await,
+        stored_network: format!("{:?}", sandbox_spec(name).await.network),
+        snapshots: leftover_snapshots(name).await,
+    }
+}
+
+/// Returns the snapshots that updating the sandbox's network rules left behind.
+async fn network_snapshots(name: &str) -> Vec<SnapshotHandle> {
+    let prefix = format!("firebrick-network-{name}-");
+
+    Snapshot::list()
+        .await
+        .expect("failed to list snapshots")
+        .into_iter()
+        .filter(|snapshot| snapshot.name().is_some_and(|n| n.starts_with(&prefix)))
+        .collect()
+}
+
+/// Returns the names of the snapshots that updating the sandbox's network rules left behind.
+async fn leftover_snapshots(name: &str) -> Vec<String> {
+    network_snapshots(name)
+        .await
+        .iter()
+        .filter_map(|snapshot| snapshot.name().map(ToString::to_string))
+        .collect()
+}
+
+/// Removes the sandbox like `remove_sandbox`, and the snapshots a failed update of its network
+/// rules kept.
+async fn remove_sandbox_and_snapshots(name: &str) {
+    remove_sandbox(name).await;
+
+    for snapshot in network_snapshots(name).await {
+        let _ = snapshot.remove(true).await;
+    }
+}
+
+/// Returns a store in the directory with the test secret `FIREBRICK_IT_TOKEN`.
+fn store_with_test_secret(dir: &Path) -> SecretStore {
+    let store = SecretStore::new(dir.join("secrets.yml"));
+    store.set(test_secret("FIREBRICK_IT_TOKEN")).unwrap();
+
+    store
+}
+
+/// Starts the existing sandbox and waits until it runs.
+async fn start_existing(client: &mut SandboxManagementServiceClient<Channel>, name: &str) {
+    let request = StartSandboxRequest {
+        name: name.to_string(),
+        ..Default::default()
+    };
+
+    start_and_wait(client, request).await;
+}
+
+#[tokio::test]
+async fn update_network_of_running_sandbox_keeps_its_disk_and_settings() {
+    const NAME: &str = "fbk-it-update-running";
+    remove_sandbox_and_snapshots(NAME).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_with_test_secret(dir.path());
+    let daemon = TestDaemon::start_with_secrets("update-running", store).await;
+    let mut client = daemon.client().await;
+    start_enforced_sandbox(&mut client, NAME, &["example.com"], &[]).await;
+    write_markers(&mut client, NAME).await;
+    let before = kept_settings(&mut client, NAME).await;
+    let denied = fetch(&mut client, NAME, "https://example.org").await;
+
+    let network = allow_policy(true, &["example.com", "example.org"]);
+    update_network(&mut client, NAME, network).await.unwrap();
+
+    let after = after_update(&mut client, NAME).await;
+    let markers = read_markers(&mut client, NAME).await;
+    let allowed = fetch(&mut client, NAME, "https://example.org").await;
+    let secret = print_env(&mut client, NAME, "FIREBRICK_IT_TOKEN").await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert!(denied.trim_end().ends_with("403"), "{denied:?}");
+    assert_eq!(after.status, Some(SandboxStatus::Running));
+    assert_eq!(after.settings, before);
+    assert!(
+        after.stored_network.contains("example.org"),
+        "{}",
+        after.stored_network
+    );
+    assert!(after.snapshots.is_empty(), "{:?}", after.snapshots);
+    assert_eq!(markers, "kept\r\nkept\r\n");
+    assert!(allowed.trim_end().ends_with("200"), "{allowed:?}");
+    assert!(secret.contains("$MSB_FIREBRICK_IT_TOKEN"), "{secret:?}");
+}
+
+#[tokio::test]
+async fn update_network_of_stopped_sandbox_keeps_it_stopped() {
+    const NAME: &str = "fbk-it-update-stopped";
+    remove_sandbox_and_snapshots(NAME).await;
+
+    let daemon = TestDaemon::start("update-stopped").await;
+    let mut client = daemon.client().await;
+    start_enforced_sandbox(&mut client, NAME, &["example.com"], &[]).await;
+    write_markers(&mut client, NAME).await;
+    let before = kept_settings(&mut client, NAME).await;
+    stop_sandbox(&mut client, NAME).await;
+
+    let network = allow_policy(false, &["example.com"]);
+    update_network(&mut client, NAME, network).await.unwrap();
+
+    let after = after_update(&mut client, NAME).await;
+    start_existing(&mut client, NAME).await;
+    let markers = read_markers(&mut client, NAME).await;
+    // Without enforcement, the rules no longer deny anything.
+    let unrestricted = fetch(&mut client, NAME, "https://example.org").await;
+
+    daemon.stop().await;
+    remove_sandbox(NAME).await;
+
+    assert_eq!(after.status, Some(SandboxStatus::Stopped));
+    assert_eq!(after.settings, before);
+    // Without enforcement, microsandbox gets no policy with the rules.
+    assert!(
+        !after.stored_network.contains("example.com"),
+        "{}",
+        after.stored_network
+    );
+    assert!(after.snapshots.is_empty(), "{:?}", after.snapshots);
+    assert_eq!(markers, "kept\r\nkept\r\n");
+    assert!(unrestricted.trim_end().ends_with("200"), "{unrestricted:?}");
+}
+
+#[tokio::test]
+async fn update_network_returns_not_found_for_unknown_sandbox() {
+    let daemon = TestDaemon::start("update-unknown").await;
+    let mut client = daemon.client().await;
+
+    let status = update_network(
+        &mut client,
+        "fbk-it-does-not-exist",
+        NetworkPolicy::default(),
+    )
+    .await
+    .unwrap_err();
+
+    daemon.stop().await;
+
+    assert_eq!(status.code(), Code::NotFound);
+    assert_eq!(status.message(), "couldn't find specified sandbox");
+}
+
+#[tokio::test]
+async fn failed_recreate_keeps_the_snapshot_and_names_it() {
+    const NAME: &str = "fbk-it-update-failed";
+    remove_sandbox_and_snapshots(NAME).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_with_test_secret(dir.path());
+    let daemon = TestDaemon::start_with_secrets("update-failed", store).await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+    // The recreate loads the secrets, so a store it can't read makes it fail.
+    std::fs::write(dir.path().join("secrets.yml"), "not: [valid").unwrap();
+
+    let status = update_network(&mut client, NAME, allow_policy(true, &["example.org"]))
+        .await
+        .unwrap_err();
+
+    let exists = Sandbox::get(NAME).await.is_ok();
+    let snapshots = network_snapshots(NAME).await;
+    let paths: Vec<String> = snapshots
+        .iter()
+        .filter_map(|snapshot| snapshot.path().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(NAME).await;
+
+    assert_eq!(status.code(), Code::Internal);
+    assert!(!exists, "the half-created sandbox should be removed");
+    assert_eq!(paths.len(), 1, "{paths:?}");
+    assert_eq!(
+        status.message(),
+        format!(
+            "failed to update the network rules of {NAME}; the sandbox was kept as snapshot {}",
+            paths[0]
+        )
+    );
+}
+
+#[tokio::test]
+async fn update_network_can_update_the_same_sandbox_again() {
+    const NAME: &str = "fbk-it-update-twice";
+    remove_sandbox_and_snapshots(NAME).await;
+
+    let daemon = TestDaemon::start("update-twice").await;
+    let mut client = daemon.client().await;
+    start_running_sandbox(&mut client, NAME).await;
+
+    let first = update_network(&mut client, NAME, allow_policy(true, &["example.org"])).await;
+    let second = update_network(&mut client, NAME, allow_policy(true, &["example.com"])).await;
+    let after = after_update(&mut client, NAME).await;
+
+    daemon.stop().await;
+    remove_sandbox_and_snapshots(NAME).await;
+
+    assert!(first.is_ok(), "{first:?}");
+    assert!(second.is_ok(), "{second:?}");
+    assert_eq!(after.status, Some(SandboxStatus::Running));
+    assert!(
+        after.stored_network.contains("example.com"),
+        "{}",
+        after.stored_network
+    );
+    assert!(
+        !after.stored_network.contains("example.org"),
+        "{}",
+        after.stored_network
+    );
+    assert!(after.snapshots.is_empty(), "{:?}", after.snapshots);
 }

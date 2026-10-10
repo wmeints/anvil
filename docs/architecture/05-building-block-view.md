@@ -42,6 +42,7 @@ C4Component
         Component(validate, "validate", "Rust", "Spec validation")
         Component(init, "init", "serde_yaml", "Default spec")
         Component(secret, "secret", "Rust", "Secrets")
+        Component(network, "network", "Rust", "Network rules")
         Component(table, "table", "ratatui", "Tables")
         Component(client, "client", "Tonic client", "Daemon client")
     }
@@ -55,6 +56,7 @@ C4Component
     Rel(main, validate, "Uses")
     Rel(main, init, "Uses")
     Rel(main, secret, "Uses")
+    Rel(main, network, "Uses")
     Rel(main, client, "Connects")
     Rel(manage, table, "Renders sandboxes")
     Rel(secret, table, "Renders secrets")
@@ -62,15 +64,19 @@ C4Component
     Rel(manage, spec, "Loads .firebrick.yml")
     Rel(validate, spec, "Loads .firebrick.yml")
     Rel(init, spec, "Writes default spec")
+    Rel(network, spec, "Edits .firebrick.yml")
+    Rel(network, validate, "Reports invalid spec")
+    Rel(network, manage, "Names a new spec")
     Rel(init, utils, "Sanitizes name")
     Rel(client, utils, "Finds socket")
     Rel(client, fbkd, "gRPC")
 ```
 
 - `main` - Parses the `start`, `stop`, `ls`, `rm`, `run`, `validate`, `init`,
-  `secret set`, `secret ls` and `secret rm` commands, and the hidden `ssh-proxy`
-  command. `validate`, `init` and `--version`, which prints the package version,
-  run without the daemon.
+  `secret set`, `secret ls`, `secret rm`, `network allow`, `network deny`,
+  `network policy enable` and `network policy disable` commands, and the hidden
+  `ssh-proxy` command. `validate`, `init` and `--version`, which prints the
+  package version, run without the daemon.
 - `client` - Connects to the daemon socket. When nobody listens, it removes a
   stale socket, spawns `fbkd` from next to the `fbk` binary (or from `PATH`) and
   waits at most 5 seconds for the socket.
@@ -90,6 +96,17 @@ C4Component
   `--format json`, as a JSON array. `secret rm` removes a secret with
   `RemoveSecret`. It warns about sandboxes the daemon couldn't add the secret to
   or remove it from.
+- `network` - Keeps the network rules in `.firebrick.yml` and the sandbox in
+  sync. It validates the rules, applies the change to the network section of the
+  spec in the working directory and writes the file, before it sends the whole
+  section to the daemon with `UpdateNetwork`. `allow` and `deny` add rules to
+  one list and remove them from the other, without duplicates. `policy` sets
+  `enforce`. Without `.firebrick.yml`, it writes `default_spec` with the name
+  `manage` would pick, including a legacy name, plus the change. An invalid file
+  is reported like `validate` reports it, and nothing changes. When the network
+  section didn't change, it skips the daemon. `NOT_FOUND` from the daemon means
+  the sandbox doesn't exist yet, so the file alone is enough. It warns when
+  `allow` or `deny` leave `enforce` off.
 - `table` - Renders rows as a bordered table with `ratatui` into an in-memory
   buffer and returns it as plain text lines
   ([ADR 0003](decisions/0003-render-cli-tables-with-ratatui.md)).
@@ -159,13 +176,13 @@ C4Component
   volumes to vCPUs and MiB, falling back to the defaults from `firebrick-spec`
   (for the Docker volume also when the request's `docker` size is empty), and
   rejects invalid values with `INVALID_ARGUMENT`. It parses the network rules of
-  a request with `firebrick-spec` and rejects an invalid rule with
-  `INVALID_ARGUMENT`, also when the sandbox already exists. It maps the
-  `SandboxError` of `sandboxes` to gRPC status codes in one place. It refuses to
-  start when the socket already exists, gives the socket mode `0600` after
-  binding it and removes it on shutdown. It only hands a connection to tonic
-  when the peer's UID, read with `SO_PEERCRED`, is the daemon's own UID or root
-  (see
+  a `StartSandbox` or `UpdateNetwork` request with `firebrick-spec` and rejects
+  an invalid rule with `INVALID_ARGUMENT`, also when the sandbox already exists.
+  It maps the `SandboxError` of `sandboxes` to gRPC status codes in one place.
+  It refuses to start when the socket already exists, gives the socket mode
+  `0600` after binding it and removes it on shutdown. It only hands a connection
+  to tonic when the peer's UID, read with `SO_PEERCRED`, is the daemon's own UID
+  or root (see
   [Securing the daemon socket](08-crosscutting-concepts.md#securing-the-daemon-socket)).
 - `sandboxes` - Manages sandboxes on top of microsandbox, without knowing about
   gRPC. It creates sandboxes from the requested image (or the default image)
@@ -198,7 +215,15 @@ C4Component
   the store, keeps it in the store when a sandbox fails so the removal can be
   retried, and returns `NOT_FOUND` for an unknown name. A lock around the secret
   store makes sure a sandbox that is being created can't miss a secret that is
-  being set.
+  being set. `UpdateNetwork` replaces the egress rules of an existing sandbox by
+  recreating it from a disk snapshot, with the settings it reads from the
+  sandbox's stored config (see
+  [Updating the network rules](06-runtime-view.md#updating-the-network-rules)
+  and
+  [ADR 0019](decisions/0019-recreate-sandboxes-from-a-disk-snapshot-to-change-their-network-rules.md)).
+  Creating and recreating a sandbox share one builder chain. A lock per sandbox
+  name, held by start, stop, remove, connect and `UpdateNetwork`, keeps those
+  operations from interleaving with a recreate.
 - `session` - Runs an `Attach` session: rejects invalid window sizes with
   `INVALID_ARGUMENT`, starts the command with a TTY in a running sandbox and
   forwards input, resizes, output and the exit code between the gRPC stream and
@@ -283,6 +308,8 @@ C4Component
   `mise: true`, 2 vCPUs, `4 GiB` of memory, a `20 GiB` Docker volume in
   `VolumesSpec::default()`) and `parse_size_mib`, which reads memory and volume
   sizes in `Mi`/`MiB` or `Gi`/`GiB`. The CLI and daemon both use them.
+  `NetworkSpec::allow` and `NetworkSpec::deny` move rules between the lists, and
+  `to_file` writes a spec back as YAML, leaving out unset fields.
 - `firebrick-utils` (`crates/utils`) - Well-known paths: the daemon socket
   (`$XDG_RUNTIME_DIR/fbkd.sock`), the log directory
   (`$XDG_STATE_HOME/firebrick`), the SSH directory
@@ -293,7 +320,9 @@ C4Component
 
 The image, init, mise setting, resources and network rules apply when a sandbox
 is created. Changing them in `.firebrick.yml` doesn't change an existing
-sandbox; remove it with `fbk rm` and start it again.
+sandbox; remove it with `fbk rm` and start it again. The network rules are the
+exception: `fbk network` changes them in `.firebrick.yml` and has `fbkd`
+recreate the sandbox from a disk snapshot, which keeps its disks.
 
 ## Base image
 

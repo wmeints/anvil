@@ -17,6 +17,10 @@ pub enum SandboxSpecError {
     CantReadInputFile(#[from] std::io::Error),
     #[error("can't parse input yaml: {0}")]
     InvalidSpec(#[from] serde_yaml::Error),
+    #[error("can't serialize the spec")]
+    CantSerialize(#[source] serde_yaml::Error),
+    #[error("can't write the spec file")]
+    CantWriteFile(#[source] std::io::Error),
 }
 
 /// Errors that can occur while parsing a memory or disk size.
@@ -78,17 +82,22 @@ impl SandboxSpecError {
 #[serde(deny_unknown_fields)]
 pub struct SandboxSpec {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<SandboxResourcesSpec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     /// Whether the sandbox runs the image's `/sbin/init` as PID 1. Defaults to `true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub init: Option<bool>,
     /// Whether fbkd trusts and installs the workspace's mise tools when the sandbox starts.
     /// Defaults to `true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mise: Option<bool>,
     /// Sizes of the volumes the sandbox gets. Missing fields use their defaults.
     #[serde(default)]
     pub volumes: VolumesSpec,
     /// Egress rules of the sandbox. Without it, the sandbox gets microsandbox's default policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<NetworkSpec>,
 }
 
@@ -147,6 +156,41 @@ pub struct NetworkSpec {
     /// Destinations the sandbox may not connect to, even when an `allow` rule matches them.
     #[serde(default)]
     pub deny: Vec<NetworkRule>,
+}
+
+impl NetworkSpec {
+    /// Adds the rules to `allow` that aren't in it yet, and removes them from `deny`. Returns
+    /// whether the rules changed.
+    pub fn allow(&mut self, rules: &[NetworkRule]) -> bool {
+        move_rules(rules, &mut self.allow, &mut self.deny)
+    }
+
+    /// Adds the rules to `deny` that aren't in it yet, and removes them from `allow`. Returns
+    /// whether the rules changed.
+    pub fn deny(&mut self, rules: &[NetworkRule]) -> bool {
+        move_rules(rules, &mut self.deny, &mut self.allow)
+    }
+}
+
+/// Adds the rules to `to` that aren't in it yet and removes them from `from`. Returns whether
+/// either list changed.
+fn move_rules(
+    rules: &[NetworkRule],
+    to: &mut Vec<NetworkRule>,
+    from: &mut Vec<NetworkRule>,
+) -> bool {
+    let before = from.len();
+    from.retain(|rule| !rules.contains(rule));
+    let mut changed = from.len() != before;
+
+    for rule in rules {
+        if !to.contains(rule) {
+            to.push(rule.clone());
+            changed = true;
+        }
+    }
+
+    changed
 }
 
 /// The destination of a network rule.
@@ -328,6 +372,14 @@ pub fn from_file(path: &Path) -> Result<SandboxSpec, SandboxSpecError> {
         .map_err(SandboxSpecError::InvalidSpec)?;
 
     Ok(spec)
+}
+
+/// Writes the spec to a YAML file, replacing the file's contents. Comments and formatting of an
+/// existing file are lost, and fields that aren't set are left out.
+pub fn to_file(spec: &SandboxSpec, path: &Path) -> Result<(), SandboxSpecError> {
+    let content = serde_yaml::to_string(spec).map_err(SandboxSpecError::CantSerialize)?;
+
+    fs::write(path, content).map_err(SandboxSpecError::CantWriteFile)
 }
 
 /// Creates a spec with the given name and default image and resources.
@@ -802,5 +854,105 @@ pub mod tests {
         let result = from_file(&dir.path().join("does-not-exist.yaml"));
 
         assert!(result.unwrap_err().diagnostic().is_none());
+    }
+
+    fn rules(values: &[&str]) -> Vec<NetworkRule> {
+        values.iter().map(|value| value.parse().unwrap()).collect()
+    }
+
+    fn network(allow: &[&str], deny: &[&str]) -> NetworkSpec {
+        NetworkSpec {
+            enforce: false,
+            allow: rules(allow),
+            deny: rules(deny),
+        }
+    }
+
+    #[test]
+    fn allow_adds_rules_and_removes_them_from_deny() {
+        let mut spec = network(&["github.com"], &["example.org", "10.0.0.0/8"]);
+
+        assert!(spec.allow(&rules(&["example.org", "*.npmjs.org"])));
+
+        assert_eq!(
+            spec,
+            network(
+                &["github.com", "example.org", "*.npmjs.org"],
+                &["10.0.0.0/8"]
+            )
+        );
+    }
+
+    #[test]
+    fn deny_adds_rules_and_removes_them_from_allow() {
+        let mut spec = network(&["github.com", "1.1.1.1"], &[]);
+
+        assert!(spec.deny(&rules(&["1.1.1.1"])));
+
+        assert_eq!(spec, network(&["github.com"], &["1.1.1.1"]));
+    }
+
+    #[test]
+    fn allow_skips_rules_that_are_already_allowed() {
+        let mut spec = network(&["github.com"], &[]);
+
+        assert!(!spec.allow(&rules(&["github.com"])));
+        assert!(spec.allow(&rules(&["example.org", "example.org"])));
+
+        assert_eq!(spec, network(&["github.com", "example.org"], &[]));
+    }
+
+    #[test]
+    fn deny_reports_no_change_for_rules_that_are_already_denied() {
+        let mut spec = network(&[], &["example.org"]);
+
+        assert!(!spec.deny(&rules(&["example.org"])));
+        assert_eq!(spec, network(&[], &["example.org"]));
+    }
+
+    #[test]
+    fn to_file_round_trips_the_spec() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".firebrick.yml");
+        let mut spec = default_spec("dev".to_string());
+        spec.network = Some(NetworkSpec {
+            enforce: true,
+            ..network(
+                &["github.com", "*.npmjs.org", "10.0.0.0/8"],
+                &["2001:db8::1"],
+            )
+        });
+
+        to_file(&spec, &path).unwrap();
+        let loaded = from_file(&path).unwrap();
+
+        assert_eq!(loaded.name, "dev");
+        assert_eq!(loaded.image, spec.image);
+        assert_eq!(loaded.init, Some(true));
+        assert_eq!(loaded.mise, Some(true));
+        assert_eq!(loaded.volumes, spec.volumes);
+        assert_eq!(loaded.network, spec.network);
+    }
+
+    #[test]
+    fn to_file_leaves_out_unset_fields() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(".firebrick.yml");
+        let spec = from_file(write_spec("name: dev\n").path()).unwrap();
+
+        to_file(&spec, &path).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+
+        assert!(!content.contains("null"), "{content}");
+        assert!(!content.contains("network"), "{content}");
+    }
+
+    #[test]
+    fn to_file_reports_write_failure() {
+        let dir = TempDir::new().unwrap();
+
+        let result = to_file(&default_spec("dev".to_string()), dir.path());
+
+        assert!(matches!(result, Err(SandboxSpecError::CantWriteFile(_))));
     }
 }
