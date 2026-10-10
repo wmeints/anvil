@@ -20,4 +20,5 @@
 - [ADR 0018 - Enforce egress with microsandbox's network policy](decisions/0018-enforce-egress-with-microsandboxs-network-policy.md)
 - [ADR 0019 - Forward ports through the SSH server's direct-tcpip](decisions/0019-forward-ports-through-the-ssh-servers-direct-tcpip.md)
 - [ADR 0020 - Look up user home directories with nix](decisions/0020-look-up-user-home-directories-with-nix.md)
+- [ADR 0021 - Recreate sandboxes from a disk snapshot to change their network rules](decisions/0021-recreate-sandboxes-from-a-disk-snapshot-to-change-their-network-rules.md)
 - [ADR 0022 - Scope secrets per sandbox](decisions/0022-scope-secrets-per-sandbox.md)

@@ -45,7 +45,14 @@ We use option A.
   - Setting or removing a global secret skips the sandboxes that have a
     sandbox-scoped secret with that name.
 - A sandbox-scoped secret can only be set for, or removed from, a sandbox that
-  exists (`NOT_FOUND` otherwise). New sandboxes get the global secrets only.
+  exists (`NOT_FOUND` otherwise).
+- When `fbkd` creates a sandbox, or recreates one from a snapshot to change its
+  network rules
+  ([ADR 0021](0021-recreate-sandboxes-from-a-disk-snapshot-to-change-their-network-rules.md)),
+  it gives it the global secrets, with the sandbox's own scoped secrets in place
+  of the global ones with the same name. Secrets scoped to other sandboxes are
+  never added. A brand-new sandbox has no scoped secrets, so it gets the global
+  secrets only.
 - When `RemoveSandbox` removes a sandbox, `fbkd` removes that sandbox's scoped
   secrets from `secrets.yml`, so a later sandbox with the same name doesn't
   inherit them.
@@ -74,6 +81,7 @@ We use option A.
   in `.firebrick.yml` leaves its scoped secrets behind under the old name until
   they're removed with `fbk secret rm --scope sandbox` from a directory that
   resolves to that name, or until a sandbox with that name is removed.
-- A sandbox removed without `fbkd`, for example with `msb`, keeps its scoped
-  secrets in `secrets.yml`; a new sandbox with that name doesn't get them, but
-  `fbk secret ls` still lists them.
+- A sandbox removed without `fbkd`, for example with `msb`, or whose secret
+  cleanup failed, keeps its scoped secrets in `secrets.yml`. A new sandbox with
+  that name gets them, which matches the global changes that skip it, and `fbk
+  secret rm --scope sandbox` removes them once that sandbox exists.

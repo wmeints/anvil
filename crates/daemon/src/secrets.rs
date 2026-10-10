@@ -307,6 +307,25 @@ impl SecretStore {
     }
 }
 
+/// Returns the secrets the sandbox with the name gets: the global secrets, where the sandbox's
+/// own sandbox-scoped secrets replace the global ones with the same name. Secrets scoped to
+/// other sandboxes are left out.
+pub fn for_sandbox(secrets: Vec<Secret>, sandbox: &str) -> Vec<Secret> {
+    let overridden: HashSet<String> = secrets
+        .iter()
+        .filter(|secret| secret.sandbox() == Some(sandbox))
+        .map(|secret| secret.name.clone())
+        .collect();
+
+    secrets
+        .into_iter()
+        .filter(|secret| match secret.sandbox() {
+            Some(owner) => owner == sandbox,
+            None => !overridden.contains(&secret.name),
+        })
+        .collect()
+}
+
 /// Returns the first secret whose name an earlier secret in the same scope already uses.
 fn first_duplicate(secrets: &[Secret]) -> Option<&Secret> {
     let mut keys = HashSet::new();
@@ -716,6 +735,32 @@ mod tests {
         assert!(!store.remove_sandbox("a").unwrap());
 
         assert_eq!(store.load().unwrap(), [global, other]);
+    }
+
+    #[test]
+    fn for_sandbox_returns_global_secrets_with_the_sandboxes_overrides() {
+        let global_x = secret("X", &["example.com"]).unwrap();
+        let global_y = secret("Y", &["example.com"]).unwrap();
+        let own_x = scoped("X", "a", "a.example.com");
+        let own_z = scoped("Z", "a", "a.example.com");
+        let other_y = scoped("Y", "b", "b.example.com");
+        let secrets = vec![
+            global_x,
+            global_y.clone(),
+            own_x.clone(),
+            own_z.clone(),
+            other_y,
+        ];
+
+        assert_eq!(for_sandbox(secrets, "a"), [global_y, own_x, own_z]);
+    }
+
+    #[test]
+    fn for_sandbox_without_overrides_returns_the_global_secrets() {
+        let global = secret("X", &["example.com"]).unwrap();
+        let secrets = vec![global.clone(), scoped("X", "b", "b.example.com")];
+
+        assert_eq!(for_sandbox(secrets, "a"), [global]);
     }
 
     #[test]

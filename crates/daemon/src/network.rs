@@ -15,6 +15,32 @@ pub const DENY_MESSAGE: &str = "firebrick blocked the connection to {host}: the 
      of this sandbox doesn't allow it. To allow it, run `fbk network allow {host}` on the host, \
      outside the sandbox.";
 
+/// Label that records the egress rules a sandbox was created with, so an update that doesn't
+/// change them can leave the sandbox alone.
+pub const RULES_LABEL: &str = "firebrick.network";
+
+/// Returns the value of [`RULES_LABEL`] for the rules. Rules that aren't enforced don't change
+/// the sandbox, so they are all recorded as `off`.
+pub fn rules_label(network: &NetworkSpec) -> String {
+    if !network.enforce {
+        return "off".to_string();
+    }
+
+    let join = |rules: &[NetworkRule]| {
+        rules
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    format!(
+        "allow={};deny={}",
+        join(&network.allow),
+        join(&network.deny)
+    )
+}
+
 /// Adds the egress rules to a sandbox that is being created. Without `enforce`, the sandbox
 /// keeps microsandbox's default policy and no TLS interception.
 pub fn add_to_builder(
@@ -105,6 +131,26 @@ mod tests {
         };
 
         format!("{action} {destination}")
+    }
+
+    #[test]
+    fn rules_label_lists_enforced_rules() {
+        assert_eq!(
+            rules_label(&enforced(&["github.com", "*.npmjs.org"], &["10.0.0.0/8"])),
+            "allow=github.com,*.npmjs.org;deny=10.0.0.0/8"
+        );
+        assert_eq!(rules_label(&enforced(&[], &[])), "allow=;deny=");
+    }
+
+    #[test]
+    fn rules_label_ignores_rules_that_are_not_enforced() {
+        let off = NetworkSpec {
+            enforce: false,
+            ..enforced(&["github.com"], &[])
+        };
+
+        assert_eq!(rules_label(&off), "off");
+        assert_eq!(rules_label(&NetworkSpec::default()), "off");
     }
 
     #[test]

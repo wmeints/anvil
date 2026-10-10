@@ -479,7 +479,11 @@ exist, before it changes `secrets.yml`. Otherwise it stores the secret with the
 sandbox's name and adds it to that sandbox only, replacing the global value
 there.
 
-When `fbkd` creates a sandbox, it adds the global secrets from `secrets.yml`.
+When `fbkd` creates or recreates a sandbox, it adds the global secrets from
+`secrets.yml`, with the sandbox's own sandbox-scoped secrets in place of the
+global ones with the same name. A brand-new sandbox has none of those, because
+they can only be set for a sandbox that exists, but a sandbox whose scoped
+secrets were left behind, or one that `fbk network` recreates, keeps its own.
 microsandbox enables TLS interception for the sandbox and sets each secret's
 environment variable to a placeholder such as `$MSB_GH_TOKEN`. Its TLS proxy
 replaces the placeholder with the real value in HTTP headers of requests to the
@@ -506,6 +510,91 @@ next start.
 `fbk rm` removes the sandbox's scoped secrets from `secrets.yml` after
 microsandbox removed the sandbox. When that fails, `RemoveSandbox` returns
 `INTERNAL` with `removed sandbox <name>, but failed to remove its secrets`.
+
+## Updating the network rules
+
+`fbk network allow <rule>...`, `fbk network deny <rule>...` and `fbk network
+policy enable|disable` change the network section of `.firebrick.yml` and apply
+it to the sandbox of the working directory. The file is written first, so it
+always holds the rules the sandbox gets. microsandbox fixes the network policy
+when it creates a sandbox, so `fbkd` recreates the sandbox from a disk snapshot.
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer
+    participant CLI as fbk
+    participant F as .firebrick.yml
+    participant D as fbkd
+    participant MS as microsandbox
+
+    Dev->>CLI: fbk network allow example.org
+    CLI->>CLI: Validate the rules
+    alt Invalid rule or invalid .firebrick.yml
+        CLI-->>Dev: Error, nothing changes
+    end
+    CLI->>F: Read, or start from default_spec without a file
+    CLI->>CLI: Add to allow, remove from deny
+    opt Changed or new
+        CLI->>F: Write the spec
+    end
+    CLI->>D: UpdateNetwork(name, network)
+    D->>D: Lock the sandbox
+    D->>MS: Read cpus, memory, labels, workspace, mounts, init
+    alt firebrick.network label matches the rules
+        D-->>CLI: updated: false
+        CLI-->>Dev: network rules are already up to date
+    else Paused
+        D-->>CLI: FAILED_PRECONDITION
+        CLI-->>Dev: Error
+    end
+    opt Running
+        D->>MS: Stop (kill after 30s)
+        D->>D: Close its port forwards
+    end
+    D->>MS: Disk snapshot of the sandbox
+    D->>MS: Remove the sandbox
+    alt Snapshot or remove fails
+        D->>MS: Start it again when it was running
+        D-->>CLI: INTERNAL, keeps its old rules
+        CLI-->>Dev: Error
+    end
+    D->>MS: Create it from the snapshot with the same settings,<br/>its secrets, the new rules and their label
+    alt Recreate fails
+        D->>MS: Remove what was created
+        D-->>CLI: INTERNAL, names the kept snapshot
+        CLI-->>Dev: Error
+    end
+    D->>MS: Delete the snapshot
+    opt Was stopped
+        D->>MS: Stop the recreated sandbox
+    end
+    D->>D: Sync SSH config and editor settings
+    opt Runs now
+        D->>D: Open the forwards from firebrick.ports
+    end
+    D-->>CLI: updated: true
+    CLI-->>Dev: updated the network rules of my-project
+    opt enforce is off after allow or deny
+        CLI-->>Dev: Warning: the rules aren't enforced
+    end
+```
+
+The snapshot holds the root disk's writable layer and the Docker disk, so files
+outside the workspace, installed packages and Docker images survive. Running
+processes don't: the sandbox cold-boots, like after `fbk stop` and `fbk start`.
+The new sandbox gets the same name, labels (and so the same SSH host name and
+mise setting and the stored ports), workspace mount, extra mounts, resources and
+`init` setting. When the sandbox doesn't exist, `fbkd` returns `NOT_FOUND` and
+the CLI reports that the rules apply when the sandbox starts. The CLI calls the
+daemon even when the file didn't change, so running the command again applies
+rules that an earlier, failed update or a hand edit left in the file only. The
+`firebrick.network` label makes that cheap: a sandbox that already has the rules
+isn't recreated, and neither is one whose rules aren't enforced, because they
+don't change it.
+
+Between removing and creating the sandbox, it briefly doesn't exist, so an SSH
+connection to its host name fails during that time. Other requests for the
+sandbox wait for the lock.
 
 ## Connecting via SSH
 

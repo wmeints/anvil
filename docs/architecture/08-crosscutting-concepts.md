@@ -36,13 +36,13 @@ optional `sandbox` field
 is global, so files from before scopes load unchanged. A name is unique within a
 scope, but the same name may exist globally and for any number of sandboxes.
 
-| Change                         | Sandboxes it applies to                                                                                                   |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| Set or remove a global secret  | Every sandbox firebrick created, except the ones with a sandbox-scoped secret with that name.                             |
-| Set a sandbox-scoped secret    | Its sandbox only, replacing the global secret with that name there.                                                       |
-| Remove a sandbox-scoped secret | Its sandbox only, which gets the global secret with that name back when there is one.                                     |
-| Create a sandbox               | The new sandbox gets the global secrets only. A sandbox-scoped secret can only be set for a sandbox that exists.          |
-| Remove a sandbox               | `fbkd` removes its sandbox-scoped secrets from `secrets.yml`, so a later sandbox with the same name doesn't inherit them. |
+| Change                         | Sandboxes it applies to                                                                                                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Set or remove a global secret  | Every sandbox firebrick created, except the ones with a sandbox-scoped secret with that name.                                                                                              |
+| Set a sandbox-scoped secret    | Its sandbox only, replacing the global secret with that name there.                                                                                                                        |
+| Remove a sandbox-scoped secret | Its sandbox only, which gets the global secret with that name back when there is one.                                                                                                      |
+| Create or recreate a sandbox   | The global secrets, with the sandbox's own sandbox-scoped secrets in their place. A brand-new sandbox has none, because a sandbox-scoped secret can only be set for a sandbox that exists. |
+| Remove a sandbox               | `fbkd` removes its sandbox-scoped secrets from `secrets.yml`, so a later sandbox with the same name doesn't inherit them.                                                                  |
 
 So in a sandbox, a sandbox-scoped secret wins over the global secret with the
 same name. Like every secret change, these apply the next time a sandbox starts.
