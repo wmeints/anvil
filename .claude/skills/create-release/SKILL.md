@@ -12,7 +12,7 @@ flowchart LR
   skill[create-release skill] -->|bump PR| ci[CI checks]
   ci -->|merge| main
   main -->|Cargo.toml changed| tag[tag-release.yaml: tag vX.Y.Z]
-  tag -->|workflow_call| rel[release.yaml: packages, image, GitHub release]
+  tag -->|workflow_call| rel[release.yaml: packages, image, crates.io, GitHub release]
 ```
 
 - The skill picks the version, bumps it, writes the release notes in
@@ -20,7 +20,8 @@ flowchart LR
 - `.github/workflows/tag-release.yaml` runs on main when `Cargo.toml` changes.
   It tags the merge commit with the workspace version when that tag doesn't
   exist yet, and calls `.github/workflows/release.yaml` with the tag.
-- `release.yaml` builds the packages, pushes the `firebrick-base` image and
+- `release.yaml` builds the packages, pushes the `firebrick-base` image,
+  publishes the five workspace crates to crates.io with Trusted Publishing and
   creates the GitHub release. The release notes are the version's section of
   `CHANGELOG.md`, followed by GitHub's generated list of pull requests.
 
@@ -196,7 +197,15 @@ gh release view <next> --json url,assets,body
 
 The release must have a `.tar.gz` and a `.sha256` for each target in the
 deployment view (`docs/architecture/07-deployment-view.md`), and its body must
-start with the `CHANGELOG.md` section.
+start with the `CHANGELOG.md` section. Each of the five workspace crates must
+have the version on crates.io:
+
+```bash
+for crate in firebrick-proto firebrick-spec firebrick-utils firebrick-cli firebrick-daemon; do
+  curl -fsS -o /dev/null -A "firebrick-release" \
+    "https://crates.io/api/v1/crates/$crate/${next#v}" && echo "$crate ok"
+done
+```
 
 ## Guardrails
 

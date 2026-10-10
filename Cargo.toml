@@ -18,7 +18,7 @@ version = "0.4.0"
 authors = ["Willem Meints"]
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/wmeints/anvil"
+repository = "https://github.com/wmeints/firebrick"
 
 [workspace.lints.clippy]
 too_many_lines = "warn"           # pedantic, so off by default

@@ -30,3 +30,4 @@
 - [ADR 0028 - Release by merging a version bump pull request](decisions/0028-release-by-merging-a-version-bump-pull-request.md)
 - [ADR 0029 - Check the website with ESLint, Prettier, Vitest and Playwright](decisions/0029-check-the-website-with-eslint-prettier-vitest-and-playwright.md)
 - [ADR 0030 - Forward OAuth callback ports when opening a URL](decisions/0030-forward-oauth-callback-ports-when-opening-a-url.md)
+- [ADR 0031 - Publish the crates to crates.io with Trusted Publishing](decisions/0031-publish-the-crates-to-crates-io-with-trusted-publishing.md)

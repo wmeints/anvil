@@ -119,9 +119,60 @@ jobs:
             org.opencontainers.image.version=${{ env.TAG }}
             org.opencontainers.image.revision=${{ github.sha }}
 
+  publish:
+    name: Publish crates to crates.io
+    # Publish only once the packages and the image succeed, so a failed build publishes no crate.
+    needs: [package, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Trusted Publishing exchanges the workflow's OIDC token for a short-lived crates.io token.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      # firebrick-proto's build script needs protoc to verify the crate.
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "29.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Installs the Rust toolchain pinned in mise.toml.
+      - uses: jdx/mise-action@v2
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      # Cargo refuses to publish a version that exists, so skip the crates a partial earlier run published.
+      # cargo publish orders the remaining crates by their dependencies.
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          crates=$(cargo metadata --no-deps --locked --format-version 1 \
+            | jq -r '.packages[] | "\(.name) \(.version)"')
+          packages=()
+          while read -r name version; do
+            status=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -A "firebrick-release (https://github.com/${{ github.repository }})" \
+              "https://crates.io/api/v1/crates/$name/$version")
+            case "$status" in
+              200) echo "$name $version is on crates.io already, skipping it" ;;
+              404) packages+=(-p "$name") ;;
+              *) echo "::error::crates.io answered $status for $name $version"; exit 1 ;;
+            esac
+          done <<< "$crates"
+          if [ ${#packages[@]} -eq 0 ]; then
+            echo "Every crate is on crates.io already"
+            exit 0
+          fi
+          cargo publish --locked "${packages[@]}"
+
   release:
     name: Create GitHub release
-    needs: [package, image]
+    needs: [package, image, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
